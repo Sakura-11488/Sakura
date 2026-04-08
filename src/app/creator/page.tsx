@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { getAuthorDetails, getMangaByAuthor, type Manga } from "@/lib/mangadex";
+import { getAuthorDetails, getMangaByAuthor, type Manga } from "@/lib/content-source";
 import { getCreatorProfile, getCreatorTips, type CreatorProfile, type TipRecord } from "@/lib/creator";
 import { getWalletSakuraBalance } from "@/lib/treasury";
 import { truncateAddress } from "@/lib/solana";

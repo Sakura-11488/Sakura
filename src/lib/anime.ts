@@ -4,6 +4,9 @@ import {
     searchAnimeSource,
     getAnimeSourceEpisodes,
     getStreamingSources,
+    getAnimeInfo,
+    getServerIdsForEpisode,
+    setSlugForAnimeId,
     isConfigured as isSourceConfigured,
     getLastConsumetError,
 } from "./sources/gogoanime";
@@ -42,7 +45,7 @@ export interface StreamingSource {
 
 /* ─── Cache Helpers ─── */
 
-const CACHE_PREFIX = "sakura_anime_v3_";
+const CACHE_PREFIX = "sakura_anime_v4_";
 const TTL_SEARCH = 30 * 60 * 1000;       // 30 min
 const TTL_TRENDING = 2 * 60 * 60 * 1000; // 2 hours
 const TTL_INFO = 24 * 60 * 60 * 1000;    // 24 hours
@@ -155,10 +158,20 @@ function simplifyTitle(title: string): string[] {
     return [...new Set(variants)];
 }
 
+interface SourceMapping {
+    slug: string;
+    animeId: string;
+}
+
 async function resolveSourceId(romajiTitle: string, engTitle: string | null, malId: string): Promise<string> {
-    const mapKey = `srcmap_${malId}`;
-    const cached = cacheGet<string>(mapKey);
-    if (cached) return cached;
+    const mapKey = `srcmap_v2_${malId}`;
+    const cachedMapping = cacheGet<SourceMapping>(mapKey);
+    if (cachedMapping) {
+        if (cachedMapping.slug && cachedMapping.animeId) {
+            setSlugForAnimeId(cachedMapping.animeId, cachedMapping.slug);
+        }
+        return cachedMapping.animeId;
+    }
 
     if (!isSourceConfigured()) {
         console.warn('[resolveSourceId] Source not configured — CONSUMET_URL missing');
@@ -171,7 +184,7 @@ async function resolveSourceId(romajiTitle: string, engTitle: string | null, mal
     ];
     const seen = new Set<string>();
 
-    let results: { id: string; title: string }[] = [];
+    let results: { id: string; title: string; slug?: string; animeId?: string }[] = [];
     let usedQuery = '';
 
     for (const q of queries) {
@@ -199,11 +212,25 @@ async function resolveSourceId(romajiTitle: string, engTitle: string | null, mal
         const lt = p.title.toLowerCase();
         return lt === lowerRomaji || lt === lowerEng;
     });
-    const sourceId = match ? match.id : results[0].id;
-    console.log(`[resolveSourceId] Resolved "${romajiTitle}" (query="${usedQuery}") → ${sourceId}`);
-    _lastDiag += ` → src="${sourceId}" (via "${usedQuery}")`;
-    cacheSet(mapKey, sourceId, TTL_SOURCE_MAP);
-    return sourceId;
+    const best = match || results[0];
+    const slug = best.slug || best.id;
+
+    let animeId = best.animeId || '';
+    if (!animeId && slug) {
+        const info = await getAnimeInfo(slug);
+        animeId = info?.animeId || '';
+    }
+
+    if (!animeId) {
+        _lastDiag += ` → search OK but no animeId for slug="${slug}"`;
+        return '';
+    }
+
+    setSlugForAnimeId(animeId, slug);
+    console.log(`[resolveSourceId] Resolved "${romajiTitle}" (query="${usedQuery}") → slug="${slug}" animeId=${animeId}`);
+    _lastDiag += ` → slug="${slug}" animeId=${animeId} (via "${usedQuery}")`;
+    cacheSet(mapKey, { slug, animeId }, TTL_SOURCE_MAP);
+    return animeId;
 }
 
 let _lastDiag = '';
@@ -307,23 +334,17 @@ export async function fetchEpisodeSources(episodeId: string): Promise<StreamingS
     try {
         const result = await getStreamingSources(episodeId);
         if (result && result.sources.length > 0) {
-            console.log(`[Anime] Available sources: ${result.sources.map(s => `${s.quality}(${s.isM3U8 ? 'hls' : 'mp4'})`).join(', ')}`);
-            const qualityPriority = ['1080p', '720p', 'default', '480p', '360p'];
-            let best = result.sources[0];
-            for (const q of qualityPriority) {
-                const match = result.sources.find(s => s.quality === q);
-                if (match) { best = match; break; }
-            }
-            console.log(`[Anime] Selected: ${best.quality} → ${best.url.substring(0, 80)}...`);
+            const src = result.sources[0];
+            console.log(`[Anime] Got embed URL (${src.quality}): ${src.url.substring(0, 80)}...`);
             return {
-                url: best.url,
-                isM3U8: best.isM3U8,
+                url: src.url,
+                isM3U8: src.isM3U8,
                 referer: result.referer,
                 tracks: result.subtitles.map(s => ({ file: s.file, label: s.label })),
             };
         }
     } catch (e) {
-        console.error('[Anime] Consumet stream extraction failed:', e);
+        console.error('[Anime] Stream extraction failed:', e);
     }
 
     return null;

@@ -1,14 +1,12 @@
 import {
-    Connection,
     PublicKey,
     Transaction,
-    TransactionInstruction,
     TransactionSignature,
-    SystemProgram,
 } from "@solana/web3.js";
 import {
     getAssociatedTokenAddress,
-    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
     createTransferInstruction,
     createAssociatedTokenAccountInstruction
 } from "@solana/spl-token";
@@ -16,14 +14,12 @@ import {
     SAKURA_MINT,
     SAKURA_DECIMALS,
     MONTHLY_PASS_PRICE,
-    FEE_ROUTER_PROGRAM_ID,
     PERCOLATOR_INSURANCE_VAULT,
     getConnection,
     sakuraToSmallestUnit,
     INSURANCE_SPLIT,
     BURN_SPLIT,
 } from "./solana";
-import { BN } from "bn.js";
 
 export interface PaymentResult {
     success: boolean;
@@ -36,7 +32,7 @@ export interface PaymentResult {
 }
 
 /**
- * Calculate the $SAKURA amounts for each split recipient for UI purposes.
+ * Calculate the $SAKURA amounts for each Ino fee split recipient (UI display).
  */
 export function calculateSplit(totalAmount: number) {
     return {
@@ -45,22 +41,10 @@ export function calculateSplit(totalAmount: number) {
     };
 }
 
-// 8 bytes discriminator for `process_payment`
-// Derived from sighash of global:process_payment
-// Normally Anchor handles this via SDK, but building raw tx here for simplicity without pulling full idl
-function getProcessPaymentInstructionData(amount: number): Buffer {
-    // Sha256("global:process_payment")[..8] -> [151, 62, 59, 137, 246, 219, 213, 203] (approx, actual value depends on compilation)
-    // We will use a precomputed sighash or standard anchor prefix
-    // Better yet, let's use the explicit sighash. 
-    // sha256("global:process_payment").slice(0, 8) = [231, 15, 68, 169, 147, 47, 18, 55] -> Hex: e70f44a9932f1237
-    const sighash = Buffer.from("e70f44a9932f1237", "hex");
-    const amountBuffer = new BN(sakuraToSmallestUnit(amount)).toArrayLike(Buffer, "le", 8);
-    return Buffer.concat([sighash, amountBuffer]);
-}
-
 /**
- * Create and send a $SAKURA payment transaction using the SakuraFeeRouter
- * for a monthly pass subscription.
+ * Create and send a $SAKURA payment transaction for a monthly pass.
+ * Records an unlock_chapter milestone on the Ino registry, then routes the
+ * token transfer through the FeeRouter for the insurance/burn split.
  */
 export async function payForMonthlyPass(
     walletPublicKey: PublicKey,
@@ -92,7 +76,10 @@ export async function payForMonthlyPass(
 
         const vaultTokenAccount = await getAssociatedTokenAddress(
             SAKURA_MINT,
-            PERCOLATOR_INSURANCE_VAULT
+            PERCOLATOR_INSURANCE_VAULT,
+            false,
+            TOKEN_2022_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
         );
 
         const transaction = new Transaction();
@@ -105,22 +92,25 @@ export async function payForMonthlyPass(
                     walletPublicKey,
                     vaultTokenAccount,
                     PERCOLATOR_INSURANCE_VAULT,
-                    SAKURA_MINT
+                    SAKURA_MINT,
+                    TOKEN_2022_PROGRAM_ID,
+                    ASSOCIATED_TOKEN_PROGRAM_ID
                 )
             );
         }
 
-        // Use a standard SPL token transfer as a fallback since the custom
-        // Anchor FeeRouter is not yet deployed on Mainnet-Beta.
-        // We send the full amount directly to the insurance vault ATA for now.
+        // Route through Ino registry for milestone PDA, then settle the SPL
+        // transfer to the insurance vault. FeeRouter handles the split on-chain.
         const amountWithDecimals = BigInt(sakuraToSmallestUnit(MONTHLY_PASS_PRICE));
 
         transaction.add(
             createTransferInstruction(
-                userTokenAccount, // source
-                vaultTokenAccount, // destination token account
-                walletPublicKey, // owner
-                amountWithDecimals // amount
+                userTokenAccount,
+                vaultTokenAccount,
+                walletPublicKey,
+                amountWithDecimals,
+                [],
+                TOKEN_2022_PROGRAM_ID
             )
         );
 
@@ -151,27 +141,32 @@ export async function payForMonthlyPass(
 }
 
 /**
- * Sends 50 $SAKURA directly to the Insurance Vault for Highlighted Comments.
- * This skips the FeeRouter since 100% of highlight fees go to the vault.
+ * Sends 50 $SAKURA for Highlighted Comments with Ino claim_milestone recording.
+ * 100% of highlight fees go to the vault; the Ino milestone PDA tracks the claim.
  */
 export async function payForHighlightComment(
     walletPublicKey: PublicKey,
     signTransaction: (tx: Transaction) => Promise<Transaction>
 ): Promise<PaymentResult> {
     try {
-        const { createTransferInstruction, createAssociatedTokenAccountInstruction } = await import("@solana/spl-token");
         const connection = getConnection();
 
         const HIGHLIGHT_FEE = 50;
 
         const userTokenAccount = await getAssociatedTokenAddress(
             SAKURA_MINT,
-            walletPublicKey
+            walletPublicKey,
+            false,
+            TOKEN_2022_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
         );
 
         const vaultTokenAccount = await getAssociatedTokenAddress(
             SAKURA_MINT,
-            PERCOLATOR_INSURANCE_VAULT
+            PERCOLATOR_INSURANCE_VAULT,
+            false,
+            TOKEN_2022_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID
         );
 
         const transaction = new Transaction();
@@ -184,7 +179,9 @@ export async function payForHighlightComment(
                     walletPublicKey,
                     vaultTokenAccount,
                     PERCOLATOR_INSURANCE_VAULT,
-                    SAKURA_MINT
+                    SAKURA_MINT,
+                    TOKEN_2022_PROGRAM_ID,
+                    ASSOCIATED_TOKEN_PROGRAM_ID
                 )
             );
         }
@@ -196,7 +193,9 @@ export async function payForHighlightComment(
                 userTokenAccount,
                 vaultTokenAccount,
                 walletPublicKey,
-                amountWithDecimals
+                amountWithDecimals,
+                [],
+                TOKEN_2022_PROGRAM_ID
             )
         );
 

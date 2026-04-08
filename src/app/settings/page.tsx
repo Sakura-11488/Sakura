@@ -635,8 +635,52 @@ export default function SettingsPage() {
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">Version</span>
-                                <span className="setting-desc">Sakura v4.0.0 — Beta (Solana Edition)</span>
+                                <span className="setting-desc">Sakura v1.2.1</span>
                             </div>
+                        </div>
+                        <div className="setting-item">
+                            <div className="setting-info">
+                                <span className="setting-name">Contact</span>
+                                <span className="setting-desc">sakuramanga162@gmail.com</span>
+                            </div>
+                            <a
+                                href="mailto:sakuramanga162@gmail.com"
+                                className="btn-secondary"
+                                style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
+                            >
+                                Email
+                            </a>
+                        </div>
+                    </div>
+
+                    {/* Legal */}
+                    <div className="settings-group">
+                        <h3 className="settings-group-title">Legal</h3>
+                        <div className="setting-item">
+                            <div className="setting-info">
+                                <span className="setting-name">Privacy Policy</span>
+                                <span className="setting-desc">Learn how Sakura handles wallet, sync, and app data.</span>
+                            </div>
+                            <Link
+                                href="/privacy"
+                                className="btn-secondary"
+                                style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
+                            >
+                                Open
+                            </Link>
+                        </div>
+                        <div className="setting-item">
+                            <div className="setting-info">
+                                <span className="setting-name">Terms of Service</span>
+                                <span className="setting-desc">Review the rules, responsibilities, and risk disclosures.</span>
+                            </div>
+                            <Link
+                                href="/terms"
+                                className="btn-secondary"
+                                style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
+                            >
+                                Open
+                            </Link>
                         </div>
                     </div>
 

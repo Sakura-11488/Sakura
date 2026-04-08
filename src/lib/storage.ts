@@ -37,6 +37,7 @@ export const STORAGE_KEYS = {
     NOVEL_CUSTOM_CSS: 'sakura_novel_reader_custom_css',
     NOVEL_TTS_SETTINGS: 'sakura_novel_tts_settings',
     NOVEL_AMBIENT_SETTINGS: 'sakura_novel_ambient_settings',
+    TERMS_ACCEPTED: 'sakura_terms_accepted',
 };
 
 // ── Secure Storage (Capacitor Preferences) ──

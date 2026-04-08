@@ -1,8 +1,8 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { cacheWrap } from "./cache";
 
-const MANGADEX_API_URL = "https://api.mangadex.org";
-const UPLOADS_URL = "https://uploads.mangadex.org";
+const CONTENT_API_URL = "https://api.mangadex.org";
+const CDN_BASE_URL = "https://uploads.mangadex.org";
 
 async function requestMd(url: string) {
     if (Capacitor.isNativePlatform()) {
@@ -42,40 +42,51 @@ export interface Chapter {
 
 // Helper to get cover URL
 function getCoverUrl(mangaId: string, filename: string) {
-    return `${UPLOADS_URL}/covers/${mangaId}/${filename}.256.jpg`;
+    return `${CDN_BASE_URL}/covers/${mangaId}/${filename}.256.jpg`;
 }
 
 /**
- * Checks which manga IDs have actual readable chapters (not just DMCA'd stubs
- * with 0 pages or external-only links). Uses the feed endpoint to sample
- * recent chapters and verify at least one has pages > 0.
+ * Checks which manga IDs have at least one readable chapter (pages > 0, no external URL).
+ * Processes in small sequential batches to respect upstream rate limits.
  */
 async function filterReadableManga(mangaIds: string[]): Promise<Set<string>> {
     const readable = new Set<string>();
-    const checks = mangaIds.map(async (id) => {
-        try {
-            const params = new URLSearchParams({
-                limit: "5",
-                "order[chapter]": "desc",
-            });
-            params.append("translatedLanguage[]", "en");
-            params.append("contentRating[]", "safe");
-            params.append("contentRating[]", "suggestive");
+    const BATCH = 3;
 
-            const url = `${MANGADEX_API_URL}/manga/${id}/feed?${params.toString()}`;
-            const data = await requestMd(url);
+    for (let i = 0; i < mangaIds.length; i += BATCH) {
+        const batch = mangaIds.slice(i, i + BATCH);
 
-            const hasReadable = data.data?.some(
-                (ch: any) => ch.attributes.pages > 0 && !ch.attributes.externalUrl
-            );
-            if (hasReadable) {
-                readable.add(id);
+        const results = await Promise.all(batch.map(async (id) => {
+            try {
+                const params = new URLSearchParams({
+                    limit: "5",
+                    "order[chapter]": "desc",
+                });
+                params.append("translatedLanguage[]", "en");
+                params.append("contentRating[]", "safe");
+                params.append("contentRating[]", "suggestive");
+
+                const url = `${CONTENT_API_URL}/manga/${id}/feed?${params.toString()}`;
+                const data = await requestMd(url);
+
+                const hasReadable = data.data?.some(
+                    (ch: any) => ch.attributes.pages > 0 && !ch.attributes.externalUrl
+                );
+                return hasReadable ? id : null;
+            } catch {
+                return id;
             }
-        } catch {
-            readable.add(id);
+        }));
+
+        for (const id of results) {
+            if (id) readable.add(id);
         }
-    });
-    await Promise.all(checks);
+
+        if (i + BATCH < mangaIds.length) {
+            await new Promise(r => setTimeout(r, 350));
+        }
+    }
+
     return readable;
 }
 
@@ -101,7 +112,7 @@ export async function searchManga(query: string = "", limit = 20, offset = 0): P
                 params.append("title", query);
             }
 
-            const url = `${MANGADEX_API_URL}/manga?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/manga?${params.toString()}`;
             const data = await requestMd(url);
 
             const allManga: Manga[] = data.data.map((item: any) => {
@@ -126,7 +137,7 @@ export async function searchManga(query: string = "", limit = 20, offset = 0): P
             const readable = await filterReadableManga(allManga.map(m => m.id));
             return allManga.filter(m => readable.has(m.id));
         } catch (error) {
-            console.error("MangaDex Search Error:", error);
+            console.error("ContentSource Search Error:", error);
             return [];
         }
     });
@@ -137,7 +148,7 @@ export async function getAuthorDetails(authorId: string) {
     const cacheKey = `author:${authorId}`;
     return cacheWrap(cacheKey, async () => {
         try {
-            const url = `${MANGADEX_API_URL}/author/${authorId}`;
+            const url = `${CONTENT_API_URL}/author/${authorId}`;
             const data = await requestMd(url);
             const attrs = data.data.attributes;
             return {
@@ -149,7 +160,7 @@ export async function getAuthorDetails(authorId: string) {
                 youtube: attrs.youtube || null,
             };
         } catch (error) {
-            console.error("MangaDex Author Error:", error);
+            console.error("ContentSource Author Error:", error);
             return null;
         }
     });
@@ -174,7 +185,7 @@ export async function getMangaByAuthor(authorId: string, limit = 20, offset = 0)
             params.append("contentRating[]", "suggestive");
             params.append("availableTranslatedLanguage[]", "en");
 
-            const url = `${MANGADEX_API_URL}/manga?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/manga?${params.toString()}`;
             const data = await requestMd(url);
 
             const allManga: Manga[] = data.data.map((item: any) => {
@@ -199,7 +210,7 @@ export async function getMangaByAuthor(authorId: string, limit = 20, offset = 0)
             const readable = await filterReadableManga(allManga.map(m => m.id));
             return allManga.filter(m => readable.has(m.id));
         } catch (error) {
-            console.error("MangaDex Author Manga Error:", error);
+            console.error("ContentSource Author Manga Error:", error);
             return [];
         }
     });
@@ -212,11 +223,11 @@ export async function getMangaStatistics(mangaIds: string[]) {
             const params = new URLSearchParams();
             mangaIds.forEach(id => params.append("manga[]", id));
 
-            const url = `${MANGADEX_API_URL}/statistics/manga?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/statistics/manga?${params.toString()}`;
             const data = await requestMd(url);
             return data.statistics;
         } catch (error) {
-            console.error("MangaDex Stats Error:", error);
+            console.error("ContentSource Stats Error:", error);
             return {};
         }
     });
@@ -226,7 +237,7 @@ export async function getMangaStatistics(mangaIds: string[]) {
 export async function getMangaDetails(id: string): Promise<Manga | null> {
     return cacheWrap(`details:${id}`, async () => {
         try {
-            const url = `${MANGADEX_API_URL}/manga/${id}?includes[]=cover_art&includes[]=author`;
+            const url = `${CONTENT_API_URL}/manga/${id}?includes[]=cover_art&includes[]=author`;
             const data = await requestMd(url);
             const item = data.data;
             const attributes = item.attributes;
@@ -246,7 +257,7 @@ export async function getMangaDetails(id: string): Promise<Manga | null> {
                 year: attributes.year,
             };
         } catch (error) {
-            console.error("MangaDex Details Error:", error);
+            console.error("ContentSource Details Error:", error);
             return null;
         }
     });
@@ -265,12 +276,11 @@ export async function getChapters(mangaId: string, limit = 100, offset = 0): Pro
                 "order[chapter]": "desc",
             });
 
-            const url = `${MANGADEX_API_URL}/chapter?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/chapter?${params.toString()}`;
             const data = await requestMd(url);
 
-            return data.data
+            const mapped = data.data
                 .map((item: any) => {
-                    // Check for official Bilibili Comics takedowns which were replaced by MangaDex placeholders
                     const isBilibiliTakedown = item.relationships?.some(
                         (rel: any) => rel.type === 'scanlation_group' && rel.id === '17fb59e5-718c-4a1a-935d-d80dba70454a'
                     );
@@ -286,11 +296,23 @@ export async function getChapters(mangaId: string, limit = 100, offset = 0): Pro
                     };
                 })
                 .filter((c: any) => {
-                    if (c.externalUrl) return true;
-                    return c.pages > 0;
+                    if (c.pages <= 0 && !c.externalUrl) return false;
+                    return true;
                 });
+
+            // De-duplicate chapters: when multiple uploads exist for the same chapter number, keep the one with the most pages
+            const deduped = new Map<string, any>();
+            for (const ch of mapped) {
+                const key = ch.chapter ?? ch.id;
+                const existing = deduped.get(key);
+                if (!existing || ch.pages > (existing.pages || 0)) {
+                    deduped.set(key, ch);
+                }
+            }
+
+            return Array.from(deduped.values());
         } catch (error) {
-            console.error("MangaDex Chapters Error:", error);
+            console.error("ContentSource Chapters Error:", error);
             return [];
         }
     });
@@ -299,7 +321,7 @@ export async function getChapters(mangaId: string, limit = 100, offset = 0): Pro
 // Get Single Chapter Details
 export async function getChapterDetails(chapterId: string): Promise<Chapter | null> {
     try {
-        const url = `${MANGADEX_API_URL}/chapter/${chapterId}`;
+        const url = `${CONTENT_API_URL}/chapter/${chapterId}`;
         const data = await requestMd(url);
         const item = data.data;
 
@@ -318,7 +340,7 @@ export async function getChapterDetails(chapterId: string): Promise<Chapter | nu
             externalUrl: isBilibiliTakedown ? "https://www.bilibilicomics.com" : item.attributes.externalUrl,
         };
     } catch (error) {
-        console.error("MangaDex Chapter Details Error:", error);
+        console.error("ContentSource Chapter Details Error:", error);
         return null;
     }
 }
@@ -328,7 +350,7 @@ export async function getChapterDetails(chapterId: string): Promise<Chapter | nu
 export async function getChapterPages(chapterId: string): Promise<string[]> {
     try {
         // 1. Get Base URL
-        const url = `${MANGADEX_API_URL}/at-home/server/${chapterId}`;
+        const url = `${CONTENT_API_URL}/at-home/server/${chapterId}`;
         const data = await requestMd(url);
         const { baseUrl, chapter } = data;
 
@@ -352,7 +374,7 @@ export async function getChapterPages(chapterId: string): Promise<string[]> {
             `${baseUrl}/${mode}/${chapter.hash}/${filename}`
         );
     } catch (error) {
-        console.error("MangaDex Pages Error:", error);
+        console.error("ContentSource Pages Error:", error);
         throw error; // Rethrow to let UI handle it
     }
 }
@@ -390,7 +412,7 @@ export async function searchMangaByGenre(tagId: string): Promise<Manga[]> {
             params.append("availableTranslatedLanguage[]", "en");
             params.append("includedTags[]", tagId);
 
-            const url = `${MANGADEX_API_URL}/manga?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/manga?${params.toString()}`;
             const data = await requestMd(url);
 
             const allManga: Manga[] = data.data.map((item: any) => {
@@ -422,7 +444,7 @@ export async function searchMangaByGenre(tagId: string): Promise<Manga[]> {
                 follows: stats[m.id]?.follows,
             }));
         } catch (error) {
-            console.error("MangaDex Genre Search Error:", error);
+            console.error("ContentSource Genre Search Error:", error);
             return [];
         }
     });
@@ -433,18 +455,19 @@ export async function getFeaturedManga(): Promise<Manga[]> {
     return cacheWrap('featured', async () => {
         try {
             const params = new URLSearchParams({
-                limit: "12",
+                limit: "20",
                 offset: "0",
                 "order[followedCount]": "desc",
-                "contentRating[]": "safe",
                 hasAvailableChapters: "true",
             });
 
             params.append("includes[]", "cover_art");
             params.append("includes[]", "author");
+            params.append("contentRating[]", "safe");
+            params.append("contentRating[]", "suggestive");
             params.append("availableTranslatedLanguage[]", "en");
 
-            const url = `${MANGADEX_API_URL}/manga?${params.toString()}`;
+            const url = `${CONTENT_API_URL}/manga?${params.toString()}`;
             const data = await requestMd(url);
 
             const allManga = data.data.map((item: any) => {
@@ -467,10 +490,10 @@ export async function getFeaturedManga(): Promise<Manga[]> {
             });
 
             const readable = await filterReadableManga(allManga.map((m: any) => m.id));
-            const mangaList = allManga.filter((m: any) => readable.has(m.id));
+            const filtered = allManga.filter((m: any) => readable.has(m.id));
 
-            const stats = await getMangaStatistics(mangaList.map((m: any) => m.id));
-            return mangaList.map((m: any) => ({
+            const stats = await getMangaStatistics(filtered.map((m: any) => m.id));
+            return filtered.map((m: any) => ({
                 ...m,
                 rating: stats[m.id]?.rating?.average,
                 follows: stats[m.id]?.follows

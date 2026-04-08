@@ -42,18 +42,22 @@ function AnimeWatchInner() {
             setLoading(true);
             setError(null);
             try {
-                const [animeData, sourceData] = await Promise.all([
-                    fetchAnimeInfo(id),
-                    fetchEpisodeSources(episodeId)
-                ]);
+                const animeData = await fetchAnimeInfo(id);
                 if (cancelled) return;
                 if (animeData) setAnime(animeData);
+
+                console.log(`[Watch] Fetching sources for ep=${episodeId}`);
+                const sourceData = await fetchEpisodeSources(episodeId);
+                if (cancelled) return;
                 if (sourceData) {
+                    console.log(`[Watch] Got source URL: ${sourceData.url?.substring(0, 80)}`);
                     setSource(sourceData);
-                } else if (!isNative) {
-                    setError("Failed to extract video feeds for this episode.");
+                } else {
+                    console.error(`[Watch] fetchEpisodeSources returned null for ${episodeId}`);
+                    setError("Could not find a stream for this episode. Try another episode or check back later.");
                 }
             } catch (e: any) {
+                console.error('[Watch] Load error:', e);
                 if (!cancelled) setError(e.message || "Failed to load episode.");
             }
             if (!cancelled) setLoading(false);

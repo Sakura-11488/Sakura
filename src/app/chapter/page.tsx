@@ -13,6 +13,7 @@ import { getLocal, setLocal, STORAGE_KEYS, setChapterProgress as saveChapterProg
 import { downloadManager } from "@/lib/downloads";
 import ChapterComments from "@/components/ChapterComments";
 import LottieIcon from "@/components/LottieIcon";
+import TradeCheckModal from "@/components/TradeCheckModal";
 
 type ReadingMode = 'scroll' | 'page';
 type ReadingDirection = 'ltr' | 'rtl';
@@ -86,6 +87,7 @@ function ReaderOverlay({
     onReadingDirectionChange,
     onOrientationToggle,
     orientation,
+    onCheckTrade,
 }: {
     visible: boolean;
     chapterTitle: string;
@@ -103,6 +105,7 @@ function ReaderOverlay({
     onReadingDirectionChange: (dir: ReadingDirection) => void;
     onOrientationToggle: () => void;
     orientation: 'portrait' | 'landscape';
+    onCheckTrade?: () => void;
 }) {
     return (
         <div className={`reader-overlay ${visible ? 'visible' : ''}`} onClick={(e) => e.stopPropagation()}>
@@ -188,6 +191,15 @@ function ReaderOverlay({
                         )}
                         <span>{readingMode === 'scroll' ? 'Page' : 'Scroll'}</span>
                     </button>
+
+                    {onCheckTrade && (
+                        <button className="reader-overlay-setting-btn" onClick={onCheckTrade}>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                            </svg>
+                            <span>Trade</span>
+                        </button>
+                    )}
                 </div>
             </div>
         </div>
@@ -393,6 +405,7 @@ function ReaderContent() {
 
     // Overlay state
     const [overlayVisible, setOverlayVisible] = useState(false);
+    const [showTradeModal, setShowTradeModal] = useState(false);
     const overlayAutoHideTimer = useRef<NodeJS.Timeout | null>(null);
 
     // Reading settings
@@ -536,7 +549,7 @@ function ReaderContent() {
                 }
 
                 if (sourceStr === 'mangadex') {
-                    const { getChapterDetails } = await import("@/lib/mangadex");
+                    const { getChapterDetails } = await import("@/lib/content-source");
                     const chapterDetails = await getChapterDetails(chapterId);
 
                     if (chapterDetails?.externalUrl) {
@@ -925,7 +938,10 @@ function ReaderContent() {
                 onReadingDirectionChange={handleReadingDirectionChange}
                 onOrientationToggle={toggleOrientation}
                 orientation={orientation}
+                onCheckTrade={() => { setShowTradeModal(true); if (overlayAutoHideTimer.current) clearTimeout(overlayAutoHideTimer.current); }}
             />
+
+            <TradeCheckModal isOpen={showTradeModal} onClose={() => setShowTradeModal(false)} />
 
             {/* Floating Page Indicator (scroll mode) */}
             {readingMode === 'scroll' && pages.length > 0 && (

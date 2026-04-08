@@ -1,8 +1,8 @@
 import { Manga, Chapter, MangaSource } from './types';
-import * as api from '../mangadex'; // Import existing functions
+import * as api from '../content-source';
 
-export class MangaDexSource implements MangaSource {
-    name = "MangaDex";
+export class SakuraContentSource implements MangaSource {
+    name = "Sakura";
     id = "mangadex";
 
     async searchManga(query: string): Promise<Manga[]> {

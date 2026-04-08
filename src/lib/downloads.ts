@@ -187,7 +187,7 @@ class DownloadManager {
                     try {
                         const response = await fetch(pageUrl, {
                             signal: abortController.signal,
-                            referrerPolicy: 'no-referrer' // Important for MangaDex!
+                            referrerPolicy: 'no-referrer'
                         });
 
                         if (!response.ok) throw new Error("Failed to fetch image");

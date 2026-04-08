@@ -32,6 +32,14 @@
             android:screenOrientation="sensorLandscape"
             android:exported="false" />
 
+        <activity
+            android:name=".anime.WebViewPlayerActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.AppCompat.NoActionBar"
+            android:screenOrientation="sensorLandscape"
+            android:hardwareAccelerated="true"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

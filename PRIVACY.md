@@ -59,7 +59,7 @@ Depending on which Sakura features you use, Sakura may interact with third-party
 
 - Supabase
 - Solana network infrastructure and RPC providers
-- MangaDex and other third-party content or metadata sources
+- Third-party content and metadata providers
 - Google Books or similar metadata services
 - Transak, Jupiter, Drift Protocol
 

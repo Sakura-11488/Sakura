@@ -393,6 +393,14 @@ export default function MonthlyPassPage() {
                 <footer className="footer">
                     <p className="footer-jp">桜 — マンガの新しい形</p>
                     <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+                        <Link href="/privacy" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+                            Privacy Policy
+                        </Link>
+                        <Link href="/terms" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+                            Terms of Service
+                        </Link>
+                    </div>
                     <div className="footer-solana">
                         <span className="sol-dot" />
                         Built on Solana

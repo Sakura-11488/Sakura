@@ -27,6 +27,15 @@ class AnimePlugin : Plugin() {
         private const val TAG = "AnimePlugin"
     }
 
+    private fun isWebViewUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        if (lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm")) {
+            return false
+        }
+        val webViewDomains = listOf("hianime", "megaplay", "megacloud", "vidplay", "rapid", "filemoon", "streamtape", "mp4upload")
+        return webViewDomains.any { lower.contains(it) }
+    }
+
     @PluginMethod
     fun playEpisode(call: PluginCall) {
         val streamUrl = call.getString("streamUrl") ?: ""
@@ -41,18 +50,30 @@ class AnimePlugin : Plugin() {
             return
         }
 
-        Log.d(TAG, "playEpisode: stream=$streamUrl referer=$referer")
+        Log.d(TAG, "playEpisode: stream=$streamUrl referer=$referer isWebView=${isWebViewUrl(streamUrl)}")
 
         activity.runOnUiThread {
-            val intent = Intent(context, PlayerActivity::class.java).apply {
-                putExtra(PlayerActivity.EXTRA_STREAM_URL, streamUrl)
-                putExtra(PlayerActivity.EXTRA_REFERER, referer)
-                putExtra(PlayerActivity.EXTRA_TITLE, title)
-                putExtra(PlayerActivity.EXTRA_EPISODE_ID, episodeId)
-                putExtra(PlayerActivity.EXTRA_HAS_NEXT, hasNext)
-                putExtra(PlayerActivity.EXTRA_NEXT_TITLE, nextEpisodeTitle)
+            if (isWebViewUrl(streamUrl)) {
+                val intent = Intent(context, WebViewPlayerActivity::class.java).apply {
+                    putExtra(WebViewPlayerActivity.EXTRA_EMBED_URL, streamUrl)
+                    putExtra(WebViewPlayerActivity.EXTRA_REFERER, referer)
+                    putExtra(WebViewPlayerActivity.EXTRA_TITLE, title)
+                    putExtra(WebViewPlayerActivity.EXTRA_EPISODE_ID, episodeId)
+                    putExtra(WebViewPlayerActivity.EXTRA_HAS_NEXT, hasNext)
+                    putExtra(WebViewPlayerActivity.EXTRA_NEXT_TITLE, nextEpisodeTitle)
+                }
+                startActivityForResult(call, intent, "handlePlayerResult")
+            } else {
+                val intent = Intent(context, PlayerActivity::class.java).apply {
+                    putExtra(PlayerActivity.EXTRA_STREAM_URL, streamUrl)
+                    putExtra(PlayerActivity.EXTRA_REFERER, referer)
+                    putExtra(PlayerActivity.EXTRA_TITLE, title)
+                    putExtra(PlayerActivity.EXTRA_EPISODE_ID, episodeId)
+                    putExtra(PlayerActivity.EXTRA_HAS_NEXT, hasNext)
+                    putExtra(PlayerActivity.EXTRA_NEXT_TITLE, nextEpisodeTitle)
+                }
+                startActivityForResult(call, intent, "handlePlayerResult")
             }
-            startActivityForResult(call, intent, "handlePlayerResult")
         }
     }
 

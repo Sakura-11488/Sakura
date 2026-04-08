@@ -18,6 +18,7 @@ import {
 import { schedulePushNovelBookmarks, schedulePushSettings } from "@/lib/cloud-sync";
 import dynamic from "next/dynamic";
 import LottieIcon from "@/components/LottieIcon";
+import TradeCheckModal from "@/components/TradeCheckModal";
 
 const NovelComments = dynamic(() => import("@/components/NovelComments"), { ssr: false });
 
@@ -185,6 +186,7 @@ function NovelReaderContent() {
     const [ttsSettings, setTtsSettings] = useState<TTSSettings>(DEFAULT_TTS);
     const [showOverlay, setShowOverlay] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
+    const [showTradeModal, setShowTradeModal] = useState(false);
     const [activeSettingsTab, setActiveSettingsTab] = useState<"display" | "tts" | "advanced">("display");
 
     /* Page Mode */
@@ -811,12 +813,20 @@ function NovelReaderContent() {
                         <button className={`reader-overlay-setting-btn ${ttsPlaying ? "active" : ""}`} onClick={() => { ttsPlaying ? ttsStop() : ttsPlay(); resetAutoHide(); }}>
                             {ttsPlaying ? "Stop" : "TTS"}
                         </button>
+                        <button className="reader-overlay-setting-btn" onClick={() => { setShowTradeModal(true); resetAutoHide(); }}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                            </svg>
+                            Trade
+                        </button>
                         <button className="reader-overlay-setting-btn" onClick={() => { setShowSettings(s => !s); resetAutoHide(); }}>
                             More
                         </button>
                     </div>
                 </div>
             </div>
+
+            <TradeCheckModal isOpen={showTradeModal} onClose={() => setShowTradeModal(false)} />
 
             {/* Full Settings Panel */}
             {showSettings && (<>

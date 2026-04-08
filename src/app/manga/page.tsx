@@ -6,7 +6,7 @@ import MangaCard from "@/components/MangaCard";
 import { searchAllSources } from "@/lib/sources";
 import { type Manga } from "@/lib/sources/types";
 import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS } from "@/lib/storage";
-import { MANGA_GENRES, searchMangaByGenre } from "@/lib/mangadex";
+import { MANGA_GENRES, searchMangaByGenre } from "@/lib/content-source";
 
 // Debounce hook for search
 function useDebounce(value: string, delay: number) {
@@ -94,11 +94,11 @@ export default function BrowsePage() {
                 saveRecentSearch(query);
             }
 
-            // Fetch stats (ratings) only for MangaDex items
-            const mangadexIds = results.filter(m => m.sourceStr === 'mangadex').map(m => m.id);
-            if (mangadexIds.length > 0) {
-                const { getMangaStatistics } = await import("@/lib/mangadex");
-                const stats = await getMangaStatistics(mangadexIds);
+            // Fetch stats (ratings) for primary source items
+            const sourceIds = results.filter(m => m.sourceStr === 'mangadex').map(m => m.id);
+            if (sourceIds.length > 0) {
+                const { getMangaStatistics } = await import("@/lib/content-source");
+                const stats = await getMangaStatistics(sourceIds);
                 setMangaList(prev => prev.map(m => {
                     if (m.sourceStr !== 'mangadex') return m;
                     const stat = stats[m.id];

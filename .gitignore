@@ -71,9 +71,14 @@ backend/.env
 
 # Docs & Supabase SQL — keep local only (not in repo)
 *.md
+!README.md
 !TERMS.md
 !PRIVACY.md
 !COPYRIGHT.md
+!supabase/README.md
+
+# Internal architecture notes (not for public)
+.sakura-internal
 supabase*.sql
 comments_schema.sql
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { Manga } from "./mangadex";
+import type { Manga } from "./content-source";
 
 const STORAGE_KEY = "sakura_favorites";
 
