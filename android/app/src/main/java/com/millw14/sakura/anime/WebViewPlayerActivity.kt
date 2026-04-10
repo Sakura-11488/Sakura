@@ -82,10 +82,25 @@ class WebViewPlayerActivity : AppCompatActivity() {
             }
         }
 
+        val allowedHosts = setOf(
+            "hianime.dk", "www.hianime.dk",
+            "megaplay.buzz", "www.megaplay.buzz",
+            "megacloud.club", "www.megacloud.club",
+            "megacloud.tv", "www.megacloud.tv",
+            "rapid-cloud.co", "www.rapid-cloud.co",
+            "cdn.api-hianime.xyz",
+        )
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
+                val host = request.url?.host?.lowercase() ?: ""
                 if (url.startsWith("intent://") || url.startsWith("market://")) {
+                    Log.d(TAG, "Blocked intent/market URL: $url")
+                    return true
+                }
+                if (allowedHosts.none { host == it || host.endsWith(".$it") }) {
+                    Log.d(TAG, "Blocked navigation to: $url")
                     return true
                 }
                 return false

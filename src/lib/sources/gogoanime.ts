@@ -45,13 +45,18 @@ export async function searchAnimeSource(query: string): Promise<{ id: string; ti
             return [];
         }
         console.log(`[HiAnime] Found ${results.length} results for "${query}"`);
-        return results.map((r: any) => ({
-            id: r.slug || r.id || '',
-            title: r.name || r.title || '',
-            slug: r.slug || r.id || '',
-            animeId: r.animeId || '',
-            poster: r.poster || '',
-        })).filter((r: any) => r.id && r.title);
+        return results.map((r: any) => {
+            let rawSlug = r.slug || r.id || '';
+            // hianime search may return full paths like "watch/slug/ep-1" — normalize to clean slug
+            rawSlug = rawSlug.replace(/^watch\//, '').replace(/\/ep-\d+$/, '');
+            return {
+                id: rawSlug,
+                title: r.name || r.title || '',
+                slug: rawSlug,
+                animeId: r.animeId || '',
+                poster: r.poster || '',
+            };
+        }).filter((r: any) => r.id && r.title);
     } catch (e: any) {
         _lastError = `Search "${query}": ${e.message || e}`;
         console.error('[HiAnime] Search error:', e);
@@ -127,30 +132,12 @@ export function getServerIdsForEpisode(episodeId: string): string | null {
     return _serverIdsCache.get(episodeId) || null;
 }
 
-async function getEpisodeServers(serverIds: string): Promise<{ type: string; svId: string; linkId: string; name: string }[]> {
-    try {
-        const data = await apiGet(`/api/servers?ids=${encodeURIComponent(serverIds)}`);
-        return data.servers || [];
-    } catch (e) {
-        console.error('[HiAnime] Servers error:', e);
-        return [];
-    }
-}
-
-async function getEmbedUrl(linkId: string): Promise<string | null> {
-    try {
-        const data = await apiGet(`/api/source/${encodeURIComponent(linkId)}`);
-        return data.url || null;
-    } catch (e) {
-        console.error('[HiAnime] Source error:', e);
-        return null;
-    }
-}
-
 export async function getStreamingSources(episodeId: string): Promise<{
     sources: { url: string; isM3U8: boolean; quality: string }[];
     subtitles: { file: string; label?: string }[];
     referer?: string;
+    intro?: { start: number; end: number } | null;
+    outro?: { start: number; end: number } | null;
 } | null> {
     try {
         console.log(`[HiAnime] getStreamingSources called with: ${episodeId}`);
@@ -168,62 +155,44 @@ export async function getStreamingSources(episodeId: string): Promise<{
         const [, animeId, epNum] = parts;
 
         const slug = _slugByAnimeId.get(animeId);
-        if (slug) {
-            const watchUrl = `${HIANIME_BASE}/watch/${slug}/ep-${epNum}`;
-            console.log(`[HiAnime] SUCCESS: Watch URL → ${watchUrl}`);
-            return {
-                sources: [{ url: watchUrl, isM3U8: false, quality: 'default' }],
-                subtitles: [],
-                referer: HIANIME_BASE + '/',
-            };
-        }
-
-        console.log(`[HiAnime] No slug cached for animeId=${animeId}, trying embed URL chain...`);
-
-        let serverIds = _serverIdsCache.get(episodeId);
-        if (!serverIds) {
-            console.log(`[HiAnime] serverIds cache miss, refetching episodes for animeId=${animeId}`);
+        if (!slug) {
+            console.log(`[HiAnime] No slug cached for animeId=${animeId}, refetching...`);
             await getAnimeSourceEpisodes(animeId);
-            serverIds = _serverIdsCache.get(episodeId) || undefined;
-            if (!serverIds) {
-                console.error(`[HiAnime] FAIL: No serverIds for ${episodeId}`);
-                return null;
+        }
+
+        const resolvedSlug = _slugByAnimeId.get(animeId);
+        if (!resolvedSlug) {
+            console.error(`[HiAnime] FAIL: Could not resolve slug for animeId=${animeId}`);
+            return null;
+        }
+
+        // Request direct m3u8 stream from server
+        try {
+            const data = await apiGet(`/api/m3u8/${encodeURIComponent(resolvedSlug)}/${epNum}`, 30000);
+            if (data?.sources?.length > 0) {
+                const src = data.sources[0];
+                console.log(`[HiAnime] SUCCESS (m3u8): ${src.url.substring(0, 80)}...`);
+                return {
+                    sources: [{
+                        url: src.url,
+                        isM3U8: src.isM3U8 !== false,
+                        quality: src.quality || 'auto',
+                    }],
+                    subtitles: (data.subtitles || []).map((s: any) => ({
+                        file: s.url || s.file || '',
+                        label: s.lang || s.label || 'Unknown',
+                    })),
+                    referer: data.headers?.Referer || HIANIME_BASE + '/',
+                    intro: data.intro || null,
+                    outro: data.outro || null,
+                };
             }
+        } catch (e: any) {
+            console.warn(`[HiAnime] m3u8 extraction failed: ${e.message}`);
         }
 
-        const slugAfterRefetch = _slugByAnimeId.get(animeId);
-        if (slugAfterRefetch) {
-            const watchUrl = `${HIANIME_BASE}/watch/${slugAfterRefetch}/ep-${epNum}`;
-            console.log(`[HiAnime] SUCCESS (after refetch): Watch URL → ${watchUrl}`);
-            return {
-                sources: [{ url: watchUrl, isM3U8: false, quality: 'default' }],
-                subtitles: [],
-                referer: HIANIME_BASE + '/',
-            };
-        }
-
-        console.log(`[HiAnime] Falling back to embed URL extraction...`);
-        const servers = await getEpisodeServers(serverIds);
-        if (servers.length === 0) {
-            console.error(`[HiAnime] FAIL: No servers returned`);
-            return null;
-        }
-
-        const subServers = servers.filter(s => s.type === 's-sub');
-        const target = subServers[0] || servers[0];
-
-        const embedUrl = await getEmbedUrl(target.linkId);
-        if (!embedUrl) {
-            console.error(`[HiAnime] FAIL: getEmbedUrl returned null`);
-            return null;
-        }
-
-        console.log(`[HiAnime] SUCCESS (embed): ${embedUrl}`);
-        return {
-            sources: [{ url: embedUrl, isM3U8: false, quality: target.name || 'default' }],
-            subtitles: [],
-            referer: HIANIME_BASE + '/',
-        };
+        console.error(`[HiAnime] FAIL: No stream sources available for ${episodeId}`);
+        return null;
     } catch (e) {
         console.error('[HiAnime] Streaming sources error:', e);
         return null;
