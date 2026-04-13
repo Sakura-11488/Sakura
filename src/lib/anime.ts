@@ -41,6 +41,8 @@ export interface StreamingSource {
     tracks?: { file: string; label?: string; kind?: string }[];
     intro?: { start: number; end: number };
     outro?: { start: number; end: number };
+    category?: string;
+    availableCategories?: string[];
 }
 
 /* ─── Cache Helpers ─── */
@@ -330,17 +332,19 @@ export async function refreshAnimeInfo(id: string): Promise<AnimeInfo | null> {
     return info;
 }
 
-export async function fetchEpisodeSources(episodeId: string): Promise<StreamingSource | null> {
+export async function fetchEpisodeSources(episodeId: string, category: 'sub' | 'dub' = 'sub'): Promise<StreamingSource | null> {
     try {
-        const result = await getStreamingSources(episodeId);
+        const result = await getStreamingSources(episodeId, category);
         if (result && result.sources.length > 0) {
             const src = result.sources[0];
-            console.log(`[Anime] Got embed URL (${src.quality}): ${src.url.substring(0, 80)}...`);
+            console.log(`[Anime] Got embed URL (${src.quality}, ${category}): ${src.url.substring(0, 80)}...`);
             return {
                 url: src.url,
                 isM3U8: src.isM3U8,
                 referer: result.referer,
                 tracks: result.subtitles.map(s => ({ file: s.file, label: s.label })),
+                category: result.category,
+                availableCategories: result.availableCategories,
             };
         }
     } catch (e) {

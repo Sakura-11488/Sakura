@@ -1,0 +1,13 @@
+---
+description: Media ingestion and normalization rules
+alwaysApply: true
+---
+
+# Media Ingestion And Normalization
+
+- Accept common creator upload formats, but normalize them server-side before the app depends on them.
+- Validate mime type, dimensions, size, and checksum before marking an asset as publishable.
+- Keep the original file when needed, but serve processed variants by default.
+- Track processing state explicitly so upload, processing, retry, and failure are visible in the UI.
+- Do not let client code rely on temporary upload paths or raw unprocessed files.
+- Keep image conversion, subtitle validation, and manifest validation in dedicated processing utilities or workers.

@@ -1,0 +1,13 @@
+---
+description: Solana minting and entitlement safety
+alwaysApply: true
+---
+
+# Solana Minting Safety
+
+- Reuse the existing wallet adapter and shared Solana configuration for any minting flow.
+- Keep editorial publication state separate from mint ownership or collectible state.
+- Verify paid mints and completion server-side from confirmed transactions before persisting app-side effects.
+- Avoid coupling creator publishing to minting; minting must remain opt-in per work or release.
+- Prefer additive mint records and entitlement tables over embedding on-chain assumptions across the UI.
+- Keep chain configuration centralized and never scatter program, collection, or tree identifiers across components.

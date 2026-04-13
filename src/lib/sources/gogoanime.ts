@@ -132,15 +132,17 @@ export function getServerIdsForEpisode(episodeId: string): string | null {
     return _serverIdsCache.get(episodeId) || null;
 }
 
-export async function getStreamingSources(episodeId: string): Promise<{
+export async function getStreamingSources(episodeId: string, category: 'sub' | 'dub' = 'sub'): Promise<{
     sources: { url: string; isM3U8: boolean; quality: string }[];
     subtitles: { file: string; label?: string }[];
     referer?: string;
     intro?: { start: number; end: number } | null;
     outro?: { start: number; end: number } | null;
+    category?: string;
+    availableCategories?: string[];
 } | null> {
     try {
-        console.log(`[HiAnime] getStreamingSources called with: ${episodeId}`);
+        console.log(`[HiAnime] getStreamingSources called with: ${episodeId} category=${category}`);
 
         if (!episodeId.startsWith('hi-')) {
             console.error(`[HiAnime] Unknown episode ID format: ${episodeId}`);
@@ -166,12 +168,11 @@ export async function getStreamingSources(episodeId: string): Promise<{
             return null;
         }
 
-        // Request direct m3u8 stream from server
         try {
-            const data = await apiGet(`/api/m3u8/${encodeURIComponent(resolvedSlug)}/${epNum}`, 30000);
+            const data = await apiGet(`/api/m3u8/${encodeURIComponent(resolvedSlug)}/${epNum}?category=${category}`, 30000);
             if (data?.sources?.length > 0) {
                 const src = data.sources[0];
-                console.log(`[HiAnime] SUCCESS (m3u8): ${src.url.substring(0, 80)}...`);
+                console.log(`[HiAnime] SUCCESS (m3u8, ${category}): ${src.url.substring(0, 80)}...`);
                 return {
                     sources: [{
                         url: src.url,
@@ -185,6 +186,8 @@ export async function getStreamingSources(episodeId: string): Promise<{
                     referer: data.headers?.Referer || HIANIME_BASE + '/',
                     intro: data.intro || null,
                     outro: data.outro || null,
+                    category: data.category || category,
+                    availableCategories: data.availableCategories || ['sub'],
                 };
             }
         } catch (e: any) {

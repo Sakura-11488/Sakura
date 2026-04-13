@@ -1,0 +1,13 @@
+---
+description: Moderation and publishing workflow rules
+alwaysApply: true
+---
+
+# Publishing And Review
+
+- Separate creator identity verification from content approval.
+- Model editorial lifecycle explicitly with statuses such as `draft`, `submitted`, `changes_requested`, `approved`, and `published`.
+- Never let new creator media go public from a single boolean flip alone.
+- Reviews should apply at both series/work level and release level where needed.
+- Store review feedback in a way the creator can act on without re-creating the whole release.
+- Prefer additive moderation flows that do not break the current novel publishing path during migration.

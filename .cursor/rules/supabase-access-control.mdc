@@ -1,0 +1,13 @@
+---
+description: Supabase access-control rules for publishing
+alwaysApply: true
+---
+
+# Supabase Access Control
+
+- New publishing and minting tables must ship with an explicit access-control strategy before UI code depends on them.
+- Prefer server-mediated writes or clearly defined RLS policies over front-end ownership checks alone.
+- Keep schema changes additive and backwards-compatible while legacy novel flows still exist.
+- Public reads should expose only approved and published content metadata.
+- Review-only, draft, and staging assets must not become anonymously writable or publicly readable by accident.
+- Treat service-role usage as backend-only and never leak privileged credentials into the client app.
