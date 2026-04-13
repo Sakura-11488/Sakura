@@ -1,16 +1,32 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Header from "@/components/Header";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
+import { payTradingFee } from "@/lib/percolator/fee-router";
+import { TRADING_FEE_SAKURA, RISK_PARAMS } from "@/lib/percolator/config";
 import {
-    TRADING_FEE_SAKURA,
-    RISK_PARAMS,
-    MARKET_CONFIG,
-    PERCOLATOR_PROGRAM_ID,
-    getDevnetConnection,
-} from "@/lib/percolator/config";
+    fetchMarketState,
+    fetchOrderBook,
+    fetchRecentTrades,
+    fetchPositions,
+    fetchTradeHistory,
+    fetchBalance,
+    openTrade,
+    closeTrade,
+    buildAuthHeaders,
+    generateAuthMessage,
+    type MarketState,
+    type OrderBook,
+    type RecentTrade,
+    type PositionInfo,
+    type TradeRecord,
+    type UserBalance,
+} from "@/lib/perps-api";
+import PerpChart from "@/components/PerpChart";
+import DepositWithdrawModal from "@/components/DepositWithdrawModal";
+import bs58 from "bs58";
 
 // ============ Types ============
 
@@ -18,18 +34,6 @@ type TradeSide = "long" | "short";
 type OrderType = "market" | "limit";
 type MarginMode = "cross" | "isolated";
 type TradeState = "idle" | "paying_fee" | "executing" | "success" | "error";
-
-interface MarketData {
-    markPrice: number;
-    indexPrice: number;
-    fundingRate: number;
-    nextFunding: number;
-    volume24h: number;
-    openInterest: number;
-    high24h: number;
-    low24h: number;
-    change24h: number;
-}
 
 interface Position {
     side: TradeSide;
@@ -50,68 +54,31 @@ interface OrderBookLevel {
     total: number;
 }
 
-// ============ Mock Data Generators ============
-
-function generateOrderBook(midPrice: number): { bids: OrderBookLevel[]; asks: OrderBookLevel[] } {
-    const bids: OrderBookLevel[] = [];
-    const asks: OrderBookLevel[] = [];
-    let bidTotal = 0;
-    let askTotal = 0;
-
-    for (let i = 0; i < 12; i++) {
-        const bidSize = Math.round((Math.random() * 15 + 2) * 100) / 100;
-        bidTotal += bidSize;
-        bids.push({
-            price: Math.round((midPrice - 0.05 * (i + 1)) * 100) / 100,
-            size: bidSize,
-            total: Math.round(bidTotal * 100) / 100,
-        });
-
-        const askSize = Math.round((Math.random() * 15 + 2) * 100) / 100;
-        askTotal += askSize;
-        asks.push({
-            price: Math.round((midPrice + 0.05 * (i + 1)) * 100) / 100,
-            size: askSize,
-            total: Math.round(askTotal * 100) / 100,
-        });
-    }
-
-    return { bids, asks: asks.reverse() };
-}
-
-function generateRecentTrades(midPrice: number) {
-    return Array.from({ length: 15 }, (_, i) => ({
-        price: Math.round((midPrice + (Math.random() - 0.5) * 0.6) * 100) / 100,
-        size: Math.round((Math.random() * 8 + 0.5) * 100) / 100,
-        side: Math.random() > 0.5 ? ("buy" as const) : ("sell" as const),
-        time: new Date(Date.now() - i * 3000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-    }));
-}
-
 // ============ Component ============
 
 export default function TradePage() {
-    const { publicKey, signTransaction, connected } = useWallet();
+    const { publicKey, signTransaction, signMessage, connected } = useWallet();
     const { setVisible } = useSakuraWalletModal();
 
     // Market
-    const [market, setMarket] = useState<MarketData>({
-        markPrice: 142.58,
-        indexPrice: 142.55,
-        fundingRate: 0.0045,
-        nextFunding: 3600,
-        volume24h: 847_520_000,
-        openInterest: 125_400_000,
-        high24h: 145.20,
-        low24h: 138.90,
-        change24h: 2.67,
+    const [market, setMarket] = useState<MarketState>({
+        markPrice: 0,
+        indexPrice: 0,
+        fundingRate: 0,
+        nextFundingTs: 0,
+        volume24h: 0,
+        openInterest: 0,
+        high24h: 0,
+        low24h: 0,
+        change24h: 0,
     });
     const [priceFlash, setPriceFlash] = useState<"up" | "down" | null>(null);
     const [fundingCountdown, setFundingCountdown] = useState(3600);
+    const prevPriceRef = useRef(0);
 
     // Order book & trades
-    const [orderBook, setOrderBook] = useState(() => generateOrderBook(142.58));
-    const [recentTrades, setRecentTrades] = useState(() => generateRecentTrades(142.58));
+    const [orderBook, setOrderBook] = useState<{ bids: OrderBookLevel[]; asks: OrderBookLevel[] }>({ bids: [], asks: [] });
+    const [recentTrades, setRecentTrades] = useState<RecentTrade[]>([]);
 
     // Trading controls
     const [tradeSide, setTradeSide] = useState<TradeSide>("long");
@@ -122,87 +89,60 @@ export default function TradePage() {
     const [limitPrice, setLimitPrice] = useState("");
     const [tradeState, setTradeState] = useState<TradeState>("idle");
     const [tradeError, setTradeError] = useState("");
-    const [showSettings, setShowSettings] = useState(false);
 
     // Positions & orders
     const [activeTab, setActiveTab] = useState<"positions" | "orders" | "trades">("positions");
-    const [positions, setPositions] = useState<Position[]>([
-        {
-            side: "long",
-            size: 2.5,
-            notional: 356.45,
-            entryPrice: 140.22,
-            markPrice: 142.58,
-            pnl: 5.90,
-            pnlPercent: 4.21,
-            margin: 35.64,
-            leverage: 10,
-            liquidationPrice: 126.20,
-        },
-    ]);
+    const [position, setPosition] = useState<PositionInfo | null>(null);
+    const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
+    const [balance, setBalance] = useState<UserBalance | null>(null);
 
-    // ============ Simulated Live Data ============
+    const [showDepositModal, setShowDepositModal] = useState(false);
+
+    // ============ Live Market Data from Backend ============
 
     useEffect(() => {
         let isMounted = true;
 
-        const fetchSolPrice = async () => {
+        const pollData = async () => {
             try {
-                // Use CoinGecko for better reliability across regions (Binance often blocks US IPs)
-                const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_vol=true&include_24hr_change=true");
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                if (!isMounted || !data.solana) return;
+                const [marketData, bookData, tradesData] = await Promise.allSettled([
+                    fetchMarketState(),
+                    fetchOrderBook(),
+                    fetchRecentTrades(),
+                ]);
 
-                const lastPrice = data.solana.usd;
-                const change = data.solana.usd_24h_change;
-                const volume = data.solana.usd_24h_vol;
-                
-                // Mock high/low based on change since CG simple endpoint doesn't provide them
-                const high = change > 0 ? lastPrice : lastPrice / (1 + change/100);
-                const low = change < 0 ? lastPrice : lastPrice / (1 + change/100);
+                if (!isMounted) return;
 
-                setMarket((prev) => {
-                    // Add micro-jitter so the UI looks active even if API caches for 30s
-                    const jitter = (Math.random() - 0.5) * 0.02;
-                    const displayPrice = Math.round((lastPrice + jitter) * 100) / 100;
-
-                    if (prev.markPrice !== displayPrice) {
-                        setPriceFlash(displayPrice > prev.markPrice ? "up" : "down");
+                if (marketData.status === "fulfilled") {
+                    const md = marketData.value;
+                    if (prevPriceRef.current !== 0 && md.markPrice !== prevPriceRef.current) {
+                        setPriceFlash(md.markPrice > prevPriceRef.current ? "up" : "down");
                         setTimeout(() => setPriceFlash(null), 400);
                     }
-                    return {
-                        ...prev,
-                        markPrice: displayPrice,
-                        indexPrice: lastPrice, 
-                        change24h: change,
-                        high24h: high,
-                        low24h: low,
-                        volume24h: volume,
-                    };
-                });
+                    prevPriceRef.current = md.markPrice;
+                    setMarket(md);
 
-                setOrderBook(() => generateOrderBook(lastPrice));
-                
-                if (Math.random() > 0.3) {
-                    setRecentTrades((prev) => {
-                        const newTrade = {
-                            price: Math.round((lastPrice + (Math.random() - 0.5) * 0.2) * 100) / 100,
-                            size: Math.round((Math.random() * 8 + 0.5) * 100) / 100,
-                            side: Math.random() > 0.5 ? ("buy" as const) : ("sell" as const),
-                            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-                        };
-                        return [newTrade, ...prev.slice(0, 14)];
-                    });
+                    // Update funding countdown from next funding timestamp
+                    if (md.nextFundingTs) {
+                        const remaining = md.nextFundingTs - Math.floor(Date.now() / 1000);
+                        if (remaining > 0) setFundingCountdown(remaining);
+                    }
+                }
+
+                if (bookData.status === "fulfilled") {
+                    setOrderBook(bookData.value);
+                }
+
+                if (tradesData.status === "fulfilled") {
+                    setRecentTrades(tradesData.value);
                 }
             } catch (err) {
-                console.error("Failed to fetch SOL price", err);
+                console.error("Market data fetch error:", err);
             }
         };
 
-        fetchSolPrice();
-        const interval = setInterval(fetchSolPrice, 3500);
+        pollData();
+        const interval = setInterval(pollData, 4000);
 
         return () => {
             isMounted = false;
@@ -210,7 +150,7 @@ export default function TradePage() {
         };
     }, []);
 
-    // Funding countdown
+    // Funding countdown ticker
     useEffect(() => {
         const interval = setInterval(() => {
             setFundingCountdown((prev) => (prev <= 0 ? 3600 : prev - 1));
@@ -218,22 +158,50 @@ export default function TradePage() {
         return () => clearInterval(interval);
     }, []);
 
-    // Update position PnL
+    // Load user position & balance when wallet connects
     useEffect(() => {
-        setPositions((prev) =>
-            prev.map((pos) => {
-                const pnl = pos.side === "long"
-                    ? (market.markPrice - pos.entryPrice) * pos.size
-                    : (pos.entryPrice - market.markPrice) * pos.size;
-                return {
-                    ...pos,
-                    markPrice: market.markPrice,
-                    pnl: Math.round(pnl * 100) / 100,
-                    pnlPercent: Math.round((pnl / pos.margin) * 10000) / 100,
-                };
-            })
-        );
-    }, [market.markPrice]);
+        if (!connected || !publicKey) {
+            setPosition(null);
+            setBalance(null);
+            setTradeHistory([]);
+            return;
+        }
+
+        let isMounted = true;
+        const wallet = publicKey.toBase58();
+
+        const loadUserData = async () => {
+            try {
+                const [posData, balData, histData] = await Promise.allSettled([
+                    fetchPositions(wallet),
+                    fetchBalance(wallet),
+                    fetchTradeHistory(wallet),
+                ]);
+
+                if (!isMounted) return;
+
+                if (posData.status === "fulfilled") {
+                    setPosition(posData.value.position);
+                }
+                if (balData.status === "fulfilled") {
+                    setBalance(balData.value);
+                }
+                if (histData.status === "fulfilled") {
+                    setTradeHistory(histData.value);
+                }
+            } catch (err) {
+                console.error("User data fetch error:", err);
+            }
+        };
+
+        loadUserData();
+        const interval = setInterval(loadUserData, 8000);
+
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, [connected, publicKey]);
 
     // ============ Calculations ============
 
@@ -241,7 +209,7 @@ export default function TradePage() {
     const notional = sizeNum * market.markPrice;
     const marginRequired = notional / leverage;
     const liquidationPrice = useMemo(() => {
-        if (sizeNum <= 0) return 0;
+        if (sizeNum <= 0 || market.markPrice <= 0) return 0;
         const mmRatio = RISK_PARAMS.maintenanceMarginBps / 10000;
         if (tradeSide === "long") {
             return Math.round((market.markPrice * (1 - 1 / leverage + mmRatio)) * 100) / 100;
@@ -256,18 +224,33 @@ export default function TradePage() {
         return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     };
 
-    const formatUsd = (v: number) => v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : `$${v.toLocaleString()}`;
+    const formatUsd = (v: number) =>
+        v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` :
+        v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` :
+        `$${v.toLocaleString()}`;
 
-    // Max depth for order book visualization
     const maxDepth = Math.max(
         ...orderBook.bids.map((l) => l.total),
-        ...orderBook.asks.map((l) => l.total)
+        ...orderBook.asks.map((l) => l.total),
+        1
     );
+
+    // ============ Auth Helper ============
+
+    const signAuthMessage = useCallback(async (action: string) => {
+        if (!signMessage || !publicKey) throw new Error("Wallet not connected");
+        const message = generateAuthMessage(action);
+        const msgBytes = new TextEncoder().encode(message);
+        const sigBytes = await signMessage(msgBytes);
+        return {
+            headers: buildAuthHeaders(publicKey.toBase58(), bs58.encode(sigBytes), message),
+        };
+    }, [signMessage, publicKey]);
 
     // ============ Trade Execution ============
 
     const handleTrade = async () => {
-        if (!connected || !publicKey) {
+        if (!connected || !publicKey || !signTransaction) {
             setVisible(true);
             return;
         }
@@ -281,33 +264,84 @@ export default function TradePage() {
             setTradeState("paying_fee");
             setTradeError("");
 
-            // Simulate fee payment + trade execution
-            await new Promise((r) => setTimeout(r, 1500));
-            setTradeState("executing");
-            await new Promise((r) => setTimeout(r, 2000));
+            // Step 1: Pay $SAKURA fee on mainnet (user signs)
+            const feeResult = await payTradingFee(publicKey, signTransaction);
+            if (!feeResult.success || !feeResult.signature) {
+                throw new Error(feeResult.error || "Fee payment failed");
+            }
 
-            // Add mock position
-            const newPos: Position = {
-                side: tradeSide,
-                size: sizeNum,
-                notional: Math.round(notional * 100) / 100,
-                entryPrice: market.markPrice,
-                markPrice: market.markPrice,
-                pnl: 0,
-                pnlPercent: 0,
-                margin: Math.round(marginRequired * 100) / 100,
-                leverage,
-                liquidationPrice,
-            };
-            setPositions((prev) => [newPos, ...prev]);
+            setTradeState("executing");
+
+            // Step 2: Sign auth message for backend
+            const { headers } = await signAuthMessage("trade");
+
+            // Step 3: Execute trade via backend
+            const tradeResult = await openTrade(
+                {
+                    side: tradeSide,
+                    size: sizeNum,
+                    leverage,
+                    feeSignature: feeResult.signature,
+                },
+                headers
+            );
+
+            if (!tradeResult.success) {
+                throw new Error(tradeResult.error || "Trade execution failed");
+            }
+
             setTradeState("success");
             setTradeSize("");
+
+            // Refresh position data
+            const wallet = publicKey.toBase58();
+            const posData = await fetchPositions(wallet);
+            setPosition(posData.position);
+
             setTimeout(() => setTradeState("idle"), 3000);
         } catch (error: unknown) {
             setTradeError(error instanceof Error ? error.message : "Trade failed");
             setTradeState("error");
         }
     };
+
+    const handleClose = async () => {
+        if (!connected || !publicKey || !signMessage) return;
+
+        try {
+            setTradeState("executing");
+            const { headers } = await signAuthMessage("close");
+            const result = await closeTrade(headers);
+
+            if (!result.success) {
+                throw new Error(result.error || "Close failed");
+            }
+
+            setPosition(null);
+            setTradeState("idle");
+
+            // Refresh history
+            const histData = await fetchTradeHistory(publicKey.toBase58());
+            setTradeHistory(histData);
+        } catch (error: unknown) {
+            setTradeError(error instanceof Error ? error.message : "Close failed");
+            setTradeState("error");
+        }
+    };
+
+    // Build the position display from the backend position info
+    const positions: Position[] = position && position.hasPosition ? [{
+        side: position.side as TradeSide,
+        size: position.size,
+        notional: position.notional,
+        entryPrice: position.entryPrice,
+        markPrice: position.markPrice,
+        pnl: position.pnl,
+        pnlPercent: position.pnlPercent,
+        margin: position.margin,
+        leverage: position.leverage,
+        liquidationPrice: position.liquidationPrice,
+    }] : [];
 
     // ============ Render ============
 
@@ -326,7 +360,7 @@ export default function TradePage() {
                     </div>
 
                     <div className={`perp-mark-price ${priceFlash ? `flash-${priceFlash}` : ""}`}>
-                        ${market.markPrice.toFixed(2)}
+                        {market.markPrice > 0 ? `$${market.markPrice.toFixed(2)}` : "Loading..."}
                     </div>
 
                     <div className="perp-stats-row">
@@ -359,7 +393,7 @@ export default function TradePage() {
                         <div className="perp-stat-pill funding">
                             <span className="perp-stat-k">Funding / Countdown</span>
                             <span className={`perp-stat-v ${market.fundingRate >= 0 ? "green" : "red"}`}>
-                                {market.fundingRate >= 0 ? "+" : ""}{market.fundingRate.toFixed(4)}% / {formatFunding(fundingCountdown)}
+                                {market.fundingRate >= 0 ? "+" : ""}{(market.fundingRate * 100).toFixed(4)}% / {formatFunding(fundingCountdown)}
                             </span>
                         </div>
                     </div>
@@ -390,39 +424,32 @@ export default function TradePage() {
                             <span>Total</span>
                         </div>
 
-                        {/* Asks (reversed so lowest is at bottom) */}
                         <div className="perp-ob-asks">
-                            {orderBook.asks.map((level, i) => (
+                            {orderBook.asks.length > 0 ? orderBook.asks.map((level, i) => (
                                 <div key={`a${i}`} className="perp-ob-row ask">
-                                    <div
-                                        className="perp-ob-depth ask"
-                                        style={{ width: `${(level.total / maxDepth) * 100}%` }}
-                                    />
+                                    <div className="perp-ob-depth ask" style={{ width: `${(level.total / maxDepth) * 100}%` }} />
                                     <span className="perp-ob-price red">{level.price.toFixed(2)}</span>
                                     <span className="perp-ob-size">{level.size.toFixed(2)}</span>
                                     <span className="perp-ob-total">{level.total.toFixed(2)}</span>
                                 </div>
-                            ))}
+                            )) : (
+                                <div className="perp-ob-loading">Loading...</div>
+                            )}
                         </div>
 
-                        {/* Spread */}
                         <div className="perp-ob-spread">
                             <span className={`perp-ob-mid ${priceFlash ? `flash-${priceFlash}` : ""}`}>
-                                ${market.markPrice.toFixed(2)}
+                                {market.markPrice > 0 ? `$${market.markPrice.toFixed(2)}` : "—"}
                             </span>
                             <span className="perp-ob-spread-val">
-                                Spread: ${(orderBook.asks[orderBook.asks.length - 1]?.price - orderBook.bids[0]?.price || 0.10).toFixed(2)}
+                                Spread: ${(orderBook.asks[orderBook.asks.length - 1]?.price - orderBook.bids[0]?.price || 0).toFixed(2)}
                             </span>
                         </div>
 
-                        {/* Bids */}
                         <div className="perp-ob-bids">
                             {orderBook.bids.map((level, i) => (
                                 <div key={`b${i}`} className="perp-ob-row bid">
-                                    <div
-                                        className="perp-ob-depth bid"
-                                        style={{ width: `${(level.total / maxDepth) * 100}%` }}
-                                    />
+                                    <div className="perp-ob-depth bid" style={{ width: `${(level.total / maxDepth) * 100}%` }} />
                                     <span className="perp-ob-price green">{level.price.toFixed(2)}</span>
                                     <span className="perp-ob-size">{level.size.toFixed(2)}</span>
                                     <span className="perp-ob-total">{level.total.toFixed(2)}</span>
@@ -432,68 +459,20 @@ export default function TradePage() {
                     </div>
 
                     {/* Center: Chart */}
-                    <div className="perp-chart">
-                        <div className="perp-chart-toolbar">
-                            <div className="perp-chart-tf-group">
-                                {["1m", "5m", "15m", "1H", "4H", "1D"].map((tf) => (
-                                    <button key={tf} className={`perp-chart-tf ${tf === "15m" ? "active" : ""}`}>{tf}</button>
-                                ))}
-                            </div>
-                            <div className="perp-chart-indicators">
-                                <button className="perp-chart-ind">MA</button>
-                                <button className="perp-chart-ind">EMA</button>
-                                <button className="perp-chart-ind">BOLL</button>
-                                <button className="perp-chart-ind">VOL</button>
-                            </div>
-                        </div>
-                        <div className="perp-chart-body">
-                            <div className="perp-chart-price-overlay">
-                                <span className="perp-chart-big">${market.markPrice.toFixed(2)}</span>
-                                <span className={`perp-chart-change ${market.change24h >= 0 ? "green" : "red"}`}>
-                                    {market.change24h >= 0 ? "▲" : "▼"} {Math.abs(market.change24h).toFixed(2)}%
-                                </span>
-                            </div>
-                            <div className="perp-chart-candles-bg">
-                                {Array.from({ length: 40 }).map((_, i) => {
-                                    const isGreen = Math.sin(i * 0.5 + Date.now() / 5000) > -0.2;
-                                    const h = 15 + Math.abs(Math.sin(i * 0.7)) * 45 + Math.random() * 15;
-                                    const wickH = h + 5 + Math.random() * 10;
-                                    return (
-                                        <div key={i} className="perp-candle-col" style={{ animationDelay: `${i * 0.03}s` }}>
-                                            <div className={`perp-wick ${isGreen ? "green" : "red"}`} style={{ height: `${wickH}%` }} />
-                                            <div className={`perp-candle-bar ${isGreen ? "green" : "red"}`} style={{ height: `${h}%` }} />
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                            {/* Price scale */}
-                            <div className="perp-price-scale">
-                                {[2, 1, 0, -1, -2].map((offset) => (
-                                    <span key={offset}>${(market.markPrice + offset * 0.8).toFixed(2)}</span>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
+                    <PerpChart markPrice={market.markPrice} change24h={market.change24h} />
 
                     {/* Right: Order Entry */}
                     <div className="perp-order-panel">
-                        {/* Margin Mode Toggle */}
                         <div className="perp-margin-toggle">
                             <button className={`perp-margin-btn ${marginMode === "cross" ? "active" : ""}`} onClick={() => setMarginMode("cross")}>Cross</button>
                             <button className={`perp-margin-btn ${marginMode === "isolated" ? "active" : ""}`} onClick={() => setMarginMode("isolated")}>Isolated</button>
                         </div>
 
-                        {/* Side Toggle */}
                         <div className="perp-side-toggle">
-                            <button className={`perp-side-btn ${tradeSide === "long" ? "active-long" : ""}`} onClick={() => setTradeSide("long")}>
-                                Long
-                            </button>
-                            <button className={`perp-side-btn ${tradeSide === "short" ? "active-short" : ""}`} onClick={() => setTradeSide("short")}>
-                                Short
-                            </button>
+                            <button className={`perp-side-btn ${tradeSide === "long" ? "active-long" : ""}`} onClick={() => setTradeSide("long")}>Long</button>
+                            <button className={`perp-side-btn ${tradeSide === "short" ? "active-short" : ""}`} onClick={() => setTradeSide("short")}>Short</button>
                         </div>
 
-                        {/* Order Type */}
                         <div className="perp-order-types">
                             {(["market", "limit"] as const).map((t) => (
                                 <button key={t} className={`perp-ot-btn ${orderType === t ? "active" : ""}`} onClick={() => setOrderType(t)}>
@@ -502,7 +481,6 @@ export default function TradePage() {
                             ))}
                         </div>
 
-                        {/* Limit Price (if limit order) */}
                         {orderType === "limit" && (
                             <div className="perp-field">
                                 <label>Price (USD)</label>
@@ -514,7 +492,6 @@ export default function TradePage() {
                             </div>
                         )}
 
-                        {/* Size */}
                         <div className="perp-field">
                             <label>Size (SOL)</label>
                             <div className="perp-input-row">
@@ -536,21 +513,12 @@ export default function TradePage() {
                             </div>
                         </div>
 
-                        {/* Leverage Slider */}
                         <div className="perp-field">
                             <div className="perp-lev-header">
                                 <label>Leverage</label>
                                 <span className="perp-lev-val">{leverage}x</span>
                             </div>
-                            <input
-                                type="range"
-                                className="perp-slider"
-                                min={1}
-                                max={20}
-                                step={1}
-                                value={leverage}
-                                onChange={(e) => setLeverage(parseInt(e.target.value))}
-                            />
+                            <input type="range" className="perp-slider" min={1} max={20} step={1} value={leverage} onChange={(e) => setLeverage(parseInt(e.target.value))} />
                             <div className="perp-lev-marks">
                                 {[1, 5, 10, 15, 20].map((v) => (
                                     <button key={v} className={`perp-lev-mark ${leverage === v ? "active" : ""}`} onClick={() => setLeverage(v)}>{v}x</button>
@@ -558,7 +526,23 @@ export default function TradePage() {
                             </div>
                         </div>
 
-                        {/* Order Info */}
+                        {/* Balance indicator */}
+                        {connected && (
+                            <div className="perp-order-info" style={{ marginBottom: 8 }}>
+                                <div className="perp-info-row">
+                                    <span>Available Margin</span>
+                                    <span>{(balance?.available_margin || 0).toFixed(4)} SOL</span>
+                                </div>
+                                <button
+                                    className="perp-pct-btn"
+                                    style={{ width: "100%", marginTop: 4, padding: "6px 0" }}
+                                    onClick={() => setShowDepositModal(true)}
+                                >
+                                    Deposit / Withdraw
+                                </button>
+                            </div>
+                        )}
+
                         <div className="perp-order-info">
                             <div className="perp-info-row">
                                 <span>Notional Value</span>
@@ -577,12 +561,11 @@ export default function TradePage() {
                                 <span>{RISK_PARAMS.tradingFeeBps / 100}%</span>
                             </div>
                             <div className="perp-info-row sakura-fee">
-                                <span>🌸 Sakura Fee</span>
+                                <span>Sakura Fee</span>
                                 <span>{TRADING_FEE_SAKURA.toLocaleString()} $SAKURA</span>
                             </div>
                         </div>
 
-                        {/* Execute */}
                         {!connected ? (
                             <button className="perp-execute-btn connect-btn" onClick={() => setVisible(true)}>
                                 Connect Wallet
@@ -590,11 +573,11 @@ export default function TradePage() {
                         ) : tradeState === "paying_fee" || tradeState === "executing" ? (
                             <button className={`perp-execute-btn ${tradeSide}-btn`} disabled>
                                 <span className="perp-spinner" />
-                                {tradeState === "paying_fee" ? "Paying Fee..." : "Executing..."}
+                                {tradeState === "paying_fee" ? "Paying $SAKURA Fee..." : "Executing on Drift..."}
                             </button>
                         ) : tradeState === "success" ? (
                             <button className="perp-execute-btn success-btn" disabled>
-                                ✓ Order Filled
+                                Order Filled
                             </button>
                         ) : (
                             <>
@@ -621,13 +604,15 @@ export default function TradePage() {
                             <span>Time</span>
                         </div>
                         <div className="perp-rt-list">
-                            {recentTrades.map((t, i) => (
+                            {recentTrades.length > 0 ? recentTrades.map((t, i) => (
                                 <div key={i} className="perp-rt-row">
                                     <span className={t.side === "buy" ? "green" : "red"}>{t.price.toFixed(2)}</span>
                                     <span>{t.size.toFixed(2)}</span>
                                     <span className="perp-rt-time">{t.time}</span>
                                 </div>
-                            ))}
+                            )) : (
+                                <div className="perp-ob-loading">Loading trades...</div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -642,7 +627,7 @@ export default function TradePage() {
                             Open Orders (0)
                         </button>
                         <button className={`perp-bt-tab ${activeTab === "trades" ? "active" : ""}`} onClick={() => setActiveTab("trades")}>
-                            Trade History
+                            Trade History ({tradeHistory.length})
                         </button>
                     </div>
 
@@ -674,17 +659,16 @@ export default function TradePage() {
                                             {pos.pnl >= 0 ? "+" : ""}${pos.pnl.toFixed(2)}
                                             <small> ({pos.pnlPercent >= 0 ? "+" : ""}{pos.pnlPercent.toFixed(2)}%)</small>
                                         </span>
-                                        <span>${pos.margin.toFixed(2)} ({pos.leverage}x)</span>
+                                        <span>${pos.margin.toFixed(2)} ({pos.leverage.toFixed(1)}x)</span>
                                         <span className="red">${pos.liquidationPrice.toFixed(2)}</span>
                                         <div className="perp-pt-actions">
-                                            <button className="perp-close-btn" onClick={() => setPositions((prev) => prev.filter((_, idx) => idx !== i))}>
+                                            <button className="perp-close-btn" onClick={handleClose}>
                                                 Close
                                             </button>
                                         </div>
                                     </div>
                                 ))}
 
-                                {/* Total PnL Footer */}
                                 <div className="perp-pt-footer">
                                     <span>Total Unrealized PnL:</span>
                                     <span className={positions.reduce((s, p) => s + p.pnl, 0) >= 0 ? "green" : "red"}>
@@ -697,15 +681,53 @@ export default function TradePage() {
                     )}
 
                     {activeTab === "orders" && <div className="perp-empty">No open orders</div>}
-                    {activeTab === "trades" && <div className="perp-empty">No trade history</div>}
+
+                    {activeTab === "trades" && (
+                        tradeHistory.length === 0 ? (
+                            <div className="perp-empty">No trade history</div>
+                        ) : (
+                            <div className="perp-positions-table">
+                                <div className="perp-pt-header">
+                                    <span>Symbol</span>
+                                    <span>Side</span>
+                                    <span>Size</span>
+                                    <span>Entry</span>
+                                    <span>Exit</span>
+                                    <span>PnL</span>
+                                    <span>Status</span>
+                                    <span>Date</span>
+                                </div>
+                                {tradeHistory.map((t) => (
+                                    <div key={t.id} className="perp-pt-row">
+                                        <span>SOL-PERP</span>
+                                        <span className={t.side === "long" ? "green" : "red"}>{t.side.toUpperCase()}</span>
+                                        <span>{t.size.toFixed(2)} SOL</span>
+                                        <span>${t.entry_price?.toFixed(2) || "—"}</span>
+                                        <span>${t.exit_price?.toFixed(2) || "—"}</span>
+                                        <span className={(t.pnl || 0) >= 0 ? "green" : "red"}>
+                                            {t.pnl != null ? `${t.pnl >= 0 ? "+" : ""}$${t.pnl.toFixed(2)}` : "—"}
+                                        </span>
+                                        <span>{t.status}</span>
+                                        <span className="perp-rt-time">{new Date(t.created_at).toLocaleDateString()}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )
+                    )}
                 </div>
 
                 {/* Powered by */}
                 <div className="perp-powered">
                     <span className="perp-powered-dot" />
-                    Powered by Percolator Protocol on Solana · {TRADING_FEE_SAKURA.toLocaleString()} $SAKURA per trade
+                    Powered by Drift Protocol on Solana · {TRADING_FEE_SAKURA.toLocaleString()} $SAKURA per trade
                 </div>
             </main>
+
+            <DepositWithdrawModal
+                isOpen={showDepositModal}
+                onClose={() => setShowDepositModal(false)}
+                onBalanceUpdate={setBalance}
+            />
         </>
     );
 }

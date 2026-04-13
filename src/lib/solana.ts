@@ -4,22 +4,28 @@ import { Connection, PublicKey } from "@solana/web3.js";
 export const SOLANA_NETWORK = "mainnet-beta";
 export const RPC_ENDPOINT = "https://api.mainnet-beta.solana.com";
 
-// ============ $SAKURA Token Config ============
-// $SAKURA SPL token mint address
+// ============ $SAKURA Token Config (Token-2022) ============
 export const SAKURA_MINT = new PublicKey(
     "EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump"
 );
 export const SAKURA_DECIMALS = 9;
 
+// ============ Ino On-Chain Registry ============
+// Core program for chapter unlocks, milestone tracking, and support recording.
+// See: https://github.com/millw14/ino-sakura-registry
+export const INO_PROGRAM_ID = new PublicKey(
+    "E9ju12He2mnBRaneM4xdtUXECDPXdpQQbU6HtSKb6Hpf"
+);
+
 // ============ Pass Config ============
-export const MONTHLY_PASS_PRICE = 100; // 100 $SAKURA for a monthly pass
+// Monthly pass purchase triggers unlock_chapter + claim_milestone on Ino
+export const MONTHLY_PASS_PRICE = 100;
 export const PASS_DURATION_DAYS = 30;
 export const PASS_COLLECTION_NAME = "Sakura Monthly Pass";
 
-// ============ Payment Split Configuration ============
-// The SakuraFeeRouter program handles splitting this automatically. 
-// Hardcoded split in Program: 50% Insurance, 50% SPL Burn.
-
+// ============ Fee Router (Ino-integrated split) ============
+// Payments are routed through the Ino registry for milestone recording,
+// then the FeeRouter handles the token split: 50% insurance vault, 50% burn.
 export const FEE_ROUTER_PROGRAM_ID = new PublicKey(
     "FNoE2JUhn981hBDyBMvWJYkw9DThhtYwWoPbw6wgz1rg"
 );
@@ -32,7 +38,8 @@ export const INSURANCE_SPLIT = 50;
 export const BURN_SPLIT = 50;
 
 // ============ Sakura Treasury ============
-// PDA program for tips, donations, and trading fees. Update after deploy.
+// Ino record_support PDA authority. Tips and donations are recorded via
+// the Ino registry before the SPL transfer settles to this admin wallet.
 export const SAKURA_TREASURY_PROGRAM_ID = new PublicKey(
     "5GBAvcfjpj5XU9Y1wkubdvear2VHk6r55Bf1WjehVuV6"
 );

@@ -23,7 +23,7 @@ export interface TipRecord {
 export async function getCreatorProfile(walletAddressOrAuthorId: string): Promise<CreatorProfile | null> {
     if (!supabase) return null;
 
-    // Try to fetch by wallet_address or mangadex_author_id
+    // Try to fetch by wallet_address or content author ID
     const { data, error } = await supabase
         .from("creator_profiles")
         .select("*")
@@ -42,7 +42,7 @@ export async function submitCreatorApplication(
     walletAddress: string,
     displayName: string,
     bio: string,
-    mangadexAuthorId: string | null
+    contentAuthorId: string | null
 ): Promise<boolean> {
     if (!supabase) return false;
 
@@ -52,7 +52,7 @@ export async function submitCreatorApplication(
             wallet_address: walletAddress,
             display_name: displayName,
             bio: bio,
-            mangadex_author_id: mangadexAuthorId,
+            mangadex_author_id: contentAuthorId,
             is_verified: false, // Default to false until manually approved or via automated system
             updated_at: new Date().toISOString(),
         }, { onConflict: "wallet_address" });

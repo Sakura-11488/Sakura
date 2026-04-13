@@ -43,7 +43,7 @@ By using Sakura's blockchain-related features, you acknowledge and accept that:
 
 ## 6. Third-Party Services
 
-Sakura may rely on or integrate third-party services and protocols, including but not limited to Supabase, Solana network infrastructure, MangaDex, Transak, Jupiter, Drift, and similar providers. We do not control those services and are not responsible for their availability, content, policies, security, or performance.
+Sakura may rely on or integrate third-party services and protocols, including but not limited to Supabase, Solana network infrastructure, third-party content providers, Transak, Jupiter, Drift, and similar providers. We do not control those services and are not responsible for their availability, content, policies, security, or performance.
 
 ## 7. User Content
 

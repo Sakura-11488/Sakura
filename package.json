@@ -1,6 +1,6 @@
 {
   "name": "sakura",
-  "version": "0.1.0",
+  "version": "1.5.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,6 +10,7 @@
     "postinstall": "node scripts/fix-biometric-gradle.js"
   },
   "dependencies": {
+    "@capacitor-community/text-to-speech": "^8.0.0",
     "@capacitor/android": "^8.1.0",
     "@capacitor/app": "^8.0.1",
     "@capacitor/browser": "^8.0.2",
@@ -40,10 +41,14 @@
     "cheerio": "^1.2.0",
     "crypto-js": "^4.2.0",
     "hls.js": "^1.6.15",
+    "htmlparser2": "^12.0.0",
+    "jszip": "^3.10.1",
+    "lightweight-charts": "^5.1.0",
     "lottie-react": "^2.4.1",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "sharp": "^0.34.5",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {

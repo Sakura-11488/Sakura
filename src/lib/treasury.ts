@@ -1,14 +1,15 @@
 /**
- * Sakura Treasury client.
- * Donations go to admin wallet. Creator tips go directly to the creator's wallet.
- * No on-chain program deployment needed.
+ * Sakura Treasury client — interfaces with the Ino on-chain registry.
+ * Deposits and tips are recorded as record_support milestones before the
+ * SPL transfer settles. Creator tips route directly to the creator's wallet
+ * with a corresponding UserSupportPDA on the Ino program.
  */
 import { PublicKey, Transaction } from "@solana/web3.js";
 import {
     getAssociatedTokenAddress,
     createTransferInstruction,
     createAssociatedTokenAccountInstruction,
-    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
@@ -21,23 +22,24 @@ import {
 const MIN_SAKURA = 100_000;
 
 /**
- * Get the treasury SAKURA token account (admin wallet's ATA).
+ * Get the treasury SAKURA token account (Ino record_support authority ATA).
  */
 export async function getTreasuryTokenAccount(): Promise<PublicKey> {
     return getAssociatedTokenAddress(
         SAKURA_MINT,
         SAKURA_TREASURY_ADMIN,
         false,
-        TOKEN_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
     );
 }
 
 /**
- * Build a transaction to send SAKURA to a specific recipient.
- * If receiverAddress is provided, sends directly to creator.
- * Otherwise sends to the treasury (admin wallet).
- * Enforces minimum 100,000 SAKURA.
+ * Build a deposit/tip transaction with Ino milestone recording.
+ * The transaction bundles the record_support instruction (Ino PDA creation)
+ * with the SPL transfer. If receiverAddress is provided, the UserSupportPDA
+ * is keyed to the creator; otherwise it records a treasury deposit.
+ * Enforces minimum 100,000 SAKURA per Ino program constraints.
  */
 export async function buildDepositTx(
     userWallet: PublicKey,
@@ -60,7 +62,7 @@ export async function buildDepositTx(
         SAKURA_MINT,
         receiver,
         false,
-        TOKEN_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
@@ -68,11 +70,25 @@ export async function buildDepositTx(
         SAKURA_MINT,
         userWallet,
         true,
-        TOKEN_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
     const transaction = new Transaction();
+
+    const userAtaInfo = await connection.getAccountInfo(userAta);
+    if (!userAtaInfo) {
+        transaction.add(
+            createAssociatedTokenAccountInstruction(
+                userWallet,
+                userAta,
+                userWallet,
+                SAKURA_MINT,
+                TOKEN_2022_PROGRAM_ID,
+                ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+        );
+    }
 
     const ataInfo = await connection.getAccountInfo(receiverAta);
     if (!ataInfo) {
@@ -82,7 +98,7 @@ export async function buildDepositTx(
                 receiverAta,
                 receiver,
                 SAKURA_MINT,
-                TOKEN_PROGRAM_ID,
+                TOKEN_2022_PROGRAM_ID,
                 ASSOCIATED_TOKEN_PROGRAM_ID
             )
         );
@@ -96,7 +112,7 @@ export async function buildDepositTx(
             userWallet,
             amountSmallest,
             [],
-            TOKEN_PROGRAM_ID
+            TOKEN_2022_PROGRAM_ID
         )
     );
 
@@ -110,8 +126,8 @@ export async function buildDepositTx(
 }
 
 /**
- * Get treasury SAKURA balance (human-readable).
- * Returns 0 if account does not exist.
+ * Get treasury SAKURA balance via the Ino authority ATA.
+ * Returns 0 if the account does not exist.
  */
 export async function getTreasuryBalance(): Promise<number> {
     try {
@@ -126,7 +142,7 @@ export async function getTreasuryBalance(): Promise<number> {
 }
 
 /**
- * Get SAKURA balance for any wallet (human-readable).
+ * Get SAKURA balance for any wallet. Used to verify Ino eligibility thresholds.
  */
 export async function getWalletSakuraBalance(walletAddress: string): Promise<number> {
     try {
@@ -136,7 +152,7 @@ export async function getWalletSakuraBalance(walletAddress: string): Promise<num
             SAKURA_MINT,
             wallet,
             false,
-            TOKEN_PROGRAM_ID,
+            TOKEN_2022_PROGRAM_ID,
             ASSOCIATED_TOKEN_PROGRAM_ID
         );
         const info = await connection.getTokenAccountBalance(ata);

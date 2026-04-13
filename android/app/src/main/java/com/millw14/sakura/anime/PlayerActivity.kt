@@ -351,17 +351,24 @@ class PlayerActivity : AppCompatActivity() {
             override fun hasNextMediaItem(): Boolean {
                 return hasNext || exo.hasNextMediaItem()
             }
+            override fun seekBack() {
+                exo.seekBack()
+            }
+            override fun seekForward() {
+                exo.seekForward()
+            }
             override fun getAvailableCommands(): Player.Commands {
-                return if (hasNext) {
-                    super.getAvailableCommands().buildUpon()
-                        .add(Player.COMMAND_SEEK_TO_NEXT)
+                val base = super.getAvailableCommands().buildUpon()
+                    .add(Player.COMMAND_SEEK_BACK)
+                    .add(Player.COMMAND_SEEK_FORWARD)
+                if (hasNext) {
+                    base.add(Player.COMMAND_SEEK_TO_NEXT)
                         .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
-                        .build()
-                } else {
-                    super.getAvailableCommands()
                 }
+                return base.build()
             }
             override fun isCommandAvailable(command: Int): Boolean {
+                if (command == Player.COMMAND_SEEK_BACK || command == Player.COMMAND_SEEK_FORWARD) return true
                 if (hasNext && (command == Player.COMMAND_SEEK_TO_NEXT || command == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)) {
                     return true
                 }
@@ -502,6 +509,8 @@ class PlayerActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
             .setBandwidthMeter(bandwidthMeter)
+            .setSeekBackIncrementMs(5_000)
+            .setSeekForwardIncrementMs(10_000)
             .build().also { exo ->
             playerView.player = wrapWithSkipNext(exo)
 
@@ -589,6 +598,8 @@ class PlayerActivity : AppCompatActivity() {
 
         player = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
+            .setSeekBackIncrementMs(5_000)
+            .setSeekForwardIncrementMs(10_000)
             .build().also { exo ->
             playerView.player = wrapWithSkipNext(exo)
 

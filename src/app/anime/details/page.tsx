@@ -385,11 +385,14 @@ function AnimeDetailsInner() {
                                 <button
                                     onClick={() => setShowLibraryModal(true)}
                                     className="btn-secondary"
-                                    style={{ color: inLib ? "var(--sakura-pink)" : "currentColor" }}
+                                    style={{ color: inLib ? "#4ade80" : "currentColor", background: inLib ? "rgba(76,175,80,0.15)" : undefined, borderColor: inLib ? "rgba(76,175,80,0.3)" : undefined, display: "flex", alignItems: "center", gap: 6 }}
                                 >
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill={inLib ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                                    </svg>
+                                    <LottieIcon
+                                        src={inLib ? "/icons/wired-outline-24-approved-checked-hover-loading.json" : "/icons/wired-outline-2620-bookmark-alt-hover-flutter.json"}
+                                        size={22}
+                                        playOnMount
+                                        colorFilter={inLib ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
+                                    />
                                     {inLib ? "Saved" : "Save"}
                                 </button>
                             </div>

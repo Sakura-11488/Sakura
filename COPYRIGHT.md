@@ -16,7 +16,7 @@ Users retain ownership of any content they lawfully own and submit through Sakur
 
 Sakura integrates with and displays content from third-party sources, including but not limited to:
 
-- **MangaDex** — manga metadata, chapter data, and cover images
+- **Third-party content APIs** — manga metadata, chapter data, and cover images
 - **Google Books** — novel and book metadata
 - **CoinGecko** — cryptocurrency market data
 - **Solana** — blockchain data, wallet infrastructure, and on-chain records

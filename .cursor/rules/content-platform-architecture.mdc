@@ -1,0 +1,13 @@
+---
+description: Shared architecture for Sakura publishing
+alwaysApply: true
+---
+
+# Content Platform Architecture
+
+- Treat novels, manga, and anime as separate media kinds in one shared publishing model.
+- Do not overload `novels` tables or novel-only services to represent manga or anime.
+- Add new creator publishing features behind additive tables, adapters, or new routes first.
+- Preserve existing reading, watching, and library flows while the new platform is being introduced.
+- Keep media metadata in relational tables and large binaries in object storage.
+- Prefer reusable work, release, asset, and mint abstractions over medium-specific one-offs.

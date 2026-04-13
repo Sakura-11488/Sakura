@@ -7,6 +7,14 @@ import Link from "next/link";
 import { Capacitor } from '@capacitor/core';
 import { getLocal, STORAGE_KEYS, saveAnimeWatchEntry } from "@/lib/storage";
 
+const CATEGORY_STORAGE_KEY = "sakura_anime_category";
+
+function getSavedCategory(): 'sub' | 'dub' {
+    if (typeof window === 'undefined') return 'sub';
+    const saved = localStorage.getItem(CATEGORY_STORAGE_KEY);
+    return saved === 'dub' ? 'dub' : 'sub';
+}
+
 function AnimeWatchInner() {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -20,6 +28,9 @@ function AnimeWatchInner() {
     const [nativePlaying, setNativePlaying] = useState(false);
     const [isNative] = useState(Capacitor.isNativePlatform());
     const [playTriggered, setPlayTriggered] = useState(false);
+    const [category, setCategory] = useState<'sub' | 'dub'>(getSavedCategory);
+    const [availableCategories, setAvailableCategories] = useState<string[]>(['sub']);
+    const [categoryLoading, setCategoryLoading] = useState(false);
 
     const currentEpisodeIndex = anime?.episodes.findIndex(e => e.id === episodeId) ?? -1;
     const currentEpisode = currentEpisodeIndex >= 0 ? anime?.episodes[currentEpisodeIndex] : null;
@@ -42,18 +53,23 @@ function AnimeWatchInner() {
             setLoading(true);
             setError(null);
             try {
-                const [animeData, sourceData] = await Promise.all([
-                    fetchAnimeInfo(id),
-                    fetchEpisodeSources(episodeId)
-                ]);
+                const animeData = await fetchAnimeInfo(id);
                 if (cancelled) return;
                 if (animeData) setAnime(animeData);
+
+                console.log(`[Watch] Fetching sources for ep=${episodeId} category=${category}`);
+                const sourceData = await fetchEpisodeSources(episodeId, category);
+                if (cancelled) return;
                 if (sourceData) {
+                    console.log(`[Watch] Got source URL: ${sourceData.url?.substring(0, 80)}`);
                     setSource(sourceData);
-                } else if (!isNative) {
-                    setError("Failed to extract video feeds for this episode.");
+                    if (sourceData.availableCategories) setAvailableCategories(sourceData.availableCategories);
+                } else {
+                    console.error(`[Watch] fetchEpisodeSources returned null for ${episodeId}`);
+                    setError("Could not find a stream for this episode. Try another episode or check back later.");
                 }
             } catch (e: any) {
+                console.error('[Watch] Load error:', e);
                 if (!cancelled) setError(e.message || "Failed to load episode.");
             }
             if (!cancelled) setLoading(false);
@@ -62,7 +78,31 @@ function AnimeWatchInner() {
             load();
         }
         return () => { cancelled = true; };
-    }, [id, episodeId, isNative]);
+    }, [id, episodeId, isNative, category]);
+
+    const toggleCategory = useCallback(async () => {
+        const next = category === 'sub' ? 'dub' : 'sub';
+        if (!availableCategories.includes(next)) return;
+        localStorage.setItem(CATEGORY_STORAGE_KEY, next);
+        setCategory(next);
+        setPlayTriggered(false);
+        setNativePlaying(false);
+        setCategoryLoading(true);
+        setError(null);
+        try {
+            const sourceData = await fetchEpisodeSources(episodeId, next);
+            if (sourceData) {
+                setSource(sourceData);
+                if (sourceData.availableCategories) setAvailableCategories(sourceData.availableCategories);
+            } else {
+                setError(`No ${next.toUpperCase()} stream available for this episode.`);
+            }
+        } catch (e: any) {
+            setError(e.message || "Failed to switch audio.");
+        } finally {
+            setCategoryLoading(false);
+        }
+    }, [category, availableCategories, episodeId]);
 
     const playNative = useCallback(async () => {
         if (!anime) return;
@@ -228,9 +268,35 @@ function AnimeWatchInner() {
                     </div>
                 </div>
 
-                <Link href={`/anime/details?id=${encodeURIComponent(id)}`} style={{ color: 'white', textDecoration: 'none', fontSize: 14, opacity: 0.8 }}>
-                    Series Details
-                </Link>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {availableCategories.length > 1 && (
+                        <button
+                            onClick={toggleCategory}
+                            disabled={categoryLoading}
+                            style={{
+                                background: category === 'sub'
+                                    ? 'linear-gradient(135deg, #e91e63, #c2185b)'
+                                    : 'linear-gradient(135deg, #5865f2, #4752c4)',
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: 20,
+                                padding: '6px 16px',
+                                fontSize: 12,
+                                fontWeight: 700,
+                                letterSpacing: '0.5px',
+                                cursor: categoryLoading ? 'wait' : 'pointer',
+                                opacity: categoryLoading ? 0.6 : 1,
+                                textTransform: 'uppercase',
+                                transition: 'all 0.2s ease',
+                            }}
+                        >
+                            {categoryLoading ? '...' : category === 'sub' ? 'SUB' : 'DUB'}
+                        </button>
+                    )}
+                    <Link href={`/anime/details?id=${encodeURIComponent(id)}`} style={{ color: 'white', textDecoration: 'none', fontSize: 14, opacity: 0.8 }}>
+                        Series Details
+                    </Link>
+                </div>
             </header>
 
             <div style={{

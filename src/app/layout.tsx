@@ -19,6 +19,8 @@ export const metadata: Metadata = {
 import MobileNavHandler from "@/components/MobileNavHandler";
 import BottomNav from "@/components/BottomNav";
 import FloatingTradeWidget from "@/components/FloatingTradeWidget";
+import CloudSyncProvider from "@/components/CloudSyncProvider";
+import TermsGate from "@/components/TermsGate";
 
 export default function RootLayout({
   children,
@@ -60,10 +62,13 @@ export default function RootLayout({
         </div>
 
         <SolanaProvider>
-          <MobileNavHandler />
-          {children}
-          <FloatingTradeWidget />
-          <BottomNav />
+          <TermsGate>
+            <CloudSyncProvider />
+            <MobileNavHandler />
+            {children}
+            <FloatingTradeWidget />
+            <BottomNav />
+          </TermsGate>
         </SolanaProvider>
       </body>
     </html>

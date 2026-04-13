@@ -32,6 +32,7 @@
   ],
   "exclude": [
     "node_modules",
+    "backend",
     "src/lib/sources/hianime.ts",
     "src/lib/sources/megacloud.ts"
   ]

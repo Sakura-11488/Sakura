@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Header from "@/components/Header";
 import AnimeCard from "@/components/AnimeCard";
 import { searchAnime, fetchAiringAnime, fetchAnimeByGenre, ANIME_GENRES, type AnimeResult } from "@/lib/anime";
-import { getLocal, setLocal, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
+import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
 import { PSYOP_SEARCH_RESULT, matchesPsyopQuery } from "@/lib/psyopAnime";
 import Link from "next/link";
 
@@ -65,19 +65,19 @@ export default function AnimeBrowsePage() {
         const existing = getLocal<string[]>(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", []);
         const filtered = existing.filter(s => s.toLowerCase() !== trimmed.toLowerCase());
         const updated = [trimmed, ...filtered].slice(0, MAX_RECENT_SEARCHES);
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", updated);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", updated);
         setRecentSearches(updated);
     }, []);
 
     const removeRecentSearch = useCallback((query: string) => {
         const existing = getLocal<string[]>(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", []);
         const updated = existing.filter(s => s !== query);
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", updated);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", updated);
         setRecentSearches(updated);
     }, []);
 
     const clearRecentSearches = useCallback(() => {
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", []);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", []);
         setRecentSearches([]);
     }, []);
 

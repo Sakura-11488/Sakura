@@ -13,13 +13,13 @@ interface Tab {
 
 const tabs: Tab[] = [
     { href: "/", label: "Home", lottieFile: "/icons/wired-outline-1652-mortgage-loan-hover-pinch.json" },
-    { href: "/trade", label: "Trade", lottieFile: "/icons/wired-outline-2611-sales-hover-pinch.json" },
+    { href: "/novel", label: "Novel", lottieFile: "/icons/wired-outline-471-ebook-reader-hover-pinch.json" },
     { href: "/anime", label: "Anime", lottieFile: "/icons/wired-outline-2440-goku-hover-pinch.json" },
     { href: "/library", label: "Library", lottieFile: "/icons/wired-outline-3140-book-open-hover-pinch.json" },
     { href: "/settings", label: "Settings", lottieFile: "/icons/wired-outline-39-cog-hover-mechanic.json" },
 ];
 
-const HIDDEN_PATHS = ["/chapter", "/anime/watch"];
+const HIDDEN_PATHS = ["/chapter", "/anime/watch", "/novel/read"];
 
 function NavIcon({ tab, isActive }: { tab: Tab; isActive: boolean }) {
     const lottieRef = useRef<LottieRefCurrentProps>(null);

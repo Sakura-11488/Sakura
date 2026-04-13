@@ -37,23 +37,9 @@ export default function MonthlyPassPage() {
         }
     }, [publicKey]);
 
-    // Check Percolator Crank Staleness (Simulated for this implementation, typically read from slab)
     useEffect(() => {
-        const checkCrank = async () => {
-            setCheckingCrank(true);
-            try {
-                // In production, fetch the slab from PERCOLATOR_PROGRAM and compare lastCrankSlot 
-                // to connection.getSlot(). Here we simulate a 10% chance of being stale for testing.
-                const isStale = Math.random() < 0.1;
-                setCrankStale(isStale);
-            } catch (error) {
-                console.error("Failed to check crank", error);
-            }
-            setCheckingCrank(false);
-        };
-        checkCrank();
-        const interval = setInterval(checkCrank, 15000); // Check every 15s
-        return () => clearInterval(interval);
+        setCrankStale(false);
+        setCheckingCrank(false);
     }, []);
 
     const handlePurchase = async () => {
@@ -288,7 +274,7 @@ export default function MonthlyPassPage() {
                                     marginTop: 12,
                                 }}
                             >
-                                Requires $SAKURA token balance on Solana Devnet
+                                Requires $SAKURA token balance on Solana
                             </p>
                         )}
                     </div>
@@ -407,6 +393,14 @@ export default function MonthlyPassPage() {
                 <footer className="footer">
                     <p className="footer-jp">桜 — マンガの新しい形</p>
                     <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+                        <Link href="/privacy" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+                            Privacy Policy
+                        </Link>
+                        <Link href="/terms" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+                            Terms of Service
+                        </Link>
+                    </div>
                     <div className="footer-solana">
                         <span className="sol-dot" />
                         Built on Solana

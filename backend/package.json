@@ -1,0 +1,29 @@
+{
+  "name": "sakura-perps-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "postinstall": "node -e \"const fs=require('fs'),p=require('path'),d=p.join('node_modules','helius-laserstream-win32-x64-msvc');if(process.platform==='win32'&&!fs.existsSync(p.join(d,'index.js'))){fs.mkdirSync(d,{recursive:true});fs.writeFileSync(p.join(d,'package.json'),JSON.stringify({name:'helius-laserstream-win32-x64-msvc',version:'0.1.8',main:'index.js'}));fs.writeFileSync(p.join(d,'index.js'),'module.exports.shutdownAllStreams=function(){};module.exports.getActiveStreamCount=function(){return 0};module.exports.CommitmentLevel={};module.exports.LaserstreamClient=function(){};module.exports.StreamHandle=function(){};')}\""
+  },
+  "dependencies": {
+    "@drift-labs/sdk": "^2.107.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
+    "@supabase/supabase-js": "^2.96.0",
+    "bs58": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,13 @@
+---
+description: Asset storage and delivery rules
+alwaysApply: true
+---
+
+# Asset Storage And Delivery
+
+- Store large creator media in first-party object storage, not in Postgres rows or device-local paths.
+- Use relational tables for canonical asset metadata, ownership, checksums, and delivery references.
+- Treat offline device files as caches only, never as publishable asset identifiers.
+- Generate standard derivatives for cards, details, and reading surfaces instead of serving originals everywhere.
+- Keep unpublished or review-stage assets private until they are explicitly approved for public delivery.
+- Prefer stable canonical object paths over free-form third-party URLs for first-party creator content.

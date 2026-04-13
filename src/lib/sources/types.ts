@@ -10,7 +10,7 @@ export interface Manga {
     year: number;
     rating?: number;
     follows?: number;
-    sourceStr?: string; // "mangadex", "weebcentral", etc.
+    sourceStr?: string;
 }
 
 export interface Chapter {
@@ -22,7 +22,7 @@ export interface Chapter {
     publishAt: string;
     pages: number;
     sourceStr?: string;
-    externalUrl?: string; // For MangaDex external chapters
+    externalUrl?: string;
 }
 
 export interface MangaSource {

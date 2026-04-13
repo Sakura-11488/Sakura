@@ -40,17 +40,20 @@ function FavoriteButton({ manga }: { manga: Manga }) {
             <button
                 onClick={() => setShowLibraryModal(true)}
                 className="btn-secondary"
-                style={{ color: inLibrary ? "var(--sakura-pink)" : "currentColor" }}
+                style={{ color: inLibrary ? "#4ade80" : "currentColor", background: inLibrary ? "rgba(76,175,80,0.15)" : undefined, borderColor: inLibrary ? "rgba(76,175,80,0.3)" : undefined, display: "flex", alignItems: "center", gap: 6 }}
             >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill={inLibrary ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                </svg>
-                {inLibrary ? "ライブラリ Saved" : "ライブラリ Save"}
+                <LottieIcon
+                    src={inLibrary ? "/icons/wired-outline-24-approved-checked-hover-loading.json" : "/icons/wired-outline-2620-bookmark-alt-hover-flutter.json"}
+                    size={22}
+                    playOnMount
+                    colorFilter={inLibrary ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
+                />
+                {inLibrary ? "Saved" : "Save"}
             </button>
             {showLibraryModal && (
                 <SaveToLibraryModal
                     item={libraryItem}
-                    onClose={() => setShowLibraryModal(false)}
+                    onClose={() => { setShowLibraryModal(false); setInLibrary(isInLibrary(manga.id, 'manga')); }}
                 />
             )}
         </>
@@ -383,6 +386,17 @@ function SeriesContent() {
                                 </button>
                             </div>
                         </div>
+                    </div>
+                )}
+
+                {sortedChapters.length === 0 && !loading && (
+                    <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)" }}>
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4, marginBottom: 12 }}>
+                            <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+                            <line x1="9" y1="10" x2="15" y2="10" />
+                        </svg>
+                        <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>No readable chapters available</p>
+                        <p style={{ fontSize: 13 }}>This title&apos;s chapters may have been removed or are only available on the official publisher&apos;s site.</p>
                     </div>
                 )}
 

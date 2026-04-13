@@ -81,6 +81,9 @@ export async function cacheWrap<T>(
     if (cached !== null) return cached;
 
     const data = await fetchFn();
-    cacheSet(key, data, ttl);
+    const isEmpty = Array.isArray(data) && data.length === 0;
+    if (!isEmpty) {
+        cacheSet(key, data, ttl);
+    }
     return data;
 }

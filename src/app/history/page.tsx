@@ -74,7 +74,7 @@ export default function HistoryPage() {
                     ) : tab === 'manga' ? (
                         history.length === 0 ? (
                             <div className="empty-state">
-                                <div className="empty-icon">📖</div>
+                                <div className="empty-icon">📚</div>
                                 <h3 className="empty-title">履歴がありません</h3>
                                 <p className="empty-text">You haven&apos;t read any manga yet.</p>
                                 <Link href="/manga" className="btn-primary" style={{ marginTop: 16 }}>

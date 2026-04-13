@@ -1,0 +1,13 @@
+---
+description: Mobile-first publisher experience guidance
+alwaysApply: true
+---
+
+# Publisher Experience
+
+- Design publishing flows mobile-first: file picker, gallery import, camera capture, share-sheet import, batch upload, and resumable queues.
+- Prefer workflows that reduce manual prep: auto ordering, autosave, validation, preview, retry, and scheduling.
+- Show clear status transitions such as `uploading`, `processing`, `ready`, `submitted`, `changes_requested`, and `published`.
+- Creators should not lose work because one asset failed; support retries and partial recovery.
+- Keep drag-and-drop as an optional desktop enhancement, not the primary publishing assumption.
+- Prefer reusable templates, defaults, and numbering helpers so repeat releases are faster to publish.

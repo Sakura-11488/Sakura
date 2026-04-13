@@ -11,9 +11,32 @@ import {
     type LibraryItem,
 } from "@/lib/storage";
 
+function ConfirmModal({ title, message, onConfirm, onCancel }: {
+    title: string; message: string; onConfirm: () => void; onCancel: () => void;
+}) {
+    return (
+        <div style={{ position: "fixed", inset: 0, zIndex: 999, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onCancel}>
+            <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 340, background: "rgba(20,16,36,0.97)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 20, padding: "28px 24px", textAlign: "center" }}>
+                <p style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>{title}</p>
+                <p style={{ margin: "0 0 24px", fontSize: 13, lineHeight: 1.6, color: "var(--text-secondary)" }}>{message}</p>
+                <div style={{ display: "flex", gap: 10 }}>
+                    <button onClick={onCancel} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "var(--text-secondary)", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+                        Cancel
+                    </button>
+                    <button onClick={onConfirm} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: "rgba(239,68,68,0.2)", color: "#ef4444", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+                        Remove
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 export default function LibraryPage() {
     const [categories, setCategories] = useState<LibraryCategory[]>([]);
     const [activeTab, setActiveTab] = useState(0);
+    const [confirmRemove, setConfirmRemove] = useState<{ item: LibraryItem; catName: string } | null>(null);
+    const [confirmDeleteCat, setConfirmDeleteCat] = useState<string | null>(null);
 
     const reload = useCallback(() => {
         const cats = getLibraryCategories();
@@ -27,12 +50,24 @@ export default function LibraryPage() {
 
     const handleRemoveItem = (item: LibraryItem) => {
         if (!activeCat) return;
-        removeFromLibrary(activeCat.name, item.id, item.type);
+        setConfirmRemove({ item, catName: activeCat.name });
+    };
+
+    const confirmRemoveItem = () => {
+        if (!confirmRemove) return;
+        removeFromLibrary(confirmRemove.catName, confirmRemove.item.id, confirmRemove.item.type);
+        setConfirmRemove(null);
         reload();
     };
 
     const handleDeleteCategory = (name: string) => {
-        deleteLibraryCategory(name);
+        setConfirmDeleteCat(name);
+    };
+
+    const confirmDeleteCategoryAction = () => {
+        if (!confirmDeleteCat) return;
+        deleteLibraryCategory(confirmDeleteCat);
+        setConfirmDeleteCat(null);
         setActiveTab(0);
         reload();
     };
@@ -102,12 +137,15 @@ export default function LibraryPage() {
                                     </svg>
                                     <p style={{ fontFamily: "var(--font-jp)", fontSize: 18 }}>まだ何もありません</p>
                                     <p style={{ fontSize: 14, marginTop: 4 }}>No items in this category yet.</p>
-                                    <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20 }}>
+                                    <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20, flexWrap: "wrap" }}>
                                         <Link href="/manga" className="genre-chip active" style={{ textDecoration: "none" }}>
                                             Browse Manga
                                         </Link>
                                         <Link href="/anime" className="genre-chip active" style={{ textDecoration: "none" }}>
                                             Browse Anime
+                                        </Link>
+                                        <Link href="/novel" className="genre-chip active" style={{ textDecoration: "none" }}>
+                                            Browse Novels
                                         </Link>
                                     </div>
                                 </div>
@@ -119,6 +157,10 @@ export default function LibraryPage() {
                                 {items.map((item) => {
                                     const href = item.type === "anime"
                                         ? `/anime/details?id=${encodeURIComponent(item.id)}`
+                                        : item.type === "novel"
+                                        ? (item.source === "external"
+                                            ? `/novel/details?source=external&path=${encodeURIComponent(item.id)}`
+                                            : `/novel/details?id=${encodeURIComponent(item.id)}`)
                                         : `/title?id=${encodeURIComponent(item.id)}&source=mangadex`;
 
                                     return (
@@ -134,9 +176,11 @@ export default function LibraryPage() {
                                                     <span className="manga-card-badge" style={{
                                                         background: item.type === "anime"
                                                             ? "rgba(88, 101, 242, 0.85)"
+                                                            : item.type === "novel"
+                                                            ? "rgba(192, 132, 252, 0.85)"
                                                             : "rgba(255, 107, 157, 0.85)",
                                                     }}>
-                                                        {item.type === "anime" ? "Anime" : "Manga"}
+                                                        {item.type === "anime" ? "Anime" : item.type === "novel" ? "Novel" : "Manga"}
                                                     </span>
                                                 </div>
                                                 <div className="manga-card-info">
@@ -175,6 +219,19 @@ export default function LibraryPage() {
                             </div>
                         );
                     })()}
+
+                    {/* Browse shortcuts at bottom */}
+                    <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 32, paddingBottom: 16, flexWrap: "wrap" }}>
+                        <Link href="/manga" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(255,107,157,0.1)", border: "1px solid rgba(255,107,157,0.2)", color: "var(--sakura-pink)", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+                            Browse Manga
+                        </Link>
+                        <Link href="/anime" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(88,101,242,0.1)", border: "1px solid rgba(88,101,242,0.2)", color: "#5865f2", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+                            Browse Anime
+                        </Link>
+                        <Link href="/novel" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.2)", color: "#c084fc", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+                            Browse Novels
+                        </Link>
+                    </div>
                 </section>
 
                 <footer className="footer">
@@ -186,6 +243,26 @@ export default function LibraryPage() {
                     </div>
                 </footer>
             </main>
+
+            {/* Confirm Remove Item */}
+            {confirmRemove && (
+                <ConfirmModal
+                    title="Remove from Library?"
+                    message={`Are you sure you want to remove "${confirmRemove.item.title}" from "${confirmRemove.catName}"?`}
+                    onConfirm={confirmRemoveItem}
+                    onCancel={() => setConfirmRemove(null)}
+                />
+            )}
+
+            {/* Confirm Delete Category */}
+            {confirmDeleteCat && (
+                <ConfirmModal
+                    title="Delete Category?"
+                    message={`Are you sure you want to delete "${confirmDeleteCat}" and all its items? This can't be undone.`}
+                    onConfirm={confirmDeleteCategoryAction}
+                    onCancel={() => setConfirmDeleteCat(null)}
+                />
+            )}
         </>
     );
 }

@@ -5,8 +5,8 @@ import Header from "@/components/Header";
 import MangaCard from "@/components/MangaCard";
 import { searchAllSources } from "@/lib/sources";
 import { type Manga } from "@/lib/sources/types";
-import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
-import { MANGA_GENRES, searchMangaByGenre } from "@/lib/mangadex";
+import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS } from "@/lib/storage";
+import { MANGA_GENRES, searchMangaByGenre } from "@/lib/content-source";
 
 // Debounce hook for search
 function useDebounce(value: string, delay: number) {
@@ -61,21 +61,19 @@ export default function BrowsePage() {
         const existing = getLocal<string[]>(STORAGE_KEYS.RECENT_SEARCHES, []);
         const filtered = existing.filter(s => s.toLowerCase() !== trimmed.toLowerCase());
         const updated = [trimmed, ...filtered].slice(0, MAX_RECENT_SEARCHES);
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES, updated);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES, updated);
         setRecentSearches(updated);
     }, []);
 
-    // Remove a recent search
     const removeRecentSearch = useCallback((query: string) => {
         const existing = getLocal<string[]>(STORAGE_KEYS.RECENT_SEARCHES, []);
         const updated = existing.filter(s => s !== query);
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES, updated);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES, updated);
         setRecentSearches(updated);
     }, []);
 
-    // Clear all recent searches
     const clearRecentSearches = useCallback(() => {
-        setLocal(STORAGE_KEYS.RECENT_SEARCHES, []);
+        setLocalAndSyncSearches(STORAGE_KEYS.RECENT_SEARCHES, []);
         setRecentSearches([]);
     }, []);
 
@@ -96,11 +94,11 @@ export default function BrowsePage() {
                 saveRecentSearch(query);
             }
 
-            // Fetch stats (ratings) only for MangaDex items
-            const mangadexIds = results.filter(m => m.sourceStr === 'mangadex').map(m => m.id);
-            if (mangadexIds.length > 0) {
-                const { getMangaStatistics } = await import("@/lib/mangadex");
-                const stats = await getMangaStatistics(mangadexIds);
+            // Fetch stats (ratings) for primary source items
+            const sourceIds = results.filter(m => m.sourceStr === 'mangadex').map(m => m.id);
+            if (sourceIds.length > 0) {
+                const { getMangaStatistics } = await import("@/lib/content-source");
+                const stats = await getMangaStatistics(sourceIds);
                 setMangaList(prev => prev.map(m => {
                     if (m.sourceStr !== 'mangadex') return m;
                     const stat = stats[m.id];

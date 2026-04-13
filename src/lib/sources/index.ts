@@ -1,18 +1,16 @@
 import { MangaSource } from './types';
-import { MangaDexSource } from './mangadex';
+import { SakuraContentSource } from './sakura-source';
 // import { WeebCentralSource } from './weebcentral';
 
-const mangadex = new MangaDexSource();
-// const weebcentral = new WeebCentralSource();
+const sakuraContent = new SakuraContentSource();
 
-// Registry
+// Source Registry
 const sources: Record<string, MangaSource> = {
-    [mangadex.id]: mangadex,
-    // [weebcentral.id]: weebcentral,
+    [sakuraContent.id]: sakuraContent,
 };
 
 export function getSource(id: string): MangaSource {
-    return sources[id] || mangadex; // Default to MD
+    return sources[id] || sakuraContent;
 }
 
 export function getAllSources(): MangaSource[] {
@@ -49,11 +47,8 @@ export async function searchAllSources(query: string) {
     }
 
     // De-duplication / Merging Logic
-    // We want to prioritize MangaDex. If a title exists in MD, show that.
-    // If it ONLY exists in WeebCentral, show that.
+    // Prioritize primary source. If a title exists in multiple sources, keep the primary.
     // Matching strategy: Normalized Title.
-
-    // 1. Create a map of Title -> Result
     const uniqueMap = new Map<string, any>();
 
     for (const manga of rawResults) {
@@ -65,11 +60,9 @@ export async function searchAllSources(query: string) {
             continue;
         }
 
-        // If already in map, check priority.
-        // Priority: MangaDex > WeebCentral
+        // If already in map, keep the primary source version
         const existing = uniqueMap.get(key);
         if (existing.sourceStr !== 'mangadex' && manga.sourceStr === 'mangadex') {
-            // Replace with MangaDex version
             uniqueMap.set(key, manga);
         }
     }

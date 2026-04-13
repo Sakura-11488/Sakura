@@ -5,7 +5,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { getPendingCreators, verifyCreator, type CreatorProfile } from "@/lib/creator";
 import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
 import Link from "next/link";
-import { getAuthorDetails } from "@/lib/mangadex";
+import { getAuthorDetails } from "@/lib/content-source";
 import { getTreasuryBalance } from "@/lib/treasury";
 import { SAKURA_TREASURY_ADMIN } from "@/lib/solana";
 
@@ -40,7 +40,7 @@ export default function AdminPage() {
         try {
             const creators = await getPendingCreators();
 
-            // Fetch extra mangadex info if they linked an author ID
+            // Fetch extra author info if they linked a content author ID
             const enriched = await Promise.all(creators.map(async (creator) => {
                 if (creator.mangadex_author_id) {
                     const authorInfo = await getAuthorDetails(creator.mangadex_author_id);

@@ -4,7 +4,7 @@ import Header from "@/components/Header";
 import MangaCard from "@/components/MangaCard";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { getFeaturedManga, searchManga, searchMangaByGenre, MANGA_GENRES, type Manga } from "@/lib/mangadex";
+import { getFeaturedManga, searchManga, searchMangaByGenre, MANGA_GENRES, type Manga } from "@/lib/content-source";
 import { useRouter } from "next/navigation";
 import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
 import LottieIcon from "@/components/LottieIcon";
@@ -289,6 +289,14 @@ export default function Home() {
           <p className="footer-text">
             © 2026 Sakura. Read manga on the blockchain.
           </p>
+          <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+            <Link href="/privacy" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+              Privacy Policy
+            </Link>
+            <Link href="/terms" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
+              Terms of Service
+            </Link>
+          </div>
           <div className="footer-solana">
             <span className="sol-dot" />
             Built on Solana

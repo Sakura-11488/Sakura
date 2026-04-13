@@ -1,0 +1,13 @@
+---
+description: Rollout safety for creator platform changes
+alwaysApply: true
+---
+
+# Rollout And Regression Safety
+
+- Ship the new creator platform in additive slices that do not break current novel, manga, or anime consumption flows.
+- Keep legacy routes working until the replacement path has clear parity.
+- Prefer feature flags, adapters, or new routes for large migrations.
+- Add focused validation around ownership, moderation state, asset processing, and mint verification before cutting over flows.
+- Avoid mixing unrelated refactors into publishing-platform changes.
+- Preserve backwards compatibility for existing stored data whenever possible.

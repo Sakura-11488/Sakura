@@ -13,12 +13,12 @@ function CreatorApplyPageContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
 
-    // Check if they clicked "Claim" from an existing MangaDex profile
+    // Check if they clicked "Claim" from an existing creator profile
     const initialAuthorId = searchParams?.get("authorId") || "";
 
     const [displayName, setDisplayName] = useState("");
     const [bio, setBio] = useState("");
-    const [mangadexAuthorId, setMangadexAuthorId] = useState(initialAuthorId);
+    const [contentAuthorId, setContentAuthorId] = useState(initialAuthorId);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
@@ -53,7 +53,7 @@ function CreatorApplyPageContent() {
                 publicKey.toBase58(),
                 displayName.trim(),
                 bio.trim(),
-                mangadexAuthorId.trim() || null
+                contentAuthorId.trim() || null
             );
 
             if (result) {
@@ -130,8 +130,8 @@ function CreatorApplyPageContent() {
                             </label>
                             <input
                                 type="text"
-                                value={mangadexAuthorId}
-                                onChange={e => setMangadexAuthorId(e.target.value)}
+                                value={contentAuthorId}
+                                onChange={e => setContentAuthorId(e.target.value)}
                                 placeholder="e.g. 5e1823ab-..."
                                 style={{
                                     width: '100%', padding: '12px', borderRadius: '12px',

@@ -5,6 +5,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { truncateAddress, getConnection, SAKURA_MINT, SOLANA_NETWORK } from "@/lib/solana";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { generateWallet, storeWalletSecurely, removeWalletSecurely } from "@/lib/wallet";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import bs58 from "bs58";
 import { Keypair } from "@solana/web3.js";
@@ -43,6 +44,7 @@ export function SakuraWalletModalProvider({ children }: { children: React.ReactN
 /* ─── The Modal ─── */
 function SakuraWalletModal({ onClose }: { onClose: () => void }) {
     const { wallets, select, connect, publicKey, disconnect, connected } = useWallet();
+    const router = useRouter();
     const [balance, setBalance] = useState<number | null>(null);
     const [sakuraBalance, setSakuraBalance] = useState<number | null>(null);
 
@@ -240,6 +242,14 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                                 >
                                     <span>🌸</span>
                                     Support Sakura
+                                </button>
+                                <button
+                                    className="btn-secondary"
+                                    onClick={() => { onClose(); router.push('/trade'); }}
+                                    style={{ marginTop: 8, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                                >
+                                    <LottieIcon src="/icons/wired-outline-2611-sales-hover-pinch.json" size={22} playOnMount />
+                                    Trade SOL-PERP
                                 </button>
                             </>
                         )}

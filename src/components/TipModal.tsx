@@ -99,7 +99,9 @@ export default function TipModal({
             setStep("done");
 
             if (receiverAddress) {
-                recordTip(sig, publicKey.toBase58(), receiverAddress, amt).catch(() => {});
+                recordTip(sig, publicKey.toBase58(), receiverAddress, amt).catch((err) => {
+                    console.warn("Tip recorded on-chain but DB save failed:", err);
+                });
             }
 
             onComplete?.();
