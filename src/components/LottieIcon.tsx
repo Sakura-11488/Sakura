@@ -6,7 +6,8 @@ import Lottie, { type LottieRefCurrentProps } from "lottie-react";
 const animCache = new Map<string, object>();
 
 interface LottieIconProps {
-    src: string;
+    src?: string;
+    animationData?: object;
     size?: number;
     colorFilter?: string;
     autoplay?: boolean;
@@ -14,11 +15,28 @@ interface LottieIconProps {
     replayIntervalMs?: number;
 }
 
-export default function LottieIcon({ src, size = 24, colorFilter, autoplay = false, playOnMount = false, replayIntervalMs }: LottieIconProps) {
+export default function LottieIcon({
+    src,
+    animationData,
+    size = 24,
+    colorFilter,
+    autoplay = false,
+    playOnMount = false,
+    replayIntervalMs,
+}: LottieIconProps) {
     const lottieRef = useRef<LottieRefCurrentProps>(null);
-    const [animData, setAnimData] = useState<object | null>(animCache.get(src) ?? null);
+    const [animData, setAnimData] = useState<object | null>(() => {
+        if (animationData) return animationData;
+        if (src && animCache.has(src)) return animCache.get(src)!;
+        return null;
+    });
 
     useEffect(() => {
+        if (animationData) {
+            setAnimData(animationData);
+            return;
+        }
+        if (!src) return;
         if (animCache.has(src)) {
             setAnimData(animCache.get(src)!);
             return;
@@ -30,7 +48,7 @@ export default function LottieIcon({ src, size = 24, colorFilter, autoplay = fal
                 setAnimData(data);
             })
             .catch(() => {});
-    }, [src]);
+    }, [src, animationData]);
 
     useEffect(() => {
         if (playOnMount && animData && lottieRef.current) {

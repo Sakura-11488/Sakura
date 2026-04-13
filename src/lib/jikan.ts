@@ -6,6 +6,8 @@ export interface JikanAnime {
     mal_id: number;
     title: string;
     title_english: string | null;
+    title_japanese?: string | null;
+    title_synonyms?: string[];
     images: {
         webp: {
             image_url: string;
@@ -15,8 +17,9 @@ export interface JikanAnime {
     synopsis: string;
     status: string;
     type: string;
-    year: number;
-    score: number;
+    year: number | null;
+    episodes?: number | null;
+    score: number | null;
     genres: { name: string }[];
 }
 

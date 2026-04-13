@@ -2,6 +2,7 @@
 
 import { useEffect, useState, Suspense, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { getAuthorDetails, getMangaByAuthor, type Manga } from "@/lib/content-source";
 import { getCreatorProfile, getCreatorTips, type CreatorProfile, type TipRecord } from "@/lib/creator";
 import { getWalletSakuraBalance } from "@/lib/treasury";
@@ -13,6 +14,7 @@ import TipButton from "./TipButton";
 function CreatorPageContent() {
     const searchParams = useSearchParams();
     const id = searchParams?.get("id");
+    const { publicKey } = useWallet();
 
     const [author, setAuthor] = useState<any>(null);
     const [creator, setCreator] = useState<CreatorProfile | null>(null);
@@ -90,6 +92,7 @@ function CreatorPageContent() {
     const bio = creator?.bio || author?.biography || null;
     const isVerified = creator?.is_verified === true;
     const avatarUrl = creator?.avatar_url || `https://robohash.org/${id}?set=set4&bgset=bg1`;
+    const isOwnerProfile = Boolean(creator?.wallet_address && publicKey?.toBase58() === creator.wallet_address);
 
     const totalTipAmount = tips.reduce((sum, t) => sum + (t.amount_sol ?? 0), 0);
     const uniqueSupporters = new Set(tips.map((t) => t.sender_address)).size;
@@ -225,6 +228,16 @@ function CreatorPageContent() {
                         <div style={{ marginTop: 4 }}>
                             <TipButton receiverAddress={creator.wallet_address} />
                         </div>
+                    )}
+
+                    {isOwnerProfile && (
+                        <Link
+                            href="/creator/works"
+                            className="btn-secondary"
+                            style={{ marginTop: 4, fontSize: "0.9rem" }}
+                        >
+                            Manage Works
+                        </Link>
                     )}
 
                     {/* Claim Button */}

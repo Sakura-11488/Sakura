@@ -1,33 +1,58 @@
 var config = require("../config");
 var http = require("../utils/http");
+var cheerio = require("cheerio");
 
-function decodeHtml(s) {
-  return s.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">")
-    .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&#x27;/g,"'").replace(/&#x2F;/g,"/");
+function decodeHtml(value) {
+  return (value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#x2F;/g, "/");
+}
+
+function makeStageError(stage, code, message, details) {
+  var error = new Error(message);
+  error.stage = stage;
+  error.code = code;
+  error.details = details || {};
+  return error;
 }
 
 async function search(keyword) {
   var url = config.HIANIME_BASE + "/search?keyword=" + encodeURIComponent(keyword);
   var html = await http.fetchText(url);
+  var $ = cheerio.load(html);
   var results = [];
-  var re = /<div class="flw-item"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g, m;
-  while ((m = re.exec(html)) !== null) {
-    var b = m[0];
-    var sl = b.match(/href="\/watch\/([^"?#]+?)(?:\/ep-\d+)?"/);
-    var nm = b.match(/class="d-title"[^>]*>\s*([^<]+)/);
-    if (!nm) nm = b.match(/class="film-name"[\s\S]*?<a[^>]*>\s*([^<]+)/);
-    var po = b.match(/class="film-poster-img"[^>]*src="([^"]+)"/);
-    if (sl && nm) results.push({ slug: sl[1], name: decodeHtml(nm[1].trim()), poster: po ? po[1] : "" });
-  }
+  $(".flw-item").each(function(_, element) {
+    var link = $(element).find("a.d-title, a.film-poster-ahref").first();
+    var href = link.attr("href") || $(element).find("a[href*='/watch/']").first().attr("href") || "";
+    var slugMatch = href.match(/\/watch\/([^/?#]+?)(?:\/ep-\d+)?$/);
+    var title = $(element).find("a.d-title").first().text().trim() || $(element).find(".film-name a").first().text().trim();
+    var poster = $(element).find(".film-poster-img").first().attr("src") || "";
+    if (slugMatch && title) {
+      results.push({
+        slug: slugMatch[1],
+        name: decodeHtml(title),
+        poster: poster,
+      });
+    }
+  });
   return results;
 }
 
 async function getInfo(slug) {
   var html = await http.fetchText(config.HIANIME_BASE + "/watch/" + slug);
   var id = html.match(/data-id="(\d+)"/);
-  var nm = html.match(/class="[^"]*d-title[^"]*"[^>]*>\s*([^<]+)/);
-  var po = html.match(/class="film-poster-img"[^>]*src="([^"]+)"/);
-  return { animeId: id ? id[1] : "", name: nm ? decodeHtml(nm[1].trim()) : "", poster: po ? po[1] : "" };
+  var nameMatch = html.match(/class="[^"]*d-title[^"]*"[^>]*>\s*([^<]+)/);
+  var posterMatch = html.match(/class="film-poster-img"[^>]*src="([^"]+)"/);
+  return {
+    animeId: id ? id[1] : "",
+    name: nameMatch ? decodeHtml(nameMatch[1].trim()) : "",
+    poster: posterMatch ? posterMatch[1] : "",
+  };
 }
 
 async function getEpisodes(animeId) {
@@ -35,28 +60,36 @@ async function getEpisodes(animeId) {
     headers: { "X-Requested-With": "XMLHttpRequest", Referer: config.HIANIME_BASE + "/" },
   });
   var html = data.result || data.html || "";
-  var episodes = [], re = /<a[^>]*class="ssl-item ep-item[^"]*"[^>]*>/g, m;
-  while ((m = re.exec(html)) !== null) {
-    var end = html.indexOf("</a>", m.index);
-    var tag = end > 0 ? html.substring(m.index, end) : m[0];
-    var num = tag.match(/data-num="(\d+)"/);
-    var sl = tag.match(/data-slug="([^"]+)"/);
-    var mal = tag.match(/data-mal="([^"]+)"/);
-    var ids = tag.match(/data-ids="([^"]+)"/);
-    var sub = tag.match(/data-sub="(\d+)"/);
-    var dub = tag.match(/data-dub="(\d+)"/);
-    var ttl = tag.match(/title="([^"]*)"/) || tag.match(/data-jp="([^"]*)"/);
-    if (num) episodes.push({
+  var episodes = [];
+  var re = /<a[^>]*(?:class="[^"]*ep-item[^"]*"|data-number="[^"]+"|data-num="[^"]+")/gi;
+  var match;
+
+  while ((match = re.exec(html)) !== null) {
+    var end = html.indexOf("</a>", match.index);
+    var tag = end > 0 ? html.substring(match.index, end + 4) : html.substring(match.index, match.index + 800);
+    var num = tag.match(/data-number="(\d+)"/) || tag.match(/data-num="(\d+)"/);
+    var slugMatch = tag.match(/data-slug="([^"]+)"/);
+    var malMatch = tag.match(/data-mal="([^"]+)"/);
+    var idsMatch = tag.match(/data-ids="([^"]+)"/);
+    var subMatch = tag.match(/data-sub="(\d+)"/);
+    var dubMatch = tag.match(/data-dub="(\d+)"/);
+    var titleMatch = tag.match(/title="([^"]*)"/) || tag.match(/data-jp="([^"]*)"/) || tag.match(/<span[^>]*class="name"[^>]*>([^<]*)<\/span>/);
+
+    if (!num) continue;
+    episodes.push({
       number: parseInt(num[1], 10),
-      slug: sl ? sl[1] : num[1],
-      mal: mal ? mal[1] : "",
-      ids: ids ? ids[1] : "",
-      hasSub: sub ? sub[1] === "1" : true,
-      hasDub: dub ? dub[1] === "1" : false,
-      title: ttl ? decodeHtml(ttl[1]) : "Episode " + num[1],
+      slug: slugMatch ? slugMatch[1] : num[1],
+      mal: malMatch ? malMatch[1] : "",
+      ids: idsMatch ? idsMatch[1] : "",
+      hasSub: subMatch ? subMatch[1] === "1" : true,
+      hasDub: dubMatch ? dubMatch[1] === "1" : false,
+      title: titleMatch ? decodeHtml(titleMatch[1].trim()) : "Episode " + num[1],
     });
   }
-  return episodes;
+
+  return episodes.sort(function(left, right) {
+    return left.number - right.number;
+  });
 }
 
 async function getServersFromList(dataIds) {
@@ -67,55 +100,32 @@ async function getServersFromList(dataIds) {
       headers: { "X-Requested-With": "XMLHttpRequest", Referer: config.HIANIME_BASE + "/" },
     });
     var html = data.result || data.html || (typeof data === "string" ? data : "");
-    if (!html) { console.warn("[hianime] server/list: empty HTML"); return []; }
-    console.log("[hianime] server/list HTML length: " + html.length);
+    if (!html) {
+      console.warn("[hianime] server/list: empty HTML");
+      return [];
+    }
 
     var servers = [];
-    var m;
-
-    var btnRe = /<a[^>]*class="btn"[^>]*>/gi;
-    while ((m = btnRe.exec(html)) !== null) {
-      var end = html.indexOf("</a>", m.index);
-      var tag = end > 0 ? html.substring(m.index, end + 4) : html.substring(m.index, m.index + 500);
+    var re = /<(a|div|button)[^>]*data-link-id="([^"]+)"[^>]*>/gi;
+    var match;
+    while ((match = re.exec(html)) !== null) {
+      var end = html.indexOf("</" + match[1] + ">", match.index);
+      var tag = end > 0 ? html.substring(match.index, end + match[1].length + 3) : html.substring(match.index, match.index + 500);
       var type = tag.match(/data-type="([^"]*)"/);
-      var linkId = tag.match(/data-link-id="([^"]*)"/);
-      var svId = tag.match(/data-sv-id="([^"]*)"/);
-      var name = tag.match(/>([^<]*)<\/a>/);
-      if (linkId) {
-        servers.push({
-          type: type ? type[1] : "sub",
-          linkId: linkId[1],
-          svId: svId ? svId[1] : "",
-          name: name ? name[1].trim().toLowerCase() : "server",
-          source: "list",
-        });
-      }
+      var serverId = tag.match(/data-sv-id="([^"]*)"/);
+      var name = tag.match(/>([^<]*)</);
+      servers.push({
+        type: type ? type[1] : "sub",
+        linkId: match[2],
+        svId: serverId ? serverId[1] : "",
+        name: name ? name[1].trim().toLowerCase() : "server",
+        source: "list",
+      });
     }
 
-    if (servers.length === 0) {
-      var linkRe = /data-link-id="([^"]+)"/g;
-      while ((m = linkRe.exec(html)) !== null) {
-        var ctx = html.substring(Math.max(0, m.index - 300), Math.min(html.length, m.index + 300));
-        var typeM = ctx.match(/data-type="([^"]*)"/);
-        var nameM = ctx.match(/>([A-Za-z][^<]{0,30})<\/a>/);
-        servers.push({
-          type: typeM ? typeM[1] : "sub",
-          linkId: m[1],
-          name: nameM ? nameM[1].trim().toLowerCase() : "server",
-          source: "list",
-        });
-      }
-    }
-
-    console.log("[hianime] server/list: " + servers.length + " servers (" +
-      servers.filter(function(s){return s.type==="sub"}).length + " sub, " +
-      servers.filter(function(s){return s.type==="dub"}).length + " dub)");
-    servers.forEach(function(s) {
-      console.log("[hianime]   - " + s.name + " type=" + s.type + " linkId=" + s.linkId.substring(0, 30) + "...");
-    });
     return servers;
-  } catch (e) {
-    console.warn("[hianime] server/list failed: " + e.message);
+  } catch (error) {
+    console.warn("[hianime] server/list failed: " + error.message);
     return [];
   }
 }
@@ -130,29 +140,57 @@ async function getServersFromMal(malValue, epSlug) {
   var servers = [];
   for (var name in data) {
     if (name === "status") continue;
-    var sv = data[name];
-    if (sv && sv.sub && sv.sub.url) servers.push({ name: name, type: "sub", linkId: sv.sub.url, source: "mal" });
-    if (sv && sv.dub && sv.dub.url) servers.push({ name: name, type: "dub", linkId: sv.dub.url, source: "mal" });
+    var value = data[name];
+    if (value && value.sub && value.sub.url) {
+      servers.push({ name: name, type: "sub", linkId: value.sub.url, source: "mal" });
+    }
+    if (value && value.dub && value.dub.url) {
+      servers.push({ name: name, type: "dub", linkId: value.dub.url, source: "mal" });
+    }
   }
   return servers;
 }
 
 function qualityFromName(name) {
-  var m = name.match(/(\d{3,4})p/i);
-  return m ? parseInt(m[1], 10) : 0;
+  var match = (name || "").match(/(\d{3,4})p/i);
+  return match ? parseInt(match[1], 10) : 0;
 }
 
-function sortByQualityDesc(servers) {
-  return servers.slice().sort(function(a, b) {
-    return qualityFromName(b.name) - qualityFromName(a.name);
+function sortServersForPlayback(servers) {
+  return servers.slice().sort(function(left, right) {
+    var leftPreferred = config.PREFERRED_SERVERS.some(function(preferred) {
+      return (left.name || "").indexOf(preferred) >= 0;
+    });
+    var rightPreferred = config.PREFERRED_SERVERS.some(function(preferred) {
+      return (right.name || "").indexOf(preferred) >= 0;
+    });
+    if (leftPreferred !== rightPreferred) {
+      return rightPreferred ? 1 : -1;
+    }
+    return qualityFromName(right.name || "") - qualityFromName(left.name || "");
   });
 }
 
 async function getEmbedFromServer(linkId) {
-  var data = await http.fetchJSON(config.HIANIME_BASE + "/ajax/server?get=" + linkId, {
+  if (!linkId) return null;
+  if (/^https?:\/\//i.test(linkId)) {
+    return { url: linkId, skipData: null };
+  }
+
+  var data = await http.fetchJSON(config.HIANIME_BASE + "/ajax/server?get=" + encodeURIComponent(linkId), {
     headers: { "X-Requested-With": "XMLHttpRequest", Referer: config.HIANIME_BASE + "/" },
   });
-  if (data && data.status === 200 && data.result) return { url: data.result.url, skipData: data.result.skip_data || null };
+
+  var result = data && data.result ? data.result : data;
+  if (result && typeof result === "string" && /^https?:\/\//i.test(result)) {
+    return { url: result, skipData: null };
+  }
+  if (result && result.url) {
+    return { url: result.url, skipData: result.skip_data || result.skipData || null };
+  }
+  if (result && result.link) {
+    return { url: result.link, skipData: result.skip_data || result.skipData || null };
+  }
   return null;
 }
 
@@ -160,66 +198,108 @@ async function resolveEmbedForEpisode(slug, epNum, category) {
   category = category || "sub";
 
   var info = await getInfo(slug);
-  if (!info.animeId) throw new Error("Could not resolve animeId for " + slug);
-  console.log("[hianime] animeId=" + info.animeId);
+  if (!info.animeId) {
+    throw makeStageError("info", "ANIME_ID_NOT_FOUND", "Could not resolve animeId for " + slug, { slug: slug });
+  }
 
   var episodes = await getEpisodes(info.animeId);
-  if (!episodes.length) throw new Error("No episodes found for " + slug);
-  console.log("[hianime] " + episodes.length + " episodes found");
+  if (!episodes.length) {
+    throw makeStageError("episodes", "EPISODE_LIST_EMPTY", "No episodes found for " + slug, {
+      slug: slug,
+      animeId: info.animeId,
+    });
+  }
 
-  var ep = episodes.find(function(e) { return e.number === epNum; });
-  if (!ep) throw new Error("Episode " + epNum + " not found");
+  var episode = episodes.find(function(entry) {
+    return entry.number === epNum;
+  });
+  if (!episode) {
+    throw makeStageError("episodes", "EPISODE_NOT_FOUND", "Episode " + epNum + " not found", {
+      slug: slug,
+      animeId: info.animeId,
+      requestedEpisode: epNum,
+      episodeCount: episodes.length,
+      firstEpisode: episodes[0] ? episodes[0].number : null,
+      lastEpisode: episodes.length ? episodes[episodes.length - 1].number : null,
+    });
+  }
 
   var availableCategories = [];
-  if (ep.hasSub) availableCategories.push("sub");
-  if (ep.hasDub) availableCategories.push("dub");
-
-  console.log("[hianime] Episode " + epNum + ": sub=" + ep.hasSub + " dub=" + ep.hasDub + " requested=" + category);
+  if (episode.hasSub) availableCategories.push("sub");
+  if (episode.hasDub) availableCategories.push("dub");
 
   var allServers = [];
-
-  if (ep.ids) {
-    var listServers = await getServersFromList(ep.ids);
-    allServers = allServers.concat(listServers);
+  if (episode.ids) {
+    allServers = allServers.concat(await getServersFromList(episode.ids));
+  }
+  if (episode.mal) {
+    allServers = allServers.concat(await getServersFromMal(episode.mal, episode.slug));
   }
 
-  if (ep.mal) {
-    var malServers = await getServersFromMal(ep.mal, ep.slug);
-    allServers = allServers.concat(sortByQualityDesc(malServers));
+  if (!allServers.length) {
+    throw makeStageError("servers", "NO_SERVERS", "No playback servers found for episode " + epNum, {
+      slug: slug,
+      animeId: info.animeId,
+      requestedEpisode: epNum,
+      availableCategories: availableCategories,
+      episodeMeta: {
+        ids: episode.ids || "",
+        mal: episode.mal || "",
+      },
+    });
   }
 
-  if (!allServers.length) throw new Error("No servers found for episode " + epNum);
-  console.log("[hianime] Total servers: " + allServers.length + " (list: " +
-    allServers.filter(function(s){return s.source==="list"}).length + ", mal: " +
-    allServers.filter(function(s){return s.source==="mal"}).length + ")");
-
-  var filtered = allServers.filter(function(s) { return s.type === category; });
+  var filtered = allServers.filter(function(server) {
+    return server.type === category;
+  });
   if (filtered.length === 0) {
-    console.warn("[hianime] No " + category + " servers, trying all");
     filtered = allServers;
   }
 
-  var listFirst = filtered.filter(function(s){return s.source==="list"});
-  var malSecond = sortByQualityDesc(filtered.filter(function(s){return s.source==="mal"}));
-  var tryList = listFirst.concat(malSecond);
+  var tryList = sortServersForPlayback(filtered);
+  var serverErrors = [];
 
-  for (var i = 0; i < tryList.length; i++) {
+  for (var index = 0; index < tryList.length; index += 1) {
+    var server = tryList[index];
     try {
-      console.log("[hianime] Trying: " + tryList[i].name + " (" + tryList[i].type + ", " + tryList[i].source + ")");
-      var embed = await getEmbedFromServer(tryList[i].linkId);
+      console.log("[hianime] Trying: " + server.name + " (" + server.type + ", " + server.source + ")");
+      var embed = await getEmbedFromServer(server.linkId);
       if (embed && embed.url) {
-        console.log("[hianime] Embed: " + embed.url);
         return {
           embedUrl: embed.url,
-          serverName: tryList[i].name,
-          type: tryList[i].type,
+          serverName: server.name,
+          type: server.type,
           skipData: embed.skipData,
           availableCategories: availableCategories,
+          triedServers: tryList.map(function(item) {
+            return { name: item.name, type: item.type, source: item.source };
+          }),
         };
       }
-    } catch (e) { console.warn("[hianime] " + tryList[i].name + " failed: " + e.message); }
+      serverErrors.push({ server: server.name, error: "empty embed response" });
+    } catch (error) {
+      serverErrors.push({ server: server.name, error: error.message });
+      console.warn("[hianime] " + server.name + " failed: " + error.message);
+    }
   }
-  throw new Error("No embed URL found for category=" + category);
+
+  throw makeStageError("embed", "EMBED_RESOLUTION_FAILED", "No embed URL found for category=" + category, {
+    slug: slug,
+    animeId: info.animeId,
+    requestedEpisode: epNum,
+    requestedCategory: category,
+    availableCategories: availableCategories,
+    triedServers: tryList.map(function(item) {
+      return { name: item.name, type: item.type, source: item.source };
+    }),
+    serverErrors: serverErrors,
+  });
 }
 
-module.exports = { search, getInfo, getEpisodes, resolveEmbedForEpisode, __getServersFromList: getServersFromList };
+module.exports = {
+  search: search,
+  getInfo: getInfo,
+  getEpisodes: getEpisodes,
+  resolveEmbedForEpisode: resolveEmbedForEpisode,
+  __getServersFromList: getServersFromList,
+};

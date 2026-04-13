@@ -99,6 +99,7 @@ export const MINT_STATUSES = [
     "ended",
 ] as const;
 export type MintStatus = (typeof MINT_STATUSES)[number];
+export type MintScope = "work" | "release";
 
 export interface CreatorWork {
     id: string;
@@ -190,7 +191,7 @@ export interface WorkMintRecord {
     work_id?: string | null;
     release_id?: string | null;
     creator_wallet: string;
-    mint_scope: "work" | "release";
+    mint_scope: MintScope;
     mint_type: MintType;
     status: MintStatus;
     collection_address?: string | null;
@@ -201,8 +202,22 @@ export interface WorkMintRecord {
     minted_count: number;
     mint_price: number;
     currency: string;
+    setup_tx_signature?: string | null;
+    verified_at?: string | null;
+    verification_state?: Record<string, unknown>;
     created_at: string;
     updated_at: string;
+}
+
+export interface LinkedAssetVariant extends AssetVariantRecord {
+    publicUrl: string | null;
+}
+
+export interface LinkedCreatorAsset extends WorkAssetLink {
+    file: AssetFileRecord & {
+        publicUrl: string | null;
+    };
+    variants: LinkedAssetVariant[];
 }
 
 export interface PublisherValidationIssue {
@@ -226,6 +241,17 @@ export interface ReleaseDraftInput {
     contentType?: WorkContentType;
     bodyText?: string;
     visibility?: WorkVisibility;
+}
+
+export interface MintIntentDraftInput {
+    mintType: MintType;
+    metadataUri: string;
+    txSignature: string;
+    mintPrice: number;
+    maxSupply?: number | null;
+    collectionAddress?: string;
+    treeAddress?: string;
+    mintAddress?: string;
 }
 
 const BUCKET_BY_ASSET_KIND: Record<AssetKind, StorageBucket> = {
@@ -277,6 +303,12 @@ export function isPublishedStatus(status: PublicationStatus): boolean {
     return status === "published";
 }
 
+export function getDefaultContentTypeForWorkKind(kind: WorkKind): WorkContentType {
+    if (kind === "manga") return "manga_chapter";
+    if (kind === "anime") return "anime_episode";
+    return "novel_chapter";
+}
+
 export function canAssetBePublic(kind: AssetKind): boolean {
     return kind === "cover" || kind === "thumbnail" || kind === "poster";
 }
@@ -309,6 +341,17 @@ export function sanitizeStorageName(value: string): string {
         .replace(/[^a-z0-9._-]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .slice(0, 120) || "file";
+}
+
+export function compareNaturalNames(a: string, b: string): number {
+    return a.localeCompare(b, undefined, {
+        numeric: true,
+        sensitivity: "base",
+    });
+}
+
+export function sortNamedItemsNaturally<T extends { name: string }>(items: T[]): T[] {
+    return [...items].sort((left, right) => compareNaturalNames(left.name, right.name));
 }
 
 export function validateWorkDraft(input: WorkDraftInput): PublisherValidationIssue[] {
@@ -350,6 +393,43 @@ export function validateReleaseDraft(input: ReleaseDraftInput): PublisherValidat
 
     if (input.workKind === "novel" && !(input.bodyText || "").trim()) {
         issues.push({ field: "bodyText", message: "Novel releases need chapter text." });
+    }
+
+    return issues;
+}
+
+export function validateMintIntentDraft(input: MintIntentDraftInput): PublisherValidationIssue[] {
+    const issues: PublisherValidationIssue[] = [];
+
+    if (!MINT_TYPES.includes(input.mintType)) {
+        issues.push({ field: "mintType", message: "Unsupported mint type." });
+    }
+
+    if (!input.metadataUri.trim()) {
+        issues.push({ field: "metadataUri", message: "Metadata URI is required." });
+    } else {
+        try {
+            const url = new URL(input.metadataUri);
+            if (url.protocol !== "https:") {
+                issues.push({ field: "metadataUri", message: "Metadata URI must use https." });
+            }
+        } catch {
+            issues.push({ field: "metadataUri", message: "Metadata URI must be a valid URL." });
+        }
+    }
+
+    if (!input.txSignature.trim()) {
+        issues.push({ field: "txSignature", message: "Verified transaction signature is required." });
+    }
+
+    if (!Number.isFinite(input.mintPrice) || input.mintPrice < 0) {
+        issues.push({ field: "mintPrice", message: "Mint price must be zero or greater." });
+    }
+
+    if (input.maxSupply != null) {
+        if (!Number.isInteger(input.maxSupply) || input.maxSupply <= 0) {
+            issues.push({ field: "maxSupply", message: "Max supply must be a positive whole number." });
+        }
     }
 
     return issues;

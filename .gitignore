@@ -96,3 +96,7 @@ src/lib/sources/megacloud.ts
 android/app/src/main/java/com/millw14/sakura/anime/AnimeScraper.kt
 android/app/src/main/java/com/millw14/sakura/anime/WebViewExtractor.kt
 android/app/src/main/java/com/millw14/sakura/anime/CloudflareBypass.kt
+
+# local tool artifacts
+supabase/.temp/
+hianime-node/node_modules/

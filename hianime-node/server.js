@@ -4,27 +4,44 @@ var hianime = require("./scrapers/hianime");
 var extractor = require("./extractors/index");
 var app = express();
 
+function serializeError(error) {
+  return {
+    error: error && error.message ? error.message : "Unknown error",
+    code: error && error.code ? error.code : undefined,
+    stage: error && error.stage ? error.stage : undefined,
+    details: error && error.details ? error.details : undefined,
+  };
+}
+
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "2.2.0", domain: config.HIANIME_BASE });
+  res.json({ status: "ok", version: "2.3.0", domain: config.HIANIME_BASE });
 });
 
 app.get("/api/search", async function(req, res) {
   var kw = req.query.keyword || req.query.q || "";
   if (!kw) return res.status(400).json({ error: "Missing keyword" });
-  try { res.json({ results: await hianime.search(kw) }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    res.json({ results: await hianime.search(kw) });
+  } catch (error) {
+    res.status(500).json(serializeError(error));
+  }
 });
 
 app.get("/api/info/:slug", async function(req, res) {
-  try { res.json(await hianime.getInfo(req.params.slug)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    res.json(await hianime.getInfo(req.params.slug));
+  } catch (error) {
+    res.status(500).json(serializeError(error));
+  }
 });
 
 app.get("/api/episodes/:animeId", async function(req, res) {
   try {
     var eps = await hianime.getEpisodes(req.params.animeId);
     res.json({ totalEpisodes: eps.length, episodes: eps });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (error) {
+    res.status(500).json(serializeError(error));
+  }
 });
 
 app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
@@ -39,11 +56,12 @@ app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
     if (embed.skipData) { result.intro = embed.skipData.intro; result.outro = embed.skipData.outro; }
     result.category = embed.type;
     result.availableCategories = embed.availableCategories || ["sub"];
+    result.debug = { serverName: embed.serverName, triedServers: embed.triedServers || [] };
     console.log("[m3u8] SUCCESS: " + result.sources[0].url.substring(0, 80) + "...");
     res.json(result);
-  } catch (e) {
-    console.error("[m3u8] FAILED: " + e.message);
-    res.status(500).json({ error: e.message });
+  } catch (error) {
+    console.error("[m3u8] FAILED: " + error.message);
+    res.status(500).json(serializeError(error));
   }
 });
 
@@ -107,21 +125,36 @@ app.get("/api/debug/:slug/:epNum", async function(req, res) {
           firstSource: result.sources && result.sources[0] ? result.sources[0].url.substring(0, 100) : null,
           subtitlesCount: result.subtitles ? result.subtitles.length : 0,
         });
-      } catch (e) {
-        debug.steps.push({ step: "extract", error: e.message });
+      } catch (error) {
+        debug.steps.push({
+          step: "extract",
+          error: error.message,
+          code: error.code,
+          stage: error.stage,
+          details: error.details,
+        });
       }
-    } catch (e) {
-      debug.steps.push({ step: "resolveEmbed", error: e.message });
+    } catch (error) {
+      debug.steps.push({
+        step: "resolveEmbed",
+        error: error.message,
+        code: error.code,
+        stage: error.stage,
+        details: error.details,
+      });
     }
 
     res.json(debug);
-  } catch (e) {
-    debug.error = e.message;
+  } catch (error) {
+    debug.error = error.message;
+    debug.code = error.code;
+    debug.stage = error.stage;
+    debug.details = error.details;
     res.json(debug);
   }
 });
 
 app.listen(config.PORT, function() {
-  console.log("[server] hianime-node v2.2.0 on port " + config.PORT);
+  console.log("[server] hianime-node v2.3.0 on port " + config.PORT);
   console.log("[server] Domain: " + config.HIANIME_BASE);
 });
