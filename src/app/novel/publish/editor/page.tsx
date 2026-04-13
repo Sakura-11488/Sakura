@@ -8,6 +8,10 @@ import {
     getNovel, getChapterContent, createChapter, updateChapter,
     publishChapter, deleteChapter, type Novel,
 } from "@/lib/novel";
+import {
+    bridgeLegacyNovelBundle,
+    deleteLegacyNovelChapterBridge,
+} from "@/lib/creator-work-bridge";
 
 function ChapterEditorContent() {
     const params = useSearchParams();
@@ -61,14 +65,21 @@ function ChapterEditorContent() {
                 if (andPublish) await publishChapter(ch.id, wallet);
             }
         }
+
+        const syncedChapter = await getChapterContent(novelId, chapterNum);
+        if (novel && syncedChapter) {
+            await bridgeLegacyNovelBundle({ wallet, novel, chapters: [syncedChapter] });
+        }
+
         setSaving(false);
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
-    }, [wallet, novelId, chapterId, chapterNum, title, content]);
+    }, [wallet, novelId, chapterId, chapterNum, title, content, novel]);
 
     const handleDelete = async () => {
         if (!wallet || !chapterId || !confirm("Delete this chapter?")) return;
         await deleteChapter(chapterId, wallet);
+        await deleteLegacyNovelChapterBridge(wallet, novelId, chapterId);
         router.push(`/novel/publish?manage=${novelId}`);
     };
 

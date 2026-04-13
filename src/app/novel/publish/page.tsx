@@ -10,6 +10,10 @@ import {
     getChapters, getNovelStats, NOVEL_GENRES,
     type Novel, type NovelChapter, type NovelStats,
 } from "@/lib/novel";
+import {
+    bridgeLegacyNovelBundle,
+    deleteLegacyNovelBridge,
+} from "@/lib/creator-work-bridge";
 import { uploadCreatorAsset } from "@/lib/publisher-assets";
 import { buildWalletAuthHeaders, generateWalletAuthMessage } from "@/lib/wallet-auth";
 
@@ -63,6 +67,15 @@ export default function NovelPublishPage() {
         );
         setNovels(withStats);
         setLoading(false);
+
+        void Promise.all(
+            withStats.map(({ novel, chapters }) =>
+                bridgeLegacyNovelBundle({ wallet, novel, chapters }).catch((error) => {
+                    console.error("Failed to sync legacy novel bridge:", error);
+                    return null;
+                })
+            )
+        );
     }, [wallet]);
 
     useEffect(() => { loadNovels(); }, [loadNovels]);
@@ -128,12 +141,13 @@ export default function NovelPublishPage() {
         }
     }, [coverPreviewUrl]);
 
-    const uploadCoverForNovel = useCallback(async (novelId: string, file: File) => {
+    const uploadCoverForNovel = useCallback(async (novel: Novel, file: File) => {
+        const bridgeWork = await bridgeLegacyNovelBundle({ wallet: wallet!, novel });
         const authHeaders = await signPublisherAction("creator-asset-upload");
         const uploaded = await uploadCreatorAsset({
             file,
             kind: "cover",
-            workId: novelId,
+            workId: bridgeWork?.id || novel.id,
             role: "cover",
             isPrimary: true,
             isPublic: true,
@@ -148,10 +162,18 @@ export default function NovelPublishPage() {
             throw new Error("Cover uploaded, but no public URL was returned.");
         }
 
-        const updated = await updateNovel(novelId, wallet!, { cover_url: resolvedCoverUrl } as Partial<Novel>);
+        const updatedNovel = {
+            ...novel,
+            cover_url: resolvedCoverUrl,
+            updated_at: new Date().toISOString(),
+        };
+
+        const updated = await updateNovel(novel.id, wallet!, { cover_url: resolvedCoverUrl } as Partial<Novel>);
         if (!updated) {
             throw new Error("Cover uploaded, but linking it to the novel failed.");
         }
+
+        await bridgeLegacyNovelBundle({ wallet: wallet!, novel: updatedNovel });
 
         return resolvedCoverUrl;
     }, [signPublisherAction, wallet]);
@@ -178,11 +200,13 @@ export default function NovelPublishPage() {
                 return;
             }
 
+            await bridgeLegacyNovelBundle({ wallet, novel });
+
             let uploadWarning: string | null = null;
             if (coverFile) {
                 setCoverUploadState("uploading");
                 try {
-                    await uploadCoverForNovel(novel.id, coverFile);
+                    await uploadCoverForNovel(novel, coverFile);
                     setCoverUploadState("idle");
                 } catch (error: any) {
                     console.error("Cover upload after novel creation failed:", error);
@@ -210,7 +234,7 @@ export default function NovelPublishPage() {
         setManageCoverError(null);
 
         try {
-            const resolvedCoverUrl = await uploadCoverForNovel(selectedNovel.novel.id, file);
+            const resolvedCoverUrl = await uploadCoverForNovel(selectedNovel.novel, file);
             setSelectedNovel((prev) => prev ? {
                 ...prev,
                 novel: {
@@ -233,13 +257,29 @@ export default function NovelPublishPage() {
 
     const handlePublishNovel = async (novelId: string) => {
         if (!wallet) return;
-        await publishNovel(novelId, wallet);
+        const published = await publishNovel(novelId, wallet);
+        if (published) {
+            const target = selectedNovel?.novel.id === novelId
+                ? selectedNovel.novel
+                : novels.find((entry) => entry.novel.id === novelId)?.novel;
+            if (target) {
+                await bridgeLegacyNovelBundle({
+                    wallet,
+                    novel: {
+                        ...target,
+                        published: true,
+                        updated_at: new Date().toISOString(),
+                    },
+                });
+            }
+        }
         await loadNovels();
     };
 
     const handleDeleteNovel = async (novelId: string) => {
         if (!wallet || !confirm("Delete this novel and all its chapters?")) return;
         await deleteNovel(novelId, wallet);
+        await deleteLegacyNovelBridge(wallet, novelId);
         setSelectedNovel(null);
         setView("list");
         await loadNovels();

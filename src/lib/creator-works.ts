@@ -1,8 +1,12 @@
 import { supabase } from "@/lib/supabase";
 import type {
+    AssetFileRecord,
+    AssetVariantRecord,
     CreatorWork,
+    LinkedCreatorAsset,
     PublicationStatus,
     SeriesStatus,
+    WorkAssetLink,
     WorkContentType,
     WorkKind,
     WorkRelease,
@@ -192,4 +196,169 @@ export async function createWorkRelease(
     }
 
     return data as WorkRelease;
+}
+
+export async function updateWorkRelease(
+    releaseId: string,
+    wallet: string,
+    updates: Partial<WorkRelease>
+): Promise<boolean> {
+    if (!releaseId || !wallet || !supabase) return false;
+
+    const { data: release, error: releaseError } = await supabase
+        .from("work_releases")
+        .select("id, work_id")
+        .eq("id", releaseId)
+        .single();
+
+    if (releaseError || !release) {
+        console.error("updateWorkRelease release lookup:", releaseError);
+        return false;
+    }
+
+    const work = await getCreatorWork(release.work_id);
+    if (!work || work.creator_wallet !== wallet) {
+        return false;
+    }
+
+    const { error } = await supabase
+        .from("work_releases")
+        .update({
+            ...updates,
+            updated_at: new Date().toISOString(),
+        })
+        .eq("id", releaseId);
+
+    if (error) {
+        console.error("updateWorkRelease:", error);
+        return false;
+    }
+
+    return true;
+}
+
+export async function deleteWorkRelease(releaseId: string, wallet: string): Promise<boolean> {
+    if (!releaseId || !wallet || !supabase) return false;
+
+    const { data: release, error: releaseError } = await supabase
+        .from("work_releases")
+        .select("id, work_id")
+        .eq("id", releaseId)
+        .single();
+
+    if (releaseError || !release) {
+        console.error("deleteWorkRelease release lookup:", releaseError);
+        return false;
+    }
+
+    const work = await getCreatorWork(release.work_id);
+    if (!work || work.creator_wallet !== wallet) {
+        return false;
+    }
+
+    const { error } = await supabase
+        .from("work_releases")
+        .delete()
+        .eq("id", releaseId);
+
+    if (error) {
+        console.error("deleteWorkRelease:", error);
+        return false;
+    }
+
+    return true;
+}
+
+export async function getReleaseAssetsForReleases(
+    releaseIds: string[]
+): Promise<Record<string, LinkedCreatorAsset[]>> {
+    const client = supabase;
+    if (!client || releaseIds.length === 0) return {};
+
+    const uniqueReleaseIds = [...new Set(releaseIds.filter(Boolean))];
+    if (uniqueReleaseIds.length === 0) return {};
+
+    const { data: assetLinks, error: linkError } = await client
+        .from("work_assets")
+        .select("*")
+        .in("release_id", uniqueReleaseIds)
+        .order("sort_order", { ascending: true });
+
+    if (linkError) {
+        console.error("getReleaseAssetsForReleases links:", linkError);
+        return {};
+    }
+
+    const typedLinks = (assetLinks as WorkAssetLink[]) || [];
+    const assetIds = [...new Set(typedLinks.map((link) => link.asset_file_id))];
+    if (assetIds.length === 0) {
+        return Object.fromEntries(uniqueReleaseIds.map((releaseId) => [releaseId, []]));
+    }
+
+    const [{ data: assetFiles, error: assetError }, { data: assetVariants, error: variantError }] = await Promise.all([
+        client
+            .from("asset_files")
+            .select("*")
+            .in("id", assetIds),
+        client
+            .from("asset_variants")
+            .select("*")
+            .in("asset_file_id", assetIds),
+    ]);
+
+    if (assetError) {
+        console.error("getReleaseAssetsForReleases files:", assetError);
+        return {};
+    }
+
+    if (variantError) {
+        console.error("getReleaseAssetsForReleases variants:", variantError);
+        return {};
+    }
+
+    const fileMap = new Map(
+        ((assetFiles as AssetFileRecord[]) || []).map((file) => [file.id, file])
+    );
+    const variantsByFile = new Map<string, AssetVariantRecord[]>();
+
+    for (const variant of (assetVariants as AssetVariantRecord[]) || []) {
+        const existing = variantsByFile.get(variant.asset_file_id) || [];
+        existing.push(variant);
+        variantsByFile.set(variant.asset_file_id, existing);
+    }
+
+    const result: Record<string, LinkedCreatorAsset[]> = Object.fromEntries(
+        uniqueReleaseIds.map((releaseId) => [releaseId, []])
+    );
+
+    for (const link of typedLinks) {
+        if (!link.release_id) continue;
+        const file = fileMap.get(link.asset_file_id);
+        if (!file) continue;
+
+        const publicUrl = file.is_public
+            ? client.storage.from(file.bucket).getPublicUrl(file.object_path).data.publicUrl
+            : null;
+        const variants = (variantsByFile.get(file.id) || []).map((variant) => ({
+            ...variant,
+            publicUrl: file.is_public
+                ? client.storage.from(variant.bucket).getPublicUrl(variant.object_path).data.publicUrl
+                : null,
+        }));
+
+        result[link.release_id].push({
+            ...link,
+            file: {
+                ...file,
+                publicUrl,
+            },
+            variants,
+        });
+    }
+
+    for (const releaseId of Object.keys(result)) {
+        result[releaseId].sort((left, right) => left.sort_order - right.sort_order);
+    }
+
+    return result;
 }

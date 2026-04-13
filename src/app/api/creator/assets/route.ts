@@ -13,6 +13,7 @@ import {
 } from "@/lib/publishing";
 import { normalizeImageAsset } from "@/server/media/normalize-image";
 import { verifyWalletHeaders } from "@/server/auth/wallet-auth";
+import { resolvePublishingOwnership } from "@/server/publishing/ownership";
 import { getSupabaseAdmin } from "@/server/supabase-admin";
 
 export const runtime = "nodejs";
@@ -58,17 +59,13 @@ export async function POST(req: Request) {
         }
 
         const kind = kindValue as AssetKind;
-        if (!IMAGE_ASSET_KINDS.includes(kind)) {
-            return NextResponse.json({ error: "This route currently supports image assets only." }, { status: 400 });
-        }
-
         const buffer = Buffer.from(await file.arrayBuffer());
         const supabaseAdmin = getSupabaseAdmin();
-        await assertAssetTargetOwnership(supabaseAdmin, { walletAddress, workId, releaseId });
+        const ownership = await resolvePublishingOwnership(supabaseAdmin, { walletAddress, workId, releaseId });
 
         const assetId = randomUUID();
         const bucket = getDefaultBucketForAssetKind(kind);
-        const storageBaseTarget = releaseId || workId || "draft";
+        const storageBaseTarget = ownership.releaseId || ownership.linkableWorkId || ownership.legacyNovelId || workId || "draft";
         const shouldBePublic = exposePublic && canAssetBePublic(kind);
         const variantRows: Array<Record<string, unknown>> = [];
         let assetRow: Record<string, unknown>;
@@ -89,8 +86,8 @@ export async function POST(req: Request) {
             const originalFilename = normalized.original.filename || sanitizeStorageName(file.name);
             const originalPath = buildAssetObjectPath({
                 wallet: walletAddress,
-                workId: workId || storageBaseTarget,
-                releaseId: releaseId || undefined,
+                workId: ownership.linkableWorkId || ownership.legacyNovelId || storageBaseTarget,
+                releaseId: ownership.releaseId || undefined,
                 kind,
                 filename: `${assetId}-original-${originalFilename}`,
             });
@@ -112,8 +109,8 @@ export async function POST(req: Request) {
             for (const variant of normalized.variants) {
                 const variantPath = buildAssetObjectPath({
                     wallet: walletAddress,
-                    workId: workId || storageBaseTarget,
-                    releaseId: releaseId || undefined,
+                    workId: ownership.linkableWorkId || ownership.legacyNovelId || storageBaseTarget,
+                    releaseId: ownership.releaseId || undefined,
                     kind,
                     filename: `${assetId}-${variant.filename}`,
                 });
@@ -172,8 +169,8 @@ export async function POST(req: Request) {
             const normalizedMimeType = normalizeTextAssetMimeType(kind, file.type, file.name);
             const objectPath = buildAssetObjectPath({
                 wallet: walletAddress,
-                workId: workId || storageBaseTarget,
-                releaseId: releaseId || undefined,
+                workId: ownership.linkableWorkId || ownership.legacyNovelId || storageBaseTarget,
+                releaseId: ownership.releaseId || undefined,
                 kind,
                 filename: `${assetId}-${sanitizeStorageName(file.name)}`,
             });
@@ -232,10 +229,10 @@ export async function POST(req: Request) {
             }
         }
 
-        if (workId || releaseId) {
+        if (ownership.linkableWorkId || ownership.releaseId) {
             const linkInsert = await supabaseAdmin.from("work_assets").insert({
-                work_id: workId,
-                release_id: releaseId,
+                work_id: ownership.linkableWorkId,
+                release_id: ownership.releaseId,
                 asset_file_id: assetId,
                 role: roleValue || getDefaultRoleForAssetKind(kind),
                 sort_order: Number.parseInt(String(form.get("sortOrder") || "0"), 10) || 0,
@@ -305,53 +302,4 @@ function stringOrNull(value: FormDataEntryValue | null): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
-}
-
-async function assertAssetTargetOwnership(
-    supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
-    input: { walletAddress: string; workId: string | null; releaseId: string | null }
-) {
-    if (input.releaseId) {
-        const release = await supabaseAdmin
-            .from("work_releases")
-            .select("id, work_id")
-            .eq("id", input.releaseId)
-            .single();
-
-        if (release.error || !release.data) {
-            throw new Error("Release not found.");
-        }
-
-        const work = await supabaseAdmin
-            .from("creator_works")
-            .select("id, creator_wallet")
-            .eq("id", release.data.work_id)
-            .single();
-
-        if (work.error || !work.data) {
-            throw new Error("Parent work not found.");
-        }
-
-        if (work.data.creator_wallet !== input.walletAddress) {
-            throw new Error("You do not own this release.");
-        }
-
-        return;
-    }
-
-    if (input.workId) {
-        const work = await supabaseAdmin
-            .from("creator_works")
-            .select("id, creator_wallet")
-            .eq("id", input.workId)
-            .single();
-
-        if (work.error || !work.data) {
-            throw new Error("Work not found.");
-        }
-
-        if (work.data.creator_wallet !== input.walletAddress) {
-            throw new Error("You do not own this work.");
-        }
-    }
 }
