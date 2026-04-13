@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import Header from "@/components/Header";
 import Link from "next/link";
+import bs58 from "bs58";
 import {
     getNovelsByCreator, createNovel, updateNovel, deleteNovel, publishNovel,
     getChapters, getNovelStats, NOVEL_GENRES,
     type Novel, type NovelChapter, type NovelStats,
 } from "@/lib/novel";
+import { uploadCreatorAsset } from "@/lib/publisher-assets";
+import { buildWalletAuthHeaders, generateWalletAuthMessage } from "@/lib/wallet-auth";
 
 type View = "list" | "create" | "manage";
 
@@ -19,8 +22,10 @@ interface NovelWithStats {
 }
 
 export default function NovelPublishPage() {
-    const { publicKey, connected } = useWallet();
+    const { publicKey, connected, signMessage } = useWallet();
     const wallet = publicKey?.toBase58() || null;
+    const coverFileInputRef = useRef<HTMLInputElement | null>(null);
+    const manageCoverInputRef = useRef<HTMLInputElement | null>(null);
 
     const [view, setView] = useState<View>("list");
     const [novels, setNovels] = useState<NovelWithStats[]>([]);
@@ -36,6 +41,12 @@ export default function NovelPublishPage() {
     const [pricePerChapter, setPricePerChapter] = useState(3);
     const [allowPass, setAllowPass] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [coverFile, setCoverFile] = useState<File | null>(null);
+    const [coverPreviewUrl, setCoverPreviewUrl] = useState("");
+    const [coverError, setCoverError] = useState<string | null>(null);
+    const [coverUploadState, setCoverUploadState] = useState<"idle" | "uploading" | "error">("idle");
+    const [manageCoverState, setManageCoverState] = useState<"idle" | "uploading" | "error">("idle");
+    const [manageCoverError, setManageCoverError] = useState<string | null>(null);
 
     const loadNovels = useCallback(async () => {
         if (!wallet) return;
@@ -56,26 +67,169 @@ export default function NovelPublishPage() {
 
     useEffect(() => { loadNovels(); }, [loadNovels]);
 
+    useEffect(() => {
+        return () => {
+            if (coverPreviewUrl.startsWith("blob:")) {
+                URL.revokeObjectURL(coverPreviewUrl);
+            }
+        };
+    }, [coverPreviewUrl]);
+
+    const resetCreateForm = useCallback(() => {
+        if (coverPreviewUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(coverPreviewUrl);
+        }
+        setTitle("");
+        setDescription("");
+        setCoverUrl("");
+        setGenres([]);
+        setFreeUntil(3);
+        setPricePerChapter(3);
+        setAllowPass(true);
+        setCoverFile(null);
+        setCoverPreviewUrl("");
+        setCoverError(null);
+        setCoverUploadState("idle");
+        if (coverFileInputRef.current) {
+            coverFileInputRef.current.value = "";
+        }
+    }, [coverPreviewUrl]);
+
+    const signPublisherAction = useCallback(async (action: string) => {
+        if (!publicKey || !signMessage) throw new Error("Wallet signing is unavailable.");
+        const message = generateWalletAuthMessage(action);
+        const sigBytes = await signMessage(new TextEncoder().encode(message));
+        return buildWalletAuthHeaders(publicKey.toBase58(), bs58.encode(sigBytes), message);
+    }, [publicKey, signMessage]);
+
+    const handleCoverFileChange = useCallback((file: File | null) => {
+        if (!file) return;
+
+        if (coverPreviewUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(coverPreviewUrl);
+        }
+
+        setCoverFile(file);
+        setCoverPreviewUrl(URL.createObjectURL(file));
+        setCoverError(null);
+        setCoverUploadState("idle");
+    }, [coverPreviewUrl]);
+
+    const clearSelectedCoverFile = useCallback(() => {
+        if (coverPreviewUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(coverPreviewUrl);
+        }
+        setCoverFile(null);
+        setCoverPreviewUrl("");
+        setCoverError(null);
+        setCoverUploadState("idle");
+        if (coverFileInputRef.current) {
+            coverFileInputRef.current.value = "";
+        }
+    }, [coverPreviewUrl]);
+
+    const uploadCoverForNovel = useCallback(async (novelId: string, file: File) => {
+        const authHeaders = await signPublisherAction("creator-asset-upload");
+        const uploaded = await uploadCreatorAsset({
+            file,
+            kind: "cover",
+            workId: novelId,
+            role: "cover",
+            isPrimary: true,
+            isPublic: true,
+            keepOriginal: true,
+        }, authHeaders);
+
+        const detailVariant = uploaded.variants.find((variant) => variant.variantKey === "detail" && variant.publicUrl);
+        const fallbackVariant = uploaded.variants.find((variant) => variant.publicUrl);
+        const resolvedCoverUrl = detailVariant?.publicUrl || fallbackVariant?.publicUrl || uploaded.asset.publicUrl || "";
+
+        if (!resolvedCoverUrl) {
+            throw new Error("Cover uploaded, but no public URL was returned.");
+        }
+
+        const updated = await updateNovel(novelId, wallet!, { cover_url: resolvedCoverUrl } as Partial<Novel>);
+        if (!updated) {
+            throw new Error("Cover uploaded, but linking it to the novel failed.");
+        }
+
+        return resolvedCoverUrl;
+    }, [signPublisherAction, wallet]);
+
     const handleCreate = async () => {
         if (!wallet || !title.trim()) return;
         setSaving(true);
-        const novel = await createNovel(wallet, {
-            title: title.trim(),
-            description: description.trim(),
-            cover_url: coverUrl.trim(),
-            genres,
-            free_until_chapter: freeUntil,
-            paid_from_chapter: freeUntil + 1,
-            price_per_chapter: pricePerChapter,
-            allow_pass: allowPass,
-        } as Partial<Novel>);
-        setSaving(false);
-        if (novel) {
-            setTitle(""); setDescription(""); setCoverUrl(""); setGenres([]);
+        setCoverError(null);
+
+        try {
+            const novel = await createNovel(wallet, {
+                title: title.trim(),
+                description: description.trim(),
+                cover_url: coverFile ? "" : coverUrl.trim(),
+                genres,
+                free_until_chapter: freeUntil,
+                paid_from_chapter: freeUntil + 1,
+                price_per_chapter: pricePerChapter,
+                allow_pass: allowPass,
+            } as Partial<Novel>);
+
+            if (!novel) {
+                setCoverError("Failed to create the novel.");
+                return;
+            }
+
+            let uploadWarning: string | null = null;
+            if (coverFile) {
+                setCoverUploadState("uploading");
+                try {
+                    await uploadCoverForNovel(novel.id, coverFile);
+                    setCoverUploadState("idle");
+                } catch (error: any) {
+                    console.error("Cover upload after novel creation failed:", error);
+                    uploadWarning = error?.message || "Cover upload failed.";
+                    setCoverUploadState("error");
+                }
+            }
+
+            resetCreateForm();
             setView("list");
             await loadNovels();
+
+            if (uploadWarning) {
+                alert(`Novel created, but the cover upload failed: ${uploadWarning}`);
+            }
+        } finally {
+            setSaving(false);
         }
     };
+
+    const handleReplaceNovelCover = useCallback(async (file: File | null) => {
+        if (!file || !selectedNovel || !wallet) return;
+
+        setManageCoverState("uploading");
+        setManageCoverError(null);
+
+        try {
+            const resolvedCoverUrl = await uploadCoverForNovel(selectedNovel.novel.id, file);
+            setSelectedNovel((prev) => prev ? {
+                ...prev,
+                novel: {
+                    ...prev.novel,
+                    cover_url: resolvedCoverUrl,
+                },
+            } : prev);
+            await loadNovels();
+            setManageCoverState("idle");
+        } catch (error: any) {
+            console.error("Replacing novel cover failed:", error);
+            setManageCoverState("error");
+            setManageCoverError(error?.message || "Failed to replace cover.");
+        } finally {
+            if (manageCoverInputRef.current) {
+                manageCoverInputRef.current.value = "";
+            }
+        }
+    }, [loadNovels, selectedNovel, uploadCoverForNovel, wallet]);
 
     const handlePublishNovel = async (novelId: string) => {
         if (!wallet) return;
@@ -193,7 +347,7 @@ export default function NovelPublishPage() {
                     {/* Create Novel Form */}
                     {view === "create" && (
                         <div style={{ paddingBottom: 100 }}>
-                            <button onClick={() => setView("list")} style={{ background: "none", border: "none", color: "var(--sakura-pink)", fontSize: 14, cursor: "pointer", marginBottom: 16 }}>
+                            <button onClick={() => { resetCreateForm(); setView("list"); }} style={{ background: "none", border: "none", color: "var(--sakura-pink)", fontSize: 14, cursor: "pointer", marginBottom: 16 }}>
                                 ← Back
                             </button>
                             <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", marginBottom: 20 }}>Create New Novel</h3>
@@ -222,9 +376,66 @@ export default function NovelPublishPage() {
                                         }}
                                     />
                                 </div>
-                                {/* Cover URL */}
+                                {/* Cover */}
                                 <div>
-                                    <label style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600, display: "block", marginBottom: 6 }}>Cover Image URL</label>
+                                    <label style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600, display: "block", marginBottom: 6 }}>Cover Image</label>
+                                    <input
+                                        ref={coverFileInputRef}
+                                        type="file"
+                                        accept="image/jpeg,image/png,image/webp,image/avif,image/*"
+                                        onChange={(e) => handleCoverFileChange(e.target.files?.[0] || null)}
+                                        style={{ display: "none" }}
+                                    />
+                                    <div style={{
+                                        display: "flex", gap: 12, alignItems: "center", marginBottom: 10,
+                                        padding: 12, borderRadius: 14,
+                                        background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+                                    }}>
+                                        <div style={{
+                                            width: 72, aspectRatio: "2/3", borderRadius: 10, overflow: "hidden", flexShrink: 0,
+                                            background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center",
+                                        }}>
+                                            {(coverFile ? coverPreviewUrl : coverUrl) ? (
+                                                // eslint-disable-next-line @next/next/no-img-element
+                                                <img src={coverFile ? coverPreviewUrl : coverUrl} alt="Selected cover preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                            ) : (
+                                                <span style={{ fontSize: 24 }}>🖼️</span>
+                                            )}
+                                        </div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--text-primary)", fontWeight: 600 }}>
+                                                {coverFile ? coverFile.name : "Choose a cover from your device"}
+                                            </p>
+                                            <p style={{ margin: 0, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                                                Mobile-friendly upload. Sakura will normalize the image after the novel is created.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => coverFileInputRef.current?.click()}
+                                            style={{
+                                                flex: 1, padding: "12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)",
+                                                background: "rgba(255,255,255,0.04)", color: "var(--text-primary)", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                                            }}
+                                        >
+                                            {coverFile ? "Choose Another Image" : "Choose From Device"}
+                                        </button>
+                                        {coverFile && (
+                                            <button
+                                                type="button"
+                                                onClick={clearSelectedCoverFile}
+                                                style={{
+                                                    padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)",
+                                                    background: "rgba(255,255,255,0.04)", color: "var(--text-muted)", fontSize: 13, cursor: "pointer",
+                                                }}
+                                            >
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+                                    <label style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600, display: "block", marginBottom: 6 }}>Or Paste Cover Image URL</label>
                                     <input type="text" value={coverUrl} onChange={e => setCoverUrl(e.target.value)} placeholder="https://..."
                                         style={{
                                             width: "100%", padding: "12px 14px", borderRadius: 12,
@@ -232,6 +443,9 @@ export default function NovelPublishPage() {
                                             color: "var(--text-primary)", fontSize: 14, outline: "none",
                                         }}
                                     />
+                                    {coverError && (
+                                        <p style={{ margin: "8px 0 0", fontSize: 12, color: "#f87171" }}>{coverError}</p>
+                                    )}
                                 </div>
                                 {/* Genres */}
                                 <div>
@@ -304,7 +518,7 @@ export default function NovelPublishPage() {
                                         cursor: title.trim() && !saving ? "pointer" : "default",
                                     }}
                                 >
-                                    {saving ? "Creating..." : "Create Novel"}
+                                    {coverUploadState === "uploading" ? "Uploading Cover..." : saving ? "Creating..." : "Create Novel"}
                                 </button>
                             </div>
                         </div>
@@ -336,6 +550,30 @@ export default function NovelPublishPage() {
                                     }}>
                                         {selectedNovel.novel.published ? "Published" : "Draft"}
                                     </span>
+                                    <div style={{ marginTop: 10 }}>
+                                        <input
+                                            ref={manageCoverInputRef}
+                                            type="file"
+                                            accept="image/jpeg,image/png,image/webp,image/avif,image/*"
+                                            onChange={(e) => handleReplaceNovelCover(e.target.files?.[0] || null)}
+                                            style={{ display: "none" }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => manageCoverInputRef.current?.click()}
+                                            disabled={manageCoverState === "uploading"}
+                                            style={{
+                                                padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.1)",
+                                                background: "rgba(255,255,255,0.04)", color: "var(--text-primary)", fontSize: 12, fontWeight: 600,
+                                                cursor: manageCoverState === "uploading" ? "wait" : "pointer", opacity: manageCoverState === "uploading" ? 0.7 : 1,
+                                            }}
+                                        >
+                                            {manageCoverState === "uploading" ? "Uploading..." : "Replace Cover"}
+                                        </button>
+                                        {manageCoverError && (
+                                            <p style={{ margin: "8px 0 0", fontSize: 12, color: "#f87171" }}>{manageCoverError}</p>
+                                        )}
+                                    </div>
                                 </div>
                             </div>
 
