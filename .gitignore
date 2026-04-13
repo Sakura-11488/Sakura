@@ -61,6 +61,14 @@ Cargo.lock
 *.jks
 android/gradle.properties
 
+# Docs & Supabase SQL — keep local only (not in repo)
+*.md
+!TERMS.md
+!PRIVACY.md
+!COPYRIGHT.md
+supabase*.sql
+comments_schema.sql
+
 # reference repos
 aniyomi-main/
 
