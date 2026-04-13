@@ -79,7 +79,7 @@ function CreatorApplyPageContent() {
                 <Link href="/" className="back-btn">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
                 </Link>
-                <div className="title-header-text">Creator Verification</div>
+                <div className="title-header-text">Creator Profile Setup</div>
                 <div style={{ width: 40 }} />
             </div>
 
@@ -93,9 +93,9 @@ function CreatorApplyPageContent() {
             }}>
                 <div style={{ textAlign: 'center', marginBottom: '30px' }}>
                     <div style={{ fontSize: '48px', marginBottom: '16px' }}>🌸</div>
-                    <h1 style={{ fontSize: '1.8rem', marginBottom: '8px' }}>Become a Verified Creator</h1>
+                    <h1 style={{ fontSize: '1.8rem', marginBottom: '8px' }}>Become a Creator</h1>
                     <p style={{ color: 'var(--text-secondary)' }}>
-                        Link your Solana wallet to your Shueisha portfolio. Verified creators receive $SAKURA tips directly from readers.
+                        Set up a creator profile for publishing, public creator pages, and direct $SAKURA support from readers.
                     </p>
                 </div>
 
@@ -126,7 +126,7 @@ function CreatorApplyPageContent() {
 
                         <div>
                             <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                                Shueisha Author ID (Optional)
+                                Existing Author ID (Optional)
                             </label>
                             <input
                                 type="text"
@@ -139,7 +139,7 @@ function CreatorApplyPageContent() {
                                 }}
                             />
                             <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '6px' }}>
-                                If you already publish on Shueisha, enter your Author ID to instantly link all your published works to this verified profile.
+                                If you already publish elsewhere, you can add your existing author ID now and link it later to this creator profile.
                             </p>
                         </div>
 
@@ -195,7 +195,7 @@ function CreatorApplyPageContent() {
                                 fontWeight: 'bold'
                             }}
                         >
-                            {isSubmitting ? "Submitting Application..." : "Apply for Verification"}
+                            {isSubmitting ? "Creating Creator Profile..." : "Create Creator Profile"}
                         </button>
                     </form>
                 )}

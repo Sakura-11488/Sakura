@@ -5,8 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import bs58 from "bs58";
+import novelIcon from "../../../../../wired-flat-3140-book-open-hover-pinch.json";
+import mangaIcon from "../../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
+import animeIcon from "../../../../../wired-flat-2440-goku-hover-pinch.json";
 
 import Header from "@/components/Header";
+import LottieIcon from "@/components/LottieIcon";
 import { createCreatorWork, updateCreatorWork } from "@/lib/creator-works";
 import { uploadCreatorAsset } from "@/lib/publisher-assets";
 import {
@@ -16,10 +20,10 @@ import {
 } from "@/lib/publishing";
 import { buildWalletAuthHeaders, generateWalletAuthMessage } from "@/lib/wallet-auth";
 
-const KIND_OPTIONS: Array<{ kind: WorkKind; icon: string; label: string; description: string }> = [
-    { kind: "novel", icon: "📚", label: "Novel", description: "Text-first series with chapter releases" },
-    { kind: "manga", icon: "🖼️", label: "Manga", description: "Image-based chapters with page ordering" },
-    { kind: "anime", icon: "🎬", label: "Anime", description: "Episode-based video and subtitle publishing" },
+const KIND_OPTIONS: Array<{ kind: WorkKind; animationData: object; label: string; description: string }> = [
+    { kind: "novel", animationData: novelIcon, label: "Novel", description: "Text-first series with chapter releases" },
+    { kind: "manga", animationData: mangaIcon, label: "Manga", description: "Image-based chapters with page ordering" },
+    { kind: "anime", animationData: animeIcon, label: "Anime", description: "Episode-based video and subtitle publishing" },
 ];
 
 export default function NewCreatorWorkPage() {
@@ -205,7 +209,14 @@ export default function NewCreatorWorkPage() {
                                             cursor: "pointer",
                                         }}
                                     >
-                                        <div style={{ fontSize: 28, marginBottom: 6 }}>{option.icon}</div>
+                                        <div style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
+                                            <LottieIcon
+                                                animationData={option.animationData}
+                                                size={34}
+                                                playOnMount
+                                                replayIntervalMs={4000}
+                                            />
+                                        </div>
                                         <div style={{ fontSize: 13, fontWeight: 700 }}>{option.label}</div>
                                     </button>
                                 ))}
@@ -319,7 +330,12 @@ export default function NewCreatorWorkPage() {
                                         // eslint-disable-next-line @next/next/no-img-element
                                         <img src={coverFile ? coverPreviewUrl : coverUrl} alt="Work cover preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                                     ) : (
-                                        <span style={{ fontSize: 26 }}>{kind === "anime" ? "🎞️" : "🖼️"}</span>
+                                        <LottieIcon
+                                            animationData={kind === "novel" ? novelIcon : kind === "manga" ? mangaIcon : animeIcon}
+                                            size={34}
+                                            playOnMount
+                                            replayIntervalMs={4000}
+                                        />
                                     )}
                                 </div>
                                 <div style={{ flex: 1, minWidth: 0 }}>

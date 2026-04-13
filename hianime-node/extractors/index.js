@@ -2,8 +2,24 @@ var kwik = require("./kwik");
 var megacloud = require("./megacloud");
 var config = require("../config");
 
+function makeExtractorError(code, message, details) {
+  var error = new Error(message);
+  error.stage = "extractor";
+  error.code = code;
+  error.details = details || {};
+  return error;
+}
+
 async function extract(embedUrl, referer) {
   var errors = [];
+
+  if (/\.m3u8(\?|$)/i.test(embedUrl)) {
+    return {
+      sources: [{ url: embedUrl, isM3U8: true, quality: "auto" }],
+      subtitles: [],
+      headers: { Referer: referer || config.HIANIME_BASE + "/" },
+    };
+  }
 
   if (megacloud.isMegaCloud(embedUrl)) {
     try {
@@ -11,9 +27,9 @@ async function extract(embedUrl, referer) {
       var result = await megacloud.extractM3u8(embedUrl);
       if (result && result.sources && result.sources.length > 0) return result;
       errors.push("MegaCloud: empty sources");
-    } catch (e) {
-      console.warn("[extract] MegaCloud failed: " + e.message);
-      errors.push("MegaCloud: " + e.message);
+    } catch (error) {
+      console.warn("[extract] MegaCloud failed: " + error.message);
+      errors.push("MegaCloud: " + error.message);
     }
   }
 
@@ -23,9 +39,9 @@ async function extract(embedUrl, referer) {
       var result = await kwik.extractM3u8(embedUrl, referer);
       if (result && result.sources && result.sources.length > 0) return result;
       errors.push("Kwik: empty sources");
-    } catch (e) {
-      console.warn("[extract] Kwik failed: " + e.message);
-      errors.push("Kwik: " + e.message);
+    } catch (error) {
+      console.warn("[extract] Kwik failed: " + error.message);
+      errors.push("Kwik: " + error.message);
     }
   }
 
@@ -35,10 +51,24 @@ async function extract(embedUrl, referer) {
     var html = await http.fetchText(embedUrl, { headers: { Referer: referer || config.HIANIME_BASE + "/" } });
     var m = html.match(/(?:file|source|src)\s*[:=]\s*["']([^"']*\.m3u8[^"']*)/i);
     if (m) return { sources: [{ url: m[1], isM3U8: true, quality: "auto" }], subtitles: [], headers: { Referer: embedUrl } };
+    var playlistMatch = html.match(/https?:\/\/[^"'\\]+\.m3u8[^"'\\]*/i);
+    if (playlistMatch) {
+      return {
+        sources: [{ url: playlistMatch[0], isM3U8: true, quality: "auto" }],
+        subtitles: [],
+        headers: { Referer: embedUrl },
+      };
+    }
     errors.push("Generic: no m3u8 in HTML");
-  } catch (e) { errors.push("Generic: " + e.message); }
+  } catch (error) {
+    errors.push("Generic: " + error.message);
+  }
 
-  throw new Error("All extractors failed: " + errors.join("; "));
+  throw makeExtractorError("EMBED_EXTRACTION_FAILED", "All extractors failed: " + errors.join("; "), {
+    embedUrl: embedUrl,
+    referer: referer || config.HIANIME_BASE + "/",
+    attempts: errors,
+  });
 }
 
 module.exports = { extract: extract };

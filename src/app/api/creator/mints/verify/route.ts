@@ -128,6 +128,13 @@ export async function POST(req: Request) {
             }
         }
 
+        if (body.treeAddress) {
+            const treeAccount = await connection.getAccountInfo(new PublicKey(body.treeAddress), "confirmed");
+            if (!treeAccount) {
+                return NextResponse.json({ error: "Merkle tree account was not found on-chain after setup." }, { status: 400 });
+            }
+        }
+
         let targetQuery = supabaseAdmin
             .from("work_mints")
             .select("*")
@@ -168,6 +175,9 @@ export async function POST(req: Request) {
                 signature: txSignature,
                 slot: tx.slot,
                 verified_signer: walletAddress,
+                tree_address: body.treeAddress || null,
+                collection_address: body.collectionAddress || null,
+                mint_address: body.mintAddress || null,
                 verified_at: new Date().toISOString(),
             },
             updated_at: new Date().toISOString(),

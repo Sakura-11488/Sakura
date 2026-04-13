@@ -5,8 +5,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import bs58 from "bs58";
+import novelIcon from "../../../../../wired-flat-3140-book-open-hover-pinch.json";
+import mangaIcon from "../../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
+import animeIcon from "../../../../../wired-flat-2440-goku-hover-pinch.json";
 
 import Header from "@/components/Header";
+import LottieIcon from "@/components/LottieIcon";
+import { createCompressedMintSetupOnChain } from "@/lib/compressed-mint-setup";
 import { getWorkMintRecords } from "@/lib/creator-mints";
 import {
     createWorkRelease,
@@ -27,6 +32,7 @@ import {
     type CreatorWork,
     type LinkedCreatorAsset,
     type MintType,
+    type WorkKind,
     type WorkMintRecord,
     type WorkRelease,
     validateMintIntentDraft,
@@ -40,6 +46,12 @@ type ReleaseAssetJob = {
     kind: "subtitle" | "video_manifest" | "manga_page";
     current: number;
     total: number;
+};
+
+const KIND_ICONS: Record<WorkKind, object> = {
+    novel: novelIcon,
+    manga: mangaIcon,
+    anime: animeIcon,
 };
 
 function buildReleaseDrafts(releases: WorkRelease[]): ReleaseDraftState {
@@ -71,7 +83,7 @@ export default function CreatorWorkManagePage() {
     const searchParams = useSearchParams();
     const router = useRouter();
     const workId = searchParams.get("id") || "";
-    const { publicKey, connected, signMessage } = useWallet();
+    const { publicKey, connected, signMessage, signTransaction, signAllTransactions } = useWallet();
     const wallet = publicKey?.toBase58() || "";
     const coverInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -530,6 +542,77 @@ export default function CreatorWorkManagePage() {
         setInfoMessage(enabled ? "Minting enabled for this work." : "Minting disabled for this work.");
     }, [wallet, work]);
 
+    const handleCreateOnChainMintSetup = useCallback(async () => {
+        if (!work || !wallet || !publicKey || !signTransaction) {
+            setError("Wallet transaction signing is required for on-chain mint setup.");
+            return;
+        }
+
+        const parsedMintPrice = Number.parseFloat(mintPrice || "0");
+        const parsedMaxSupply = maxSupply.trim() ? Number.parseInt(maxSupply.trim(), 10) : null;
+        const issues = validateMintIntentDraft({
+            mintType,
+            metadataUri,
+            txSignature: "pending-onchain-setup",
+            mintPrice: parsedMintPrice,
+            maxSupply: parsedMaxSupply,
+            collectionAddress,
+            treeAddress,
+            mintAddress,
+        });
+
+        if (issues.length > 0) {
+            setError(issues[0].message);
+            return;
+        }
+
+        setMintState("saving");
+        setError(null);
+        setInfoMessage(null);
+
+        try {
+            const createdSetup = await createCompressedMintSetupOnChain({
+                walletAdapter: {
+                    publicKey,
+                    signMessage,
+                    signTransaction,
+                    signAllTransactions,
+                },
+            });
+
+            setTreeAddress(createdSetup.treeAddress);
+            setTxSignature(createdSetup.signature);
+
+            const authHeaders = await signPublisherAction("creator-mint-verify");
+            await verifyCreatorMintIntent({
+                workId: work.id,
+                mintScope: "work",
+                mintType,
+                metadataUri: metadataUri.trim(),
+                txSignature: createdSetup.signature,
+                mintPrice: parsedMintPrice,
+                maxSupply: parsedMaxSupply,
+                currency: "SAKURA",
+                collectionAddress: collectionAddress.trim() || undefined,
+                treeAddress: createdSetup.treeAddress,
+                mintAddress: mintAddress.trim() || undefined,
+            }, authHeaders);
+
+            if (!work.minting_enabled) {
+                await updateCreatorWork(work.id, wallet, { minting_enabled: true });
+                setWork((prev) => prev ? { ...prev, minting_enabled: true } : prev);
+            }
+
+            setInfoMessage("On-chain compressed mint setup created and verified.");
+            setMintState("idle");
+            await hydrateWork(work.id);
+        } catch (mintError: any) {
+            console.error("On-chain mint setup failed:", mintError);
+            setMintState("idle");
+            setError(mintError?.message || "Failed to create on-chain mint setup.");
+        }
+    }, [collectionAddress, hydrateWork, maxSupply, metadataUri, mintAddress, mintPrice, mintType, publicKey, signAllTransactions, signMessage, signPublisherAction, signTransaction, treeAddress, wallet, work]);
+
     const handleVerifyMint = useCallback(async () => {
         if (!work || !wallet) return;
 
@@ -576,7 +659,7 @@ export default function CreatorWorkManagePage() {
                 setWork((prev) => prev ? { ...prev, minting_enabled: true } : prev);
             }
 
-            setInfoMessage("Mint intent verified and submitted for review.");
+            setInfoMessage("Existing on-chain mint setup verified and submitted for review.");
             setMintState("idle");
             await hydrateWork(work.id);
         } catch (mintError: any) {
@@ -687,8 +770,13 @@ export default function CreatorWorkManagePage() {
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={coverUrl} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover" }} />
                             ) : (
-                                <div style={{ width: "100%", aspectRatio: "2/3", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34 }}>
-                                    {work.kind === "novel" ? "📚" : work.kind === "manga" ? "🖼️" : "🎬"}
+                                <div style={{ width: "100%", aspectRatio: "2/3", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <LottieIcon
+                                        animationData={KIND_ICONS[work.kind]}
+                                        size={46}
+                                        playOnMount
+                                        replayIntervalMs={4000}
+                                    />
                                 </div>
                             )}
                         </div>
@@ -1104,14 +1192,27 @@ export default function CreatorWorkManagePage() {
                             />
                         </div>
 
-                        <button
-                            type="button"
-                            onClick={handleVerifyMint}
-                            disabled={mintState === "saving"}
-                            style={primaryButtonStyle(mintState === "saving")}
-                        >
-                            {mintState === "saving" ? "Verifying Mint Intent..." : "Verify Mint Intent"}
-                        </button>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            <button
+                                type="button"
+                                onClick={handleCreateOnChainMintSetup}
+                                disabled={mintState === "saving" || !signTransaction}
+                                style={primaryButtonStyle(mintState === "saving" || !signTransaction)}
+                            >
+                                {mintState === "saving" ? "Creating On-Chain Setup..." : "Create On-Chain Mint Setup"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleVerifyMint}
+                                disabled={mintState === "saving"}
+                                style={secondaryButtonStyle}
+                            >
+                                Verify Existing Setup
+                            </button>
+                        </div>
+                        <p style={{ ...helperTextStyle, marginTop: 10 }}>
+                            The primary action creates a real compressed NFT merkle tree on Solana with your wallet, then verifies and stores the setup in Sakura.
+                        </p>
 
                         <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
                             {mintRecords.length === 0 ? (

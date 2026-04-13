@@ -8,10 +8,11 @@ import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
 import { truncateAddress } from "@/lib/solana";
 import { getProfile, upsertProfile } from "@/lib/comments";
 import { checkPassStatus } from "@/lib/pass-check";
-import { searchCreators, type CreatorProfile } from "@/lib/creator";
+import { getCreatorProfile, searchCreators, type CreatorProfile } from "@/lib/creator";
 import Link from "next/link";
 import LottieIcon from "@/components/LottieIcon";
 import { schedulePushSettings } from "@/lib/cloud-sync";
+import { APP_VERSION } from "@/lib/app-version";
 
 type ReadingMode = 'scroll' | 'page';
 
@@ -34,6 +35,7 @@ export default function SettingsPage() {
     const [hasPass, setHasPass] = useState(false);
     const [profileSaved, setProfileSaved] = useState(false);
     const [profileLoading, setProfileLoading] = useState(false);
+    const [creatorProfile, setCreatorProfile] = useState<CreatorProfile | null>(null);
 
     // Creator search state
     const [creatorQuery, setCreatorQuery] = useState("");
@@ -62,13 +64,15 @@ export default function SettingsPage() {
 
         async function loadProfile() {
             setProfileLoading(true);
-            const [profile, passStatus] = await Promise.all([
+            const [profile, passStatus, creatorRecord] = await Promise.all([
                 getProfile(wallet),
                 checkPassStatus(wallet),
+                getCreatorProfile(wallet),
             ]);
             setDisplayName(profile?.display_name || "");
             setBio(profile?.bio || "");
             setHasPass(passStatus.valid);
+            setCreatorProfile(creatorRecord);
             setProfileLoading(false);
         }
         loadProfile();
@@ -158,6 +162,56 @@ export default function SettingsPage() {
                         <p className="section-subtitle">Manage preferences, wallet, and notifications</p>
                     </div>
 
+                    <div className="settings-group">
+                        <h3 className="settings-group-title">クリエイター Creator</h3>
+                        <div className="setting-item">
+                            <div className="setting-info">
+                                <span className="setting-name">
+                                    {creatorProfile ? "Creator Workspace" : "Become a Creator"}
+                                </span>
+                                <span className="setting-desc">
+                                    {publicKey
+                                        ? creatorProfile
+                                            ? "Manage your creator profile, works, manga chapters, anime releases, and mint setup."
+                                            : "Start publishing novels, manga, or anime from the shared creator workspace."
+                                        : "Connect your wallet to start publishing as a creator."}
+                                </span>
+                            </div>
+                            {publicKey ? (
+                                <Link
+                                    href={creatorProfile ? "/creator/works" : "/creator/works/new"}
+                                    className="btn-primary"
+                                    style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
+                                >
+                                    {creatorProfile ? "Open Workspace" : "Become a Creator"}
+                                </Link>
+                            ) : (
+                                <button
+                                    className="btn-primary"
+                                    onClick={() => setVisible(true)}
+                                    style={{ fontSize: 13, padding: "8px 16px" }}
+                                >
+                                    Connect Wallet
+                                </button>
+                            )}
+                        </div>
+                        {!creatorProfile && publicKey && (
+                            <div className="setting-item">
+                                <div className="setting-info">
+                                    <span className="setting-name">Creator Profile</span>
+                                    <span className="setting-desc">Optional profile setup for tips, public creator pages, and verification review.</span>
+                                </div>
+                                <Link
+                                    href="/creator/apply"
+                                    className="btn-secondary"
+                                    style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
+                                >
+                                    Set Up Profile
+                                </Link>
+                            </div>
+                        )}
+                    </div>
+
                     {/* Wallet Management */}
                     <div className="settings-group">
                         <h3 className="settings-group-title">ウォレット Wallet</h3>
@@ -244,7 +298,7 @@ export default function SettingsPage() {
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">Creator Dashboard</span>
-                                <span className="setting-desc">Upload and manage your manga series.</span>
+                                <span className="setting-desc">Open your public creator page and discovery profile.</span>
                             </div>
                             <Link
                                 href="/creator"
@@ -635,7 +689,7 @@ export default function SettingsPage() {
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">Version</span>
-                                <span className="setting-desc">Sakura v1.2.1</span>
+                                <span className="setting-desc">Sakura v{APP_VERSION}</span>
                             </div>
                         </div>
                         <div className="setting-item">

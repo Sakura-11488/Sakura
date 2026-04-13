@@ -3,8 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
+import novelIcon from "../../../../wired-flat-3140-book-open-hover-pinch.json";
+import mangaIcon from "../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
+import animeIcon from "../../../../wired-flat-2440-goku-hover-pinch.json";
 
 import Header from "@/components/Header";
+import LottieIcon from "@/components/LottieIcon";
 import { getCreatorWorksByCreator, getWorkReleases } from "@/lib/creator-works";
 import type { CreatorWork, WorkRelease } from "@/lib/publishing";
 
@@ -17,6 +21,12 @@ const KIND_LABELS: Record<CreatorWork["kind"], string> = {
     novel: "Novel",
     manga: "Manga",
     anime: "Anime",
+};
+
+const KIND_ICONS: Record<CreatorWork["kind"], object> = {
+    novel: novelIcon,
+    manga: mangaIcon,
+    anime: animeIcon,
 };
 
 export default function CreatorWorksPage() {
@@ -204,8 +214,13 @@ export default function CreatorWorksPage() {
                                                     // eslint-disable-next-line @next/next/no-img-element
                                                     <img src={coverUrl} alt="" style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover" }} />
                                                 ) : (
-                                                    <div style={{ width: "100%", aspectRatio: "2/3", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28 }}>
-                                                        {work.kind === "novel" ? "📚" : work.kind === "manga" ? "🖼️" : "🎬"}
+                                                    <div style={{ width: "100%", aspectRatio: "2/3", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                                        <LottieIcon
+                                                            animationData={KIND_ICONS[work.kind]}
+                                                            size={36}
+                                                            playOnMount
+                                                            replayIntervalMs={4000}
+                                                        />
                                                     </div>
                                                 )}
                                             </div>
