@@ -7,6 +7,8 @@ import { searchAllSources } from "@/lib/sources";
 import { type Manga } from "@/lib/sources/types";
 import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS } from "@/lib/storage";
 import { MANGA_GENRES, searchMangaByGenre } from "@/lib/content-source";
+import { getDefaultMangaSourceId } from "@/lib/sources/source-ids";
+import { sourceSupportsStats } from "@/lib/sources/source-meta";
 
 // Debounce hook for search
 function useDebounce(value: string, delay: number) {
@@ -95,12 +97,12 @@ export default function BrowsePage() {
             }
 
             // Fetch stats (ratings) for primary source items
-            const sourceIds = results.filter(m => m.sourceStr === 'mangadex').map(m => m.id);
+            const sourceIds = results.filter(m => sourceSupportsStats(m.sourceStr)).map(m => m.id);
             if (sourceIds.length > 0) {
                 const { getMangaStatistics } = await import("@/lib/content-source");
                 const stats = await getMangaStatistics(sourceIds);
                 setMangaList(prev => prev.map(m => {
-                    if (m.sourceStr !== 'mangadex') return m;
+                    if (!sourceSupportsStats(m.sourceStr)) return m;
                     const stat = stats[m.id];
                     return {
                         ...m,
@@ -133,7 +135,7 @@ export default function BrowsePage() {
         }
         setGenreLoading(true);
         const results = await searchMangaByGenre(tagId);
-        setGenreResults(results.map(m => ({ ...m, sourceStr: 'mangadex' })) as Manga[]);
+        setGenreResults(results.map(m => ({ ...m, sourceStr: getDefaultMangaSourceId() })) as Manga[]);
         setGenreLoading(false);
     }, []);
 

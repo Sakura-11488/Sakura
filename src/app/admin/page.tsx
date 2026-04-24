@@ -8,6 +8,8 @@ import Link from "next/link";
 import { getAuthorDetails } from "@/lib/content-source";
 import { getTreasuryBalance } from "@/lib/treasury";
 import { SAKURA_TREASURY_ADMIN } from "@/lib/solana";
+import { getExternalAuthorUrl, sourceSupportsCreatorLookup } from "@/lib/sources/source-meta";
+import { MANGA_SOURCE_IDS } from "@/lib/sources/source-ids";
 
 export default function AdminPage() {
     const { publicKey, connected } = useWallet();
@@ -223,7 +225,7 @@ export default function AdminPage() {
                                     fontSize: '0.9rem'
                                 }}>
                                     <span style={{ color: 'var(--text-secondary)' }}>Shueisha Link: </span>
-                                    <Link href={`https://mangadex.org/author/${creator.mangadex_author_id}`} target="_blank" style={{ color: 'var(--sakura-pink)' }}>
+                                    <Link href={getExternalAuthorUrl(MANGA_SOURCE_IDS.MANGADEX, creator.mangadex_author_id) || "#"} target="_blank" style={{ color: 'var(--sakura-pink)' }}>
                                         {creator.authorName || creator.mangadex_author_id}
                                     </Link>
                                     <span style={{ color: 'var(--text-muted)', marginLeft: '8px', fontSize: '0.8rem' }}>

@@ -4,10 +4,13 @@ import Header from "@/components/Header";
 import MangaCard from "@/components/MangaCard";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { getFeaturedManga, searchManga, searchMangaByGenre, MANGA_GENRES, type Manga } from "@/lib/content-source";
+import { searchMangaByGenre, MANGA_GENRES } from "@/lib/content-source";
+import { type Manga } from "@/lib/sources/types";
+import { getSource } from "@/lib/sources";
 import { useRouter } from "next/navigation";
 import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
 import LottieIcon from "@/components/LottieIcon";
+import { getDefaultMangaSourceId, getHomeMangaSourceId } from "@/lib/sources/source-ids";
 
 export default function Home() {
   const router = useRouter();
@@ -21,15 +24,17 @@ export default function Home() {
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
   const [genreResults, setGenreResults] = useState<Manga[]>([]);
   const [genreLoading, setGenreLoading] = useState(false);
+  const homeSourceId = getHomeMangaSourceId();
+  const homeSource = getSource(homeSourceId);
 
   useEffect(() => {
     async function loadFeatured() {
-      const data = await getFeaturedManga();
+      const data = await homeSource.getTrending(20);
       setFeatured(data);
       setLoading(false);
     }
     loadFeatured();
-  }, []);
+  }, [homeSource]);
 
   // Debounced search
   useEffect(() => {
@@ -43,7 +48,7 @@ export default function Home() {
     searchTimerRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const results = await searchManga(searchQuery);
+        const results = await homeSource.searchManga(searchQuery, 20, 0);
         setSearchResults(results);
       } catch (e) {
         console.error(e);
@@ -51,7 +56,7 @@ export default function Home() {
       setSearching(false);
     }, 600);
     return () => clearTimeout(searchTimerRef.current);
-  }, [searchQuery]);
+  }, [homeSource, searchQuery]);
 
   const handleGenreSelect = useCallback(async (tagId: string | null) => {
     setSelectedGenre(tagId);
@@ -126,7 +131,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={homeSourceId}
                   />
                 ))}
               </div>
@@ -185,7 +190,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={getDefaultMangaSourceId()}
                   />
                 ))}
               </div>
@@ -226,7 +231,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={homeSourceId}
                   />
                 ))}
               </div>

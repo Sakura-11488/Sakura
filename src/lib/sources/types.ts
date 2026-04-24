@@ -1,3 +1,5 @@
+import type { MangaSourceId } from "./source-ids";
+
 export interface Manga {
     id: string;
     title: string;
@@ -10,7 +12,7 @@ export interface Manga {
     year: number;
     rating?: number;
     follows?: number;
-    sourceStr?: string;
+    sourceStr?: MangaSourceId;
 }
 
 export interface Chapter {
@@ -21,13 +23,13 @@ export interface Chapter {
     title: string;
     publishAt: string;
     pages: number;
-    sourceStr?: string;
+    sourceStr?: MangaSourceId;
     externalUrl?: string;
 }
 
 export interface MangaSource {
     name: string;
-    id: string;
+    id: MangaSourceId;
     baseUrl?: string;
 
     searchManga(query: string, limit?: number, offset?: number): Promise<Manga[]>;

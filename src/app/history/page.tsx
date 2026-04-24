@@ -5,6 +5,7 @@ import MangaCard from "@/components/MangaCard";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { getLocal, removeLocal, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
+import { getDefaultMangaSourceId, normalizeMangaSourceId, type MangaSourceId } from "@/lib/sources/source-ids";
 
 interface HistoryItem {
     mangaId: string;
@@ -13,6 +14,7 @@ interface HistoryItem {
     cover: string;
     lastReadAt: number;
     chapterNum?: string;
+    sourceId?: MangaSourceId;
 }
 
 export default function HistoryPage() {
@@ -96,7 +98,7 @@ export default function HistoryPage() {
                                             genres={[]}
                                             follows={0}
                                             rating={0}
-                                            source="mangadex"
+                                            source={normalizeMangaSourceId(item.sourceId || getDefaultMangaSourceId())}
                                         />
                                     ))}
                                 </div>

@@ -1,12 +1,13 @@
 {
   "name": "sakura",
-  "version": "1.5.1",
+  "version": "1.6.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "manga:bakeoff": "node scripts/run-manga-source-bakeoff.mjs",
     "postinstall": "node scripts/fix-biometric-gradle.js"
   },
   "dependencies": {

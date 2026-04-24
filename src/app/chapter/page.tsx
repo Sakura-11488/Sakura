@@ -14,6 +14,8 @@ import { downloadManager } from "@/lib/downloads";
 import ChapterComments from "@/components/ChapterComments";
 import LottieIcon from "@/components/LottieIcon";
 import TradeCheckModal from "@/components/TradeCheckModal";
+import { getDefaultMangaSourceId, normalizeMangaSourceId } from "@/lib/sources/source-ids";
+import { getChapterScopedKey } from "@/lib/sources/source-scope";
 
 type ReadingMode = 'scroll' | 'page';
 type ReadingDirection = 'ltr' | 'rtl';
@@ -374,7 +376,7 @@ function ReaderContent() {
     const router = useRouter();
     const chapterId = searchParams.get("id");
     const mangaId = searchParams.get("manga");
-    const sourceStr = searchParams.get("source") || "weebcentral";
+    const sourceStr = normalizeMangaSourceId(searchParams.get("source") || getDefaultMangaSourceId());
 
     const { publicKey } = useWallet();
     const { setVisible } = useSakuraWalletModal();
@@ -513,8 +515,9 @@ function ReaderContent() {
                 setError(null);
                 setExternalUrl(null);
 
+                const cacheKey = getChapterScopedKey(chapterId, sourceStr);
                 const cache = getLocal<Record<string, string[]>>(STORAGE_KEYS.CHAPTER_CACHE, {});
-                const isCached = cache[chapterId] && cache[chapterId].length > 0;
+                const isCached = cache[cacheKey] && cache[cacheKey].length > 0;
 
                 const source = getSource(sourceStr);
                 let requiresPass = false;
@@ -541,7 +544,7 @@ function ReaderContent() {
 
                 if (isCached) {
                     if (isMounted) {
-                        setPages(cache[chapterId]);
+                        setPages(cache[cacheKey]);
                         setHasAccess(true);
                         setLoading(false);
                     }
@@ -613,10 +616,10 @@ function ReaderContent() {
                                 const entries = Object.entries(existingCache);
                                 if (entries.length > 20) {
                                     const trimmed = Object.fromEntries(entries.slice(-19));
-                                    trimmed[chapterId!] = urls;
+                                    trimmed[cacheKey] = urls;
                                     setLocal(STORAGE_KEYS.CHAPTER_CACHE, trimmed);
                                 } else {
-                                    existingCache[chapterId!] = urls;
+                                    existingCache[cacheKey] = urls;
                                     setLocal(STORAGE_KEYS.CHAPTER_CACHE, existingCache);
                                 }
                             } catch (e) { console.warn("Cache save failed", e); }
@@ -626,11 +629,12 @@ function ReaderContent() {
                                 const newEntry = {
                                     mangaId,
                                     chapterId,
+                                    sourceId: sourceStr,
                                     title: manga?.title || "Unknown Title",
                                     cover: manga?.cover || "/placeholder.png",
                                     lastReadAt: Date.now()
                                 };
-                                const filtered = history.filter((h: any) => h.mangaId !== mangaId);
+                                const filtered = history.filter((h: any) => !(h.mangaId === mangaId && normalizeMangaSourceId(h.sourceId) === sourceStr));
                                 setLocal(STORAGE_KEYS.HISTORY, [newEntry, ...filtered].slice(0, 50));
                             } catch (e) { console.error("Failed to save history", e); }
                         } else {
@@ -700,7 +704,7 @@ function ReaderContent() {
             const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
             if (scrollHeight > 0 && mangaId && chapterId) {
                 const progress = (scrollY / scrollHeight) * 100;
-                saveChapterProgress(mangaId, chapterId, progress);
+                saveChapterProgress(mangaId, chapterId, progress, sourceStr);
             }
         }
     }, [readingMode, mangaId, chapterId]);
@@ -713,7 +717,7 @@ function ReaderContent() {
     useEffect(() => {
         if (readingMode === 'page' && pages.length > 0 && mangaId && chapterId) {
             const progress = (currentPage / pages.length) * 100;
-            saveChapterProgress(mangaId, chapterId, progress);
+            saveChapterProgress(mangaId, chapterId, progress, sourceStr);
         }
     }, [currentPage, pages.length, readingMode, mangaId, chapterId]);
 
@@ -721,7 +725,7 @@ function ReaderContent() {
     useEffect(() => {
         if (!pages.length || !mangaId || !chapterId || !readingMode) return;
 
-        const savedProgress = getChapterProgress(mangaId, chapterId);
+        const savedProgress = getChapterProgress(mangaId, chapterId, sourceStr);
         if (savedProgress > 5 && savedProgress < 95) {
             if (readingMode === 'scroll') {
                 const timer = setTimeout(() => {

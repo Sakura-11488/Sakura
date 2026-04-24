@@ -10,6 +10,7 @@ import {
     type LibraryCategory,
     type LibraryItem,
 } from "@/lib/storage";
+import { getDefaultMangaSourceId, normalizeMangaSourceId } from "@/lib/sources/source-ids";
 
 function ConfirmModal({ title, message, onConfirm, onCancel }: {
     title: string; message: string; onConfirm: () => void; onCancel: () => void;
@@ -55,7 +56,7 @@ export default function LibraryPage() {
 
     const confirmRemoveItem = () => {
         if (!confirmRemove) return;
-        removeFromLibrary(confirmRemove.catName, confirmRemove.item.id, confirmRemove.item.type);
+        removeFromLibrary(confirmRemove.catName, confirmRemove.item.id, confirmRemove.item.type, confirmRemove.item.providerId);
         setConfirmRemove(null);
         reload();
     };
@@ -74,7 +75,7 @@ export default function LibraryPage() {
 
     const allItems = categories.flatMap(c => c.items);
     const uniqueAll = allItems.filter((item, idx, arr) =>
-        arr.findIndex(i => i.id === item.id && i.type === item.type) === idx
+        arr.findIndex(i => i.id === item.id && i.type === item.type && normalizeMangaSourceId(i.providerId) === normalizeMangaSourceId(item.providerId)) === idx
     );
 
     return (
@@ -161,7 +162,7 @@ export default function LibraryPage() {
                                         ? (item.source === "external"
                                             ? `/novel/details?source=external&path=${encodeURIComponent(item.id)}`
                                             : `/novel/details?id=${encodeURIComponent(item.id)}`)
-                                        : `/title?id=${encodeURIComponent(item.id)}&source=mangadex`;
+                                        : `/title?id=${encodeURIComponent(item.id)}&source=${encodeURIComponent(normalizeMangaSourceId(item.providerId || getDefaultMangaSourceId()))}`;
 
                                     return (
                                         <div key={`${item.type}-${item.id}`} style={{ position: "relative" }}>

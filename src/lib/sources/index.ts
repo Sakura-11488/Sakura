@@ -1,20 +1,28 @@
 import { MangaSource } from './types';
-import { SakuraContentSource } from './sakura-source';
+import { MangadexSource } from './sakura-source';
+import { AtsumaruSource } from './atsumaru-source';
+import { getPrimaryMangaSourceId, normalizeMangaSourceId, type MangaSourceId } from './source-ids';
 // import { WeebCentralSource } from './weebcentral';
 
-const sakuraContent = new SakuraContentSource();
+const mangadexSource = new MangadexSource();
+const atsumaruSource = new AtsumaruSource();
 
 // Source Registry
-const sources: Record<string, MangaSource> = {
-    [sakuraContent.id]: sakuraContent,
+const sources: Partial<Record<MangaSourceId, MangaSource>> = {
+    [mangadexSource.id]: mangadexSource,
+    [atsumaruSource.id]: atsumaruSource,
 };
 
 export function getSource(id: string): MangaSource {
-    return sources[id] || sakuraContent;
+    return sources[normalizeMangaSourceId(id)] || mangadexSource;
 }
 
 export function getAllSources(): MangaSource[] {
     return Object.values(sources);
+}
+
+export function getPrimarySourceId(): MangaSourceId {
+    return getPrimaryMangaSourceId();
 }
 
 // Multi-source Search with De-duplication
@@ -62,7 +70,7 @@ export async function searchAllSources(query: string) {
 
         // If already in map, keep the primary source version
         const existing = uniqueMap.get(key);
-        if (existing.sourceStr !== 'mangadex' && manga.sourceStr === 'mangadex') {
+        if (existing.sourceStr !== getPrimarySourceId() && manga.sourceStr === getPrimarySourceId()) {
             uniqueMap.set(key, manga);
         }
     }

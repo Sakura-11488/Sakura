@@ -10,6 +10,7 @@ import { truncateAddress } from "@/lib/solana";
 import MangaCard from "@/components/MangaCard";
 import Link from "next/link";
 import TipButton from "./TipButton";
+import { getDefaultMangaSourceId } from "@/lib/sources/source-ids";
 
 function CreatorPageContent() {
     const searchParams = useSearchParams();
@@ -404,7 +405,7 @@ function CreatorPageContent() {
                             genres={manga.tags}
                             follows={manga.follows}
                             rating={manga.rating}
-                            source="mangadex"
+                            source={getDefaultMangaSourceId()}
                         />
                     ))}
                 </div>

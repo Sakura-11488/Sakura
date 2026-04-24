@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { MANGA_SOURCE_IDS, normalizeMangaSourceId } from "./sources/source-ids";
 
 export interface CreatorProfile {
     wallet_address: string;
@@ -36,6 +37,14 @@ export async function getCreatorProfile(walletAddressOrAuthorId: string): Promis
     }
 
     return data || null;
+}
+
+export async function getCreatorProfileByContentAuthor(sourceId: string, contentAuthorId: string): Promise<CreatorProfile | null> {
+    if (normalizeMangaSourceId(sourceId) !== MANGA_SOURCE_IDS.MANGADEX) {
+        return null;
+    }
+
+    return getCreatorProfile(contentAuthorId);
 }
 
 export async function submitCreatorApplication(

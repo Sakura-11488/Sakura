@@ -1,19 +1,14 @@
-import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { cacheWrap } from "./cache";
+import { buildSourceCacheKey } from "./sources/source-scope";
+import { MANGA_SOURCE_IDS } from "./sources/source-ids";
 
 const CONTENT_API_URL = "https://api.mangadex.org";
 const CDN_BASE_URL = "https://uploads.mangadex.org";
 
 async function requestMd(url: string) {
-    if (Capacitor.isNativePlatform()) {
-        const response = await CapacitorHttp.get({ url });
-        if (response.status >= 400) throw new Error(`HTTP Error: ${response.status}`);
-        return response.data;
-    } else {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
-        return res.json();
-    }
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+    return res.json();
 }
 
 export interface Manga {
@@ -92,7 +87,7 @@ async function filterReadableManga(mangaIds: string[]): Promise<Set<string>> {
 
 // Search Manga
 export async function searchManga(query: string = "", limit = 20, offset = 0): Promise<Manga[]> {
-    const cacheKey = `search:${query}:${limit}:${offset}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `search:${query}:${limit}:${offset}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const params = new URLSearchParams({
@@ -145,7 +140,7 @@ export async function searchManga(query: string = "", limit = 20, offset = 0): P
 
 // Get Author Details
 export async function getAuthorDetails(authorId: string) {
-    const cacheKey = `author:${authorId}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `author:${authorId}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const url = `${CONTENT_API_URL}/author/${authorId}`;
@@ -168,7 +163,7 @@ export async function getAuthorDetails(authorId: string) {
 
 // Get Manga by Author
 export async function getMangaByAuthor(authorId: string, limit = 20, offset = 0): Promise<Manga[]> {
-    const cacheKey = `author_manga:${authorId}:${limit}:${offset}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `author_manga:${authorId}:${limit}:${offset}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const params = new URLSearchParams({
@@ -217,7 +212,7 @@ export async function getMangaByAuthor(authorId: string, limit = 20, offset = 0)
 }
 // Get Manga Statistics (Rating, Follows)
 export async function getMangaStatistics(mangaIds: string[]) {
-    const cacheKey = `stats:${mangaIds.sort().join(',')}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `stats:${mangaIds.sort().join(',')}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const params = new URLSearchParams();
@@ -235,7 +230,7 @@ export async function getMangaStatistics(mangaIds: string[]) {
 
 // Get Manga Details
 export async function getMangaDetails(id: string): Promise<Manga | null> {
-    return cacheWrap(`details:${id}`, async () => {
+    return cacheWrap(buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `details:${id}`), async () => {
         try {
             const url = `${CONTENT_API_URL}/manga/${id}?includes[]=cover_art&includes[]=author`;
             const data = await requestMd(url);
@@ -265,7 +260,7 @@ export async function getMangaDetails(id: string): Promise<Manga | null> {
 
 // Get Chapters
 export async function getChapters(mangaId: string, limit = 100, offset = 0): Promise<Chapter[]> {
-    const cacheKey = `chapters:${mangaId}:${limit}:${offset}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `chapters:${mangaId}:${limit}:${offset}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const params = new URLSearchParams({
@@ -395,7 +390,7 @@ export const MANGA_GENRES: { id: string; name: string }[] = [
 ];
 
 export async function searchMangaByGenre(tagId: string): Promise<Manga[]> {
-    const cacheKey = `genre:${tagId}`;
+    const cacheKey = buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, `genre:${tagId}`);
     return cacheWrap(cacheKey, async () => {
         try {
             const params = new URLSearchParams({
@@ -452,7 +447,7 @@ export async function searchMangaByGenre(tagId: string): Promise<Manga[]> {
 
 // Get Featured Manga (Curated list for Home - Dynamic Top Followed)
 export async function getFeaturedManga(): Promise<Manga[]> {
-    return cacheWrap('featured', async () => {
+    return cacheWrap(buildSourceCacheKey(MANGA_SOURCE_IDS.MANGADEX, 'featured'), async () => {
         try {
             const params = new URLSearchParams({
                 limit: "20",

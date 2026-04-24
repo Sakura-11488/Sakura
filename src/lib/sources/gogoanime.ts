@@ -1,5 +1,3 @@
-import { Capacitor, CapacitorHttp } from '@capacitor/core';
-
 const API_BASE = (
     process.env.NEXT_PUBLIC_CONSUMET_URL || ""
 ).replace(/\/+$/, '');
@@ -63,28 +61,14 @@ async function parseFetchError(res: Response): Promise<AnimeSourceError> {
 async function apiGet(path: string, timeout = 15000) {
     if (!API_BASE) throw new Error("NEXT_PUBLIC_CONSUMET_URL not set");
     const url = `${API_BASE}${path}`;
-    if (Capacitor.isNativePlatform()) {
-        const response = await CapacitorHttp.get({ url, connectTimeout: timeout, readTimeout: timeout });
-        if (response.status >= 400) {
-            throw new AnimeSourceError({
-                message: response.data?.error || `HTTP ${response.status}`,
-                code: response.data?.code,
-                stage: response.data?.stage,
-                status: response.status,
-                details: response.data?.details,
-            });
-        }
-        return typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-    } else {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
-        try {
-            const res = await fetch(url, { signal: controller.signal });
-            if (!res.ok) throw await parseFetchError(res);
-            return res.json();
-        } finally {
-            clearTimeout(timer);
-        }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw await parseFetchError(res);
+        return res.json();
+    } finally {
+        clearTimeout(timer);
     }
 }
 

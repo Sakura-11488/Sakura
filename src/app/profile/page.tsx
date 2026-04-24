@@ -6,6 +6,7 @@ import Header from "@/components/Header";
 import { truncateAddress } from "@/lib/solana";
 import { getPublicProfile, type UserProfile, type ProfileStats } from "@/lib/comments";
 import Link from "next/link";
+import { getDefaultMangaSourceId } from "@/lib/sources/source-ids";
 
 /* ─── SVG Icons (24x24, filled, currentColor) ─── */
 const IconBook = () => <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" /></svg>;
@@ -218,7 +219,7 @@ function ProfileContent() {
                                         {favorites.map(fav => (
                                             <Link
                                                 key={fav.manga_id}
-                                                href={`/title?id=${fav.manga_id}&source=mangadex`}
+                                                href={`/title?id=${fav.manga_id}&source=${getDefaultMangaSourceId()}`}
                                                 className="profile-fav-card"
                                             >
                                                 {/* eslint-disable-next-line @next/next/no-img-element */}

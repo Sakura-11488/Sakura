@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchEpisodeSources, type StreamingSource, fetchAnimeInfo, refreshAnimeInfo, type AnimeInfo } from "@/lib/anime";
+import { PSYOP_ID, isPsyopEpisode } from "@/lib/psyopAnime";
 import Link from "next/link";
 import { Capacitor } from "@capacitor/core";
 import { getLocal, STORAGE_KEYS, saveAnimeWatchEntry } from "@/lib/storage";
@@ -85,7 +86,7 @@ function AnimeWatchInner() {
         ? anime?.episodes[currentEpisodeIndex + 1]
         : null;
     const errorGuidance = error ? getErrorGuidance(error) : null;
-    const canRematch = !!error && (
+    const canRematch = !!error && !isPsyopEpisode(episodeId) && (
         error.stage === "mapping"
         || error.stage === "episodes"
         || error.code === "MISSING_SLUG"
@@ -121,7 +122,8 @@ function AnimeWatchInner() {
 
                 if (animeData) {
                     setAnime(animeData);
-                    if (!animeData.episodes.some((episode) => episode.id === episodeId)) {
+                    const isPsyop = id === PSYOP_ID;
+                    if (!isPsyop && !animeData.episodes.some((episode) => episode.id === episodeId)) {
                         const currentNumber = parseEpisodeNumber(episodeId);
                         throw {
                             message: "The current episode is missing from the matched provider list.",
@@ -441,7 +443,7 @@ function AnimeWatchInner() {
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {availableCategories.length > 1 && (
+                    {!isPsyopEpisode(episodeId) && availableCategories.length > 1 && (
                         <button
                             onClick={toggleCategory}
                             disabled={categoryLoading}
@@ -528,6 +530,7 @@ function AnimeWatchInner() {
                     <h3 style={{ margin: "0 0 4px 0", fontSize: 18 }}>{currentEpisode?.title || `Episode ${currentEpisode?.number}`}</h3>
                     <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 14 }}>
                         {(() => {
+                            if (isPsyopEpisode(episodeId)) return "PsyopAnime \u00d7 Sakura";
                             const allDownloads = typeof window !== "undefined" ? getLocal<Record<string, any>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}) : {};
                             return allDownloads[episodeId]?.state === "completed" ? "Playing offline" : "Streaming via Sakura Engine";
                         })()}
