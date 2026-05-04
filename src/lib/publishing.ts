@@ -406,15 +406,15 @@ export function validateMintIntentDraft(input: MintIntentDraftInput): PublisherV
     }
 
     if (!input.metadataUri.trim()) {
-        issues.push({ field: "metadataUri", message: "Metadata URI is required." });
+        issues.push({ field: "metadataUri", message: "Metadata URL is required." });
     } else {
         try {
             const url = new URL(input.metadataUri);
             if (url.protocol !== "https:") {
-                issues.push({ field: "metadataUri", message: "Metadata URI must use https." });
+                issues.push({ field: "metadataUri", message: "Metadata URL must use https." });
             }
         } catch {
-            issues.push({ field: "metadataUri", message: "Metadata URI must be a valid URL." });
+            issues.push({ field: "metadataUri", message: "Metadata URL must be a valid URL." });
         }
     }
 

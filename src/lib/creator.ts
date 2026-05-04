@@ -47,13 +47,22 @@ export async function getCreatorProfileByContentAuthor(sourceId: string, content
     return getCreatorProfile(contentAuthorId);
 }
 
+export type SubmitCreatorApplicationResult =
+    | { ok: true }
+    | { ok: false; message: string };
+
 export async function submitCreatorApplication(
     walletAddress: string,
     displayName: string,
     bio: string,
     contentAuthorId: string | null
-): Promise<boolean> {
-    if (!supabase) return false;
+): Promise<SubmitCreatorApplicationResult> {
+    if (!supabase) {
+        return {
+            ok: false,
+            message: "Server unavailable, try again in a moment.",
+        };
+    }
 
     const { error } = await supabase
         .from("creator_profiles")
@@ -68,9 +77,12 @@ export async function submitCreatorApplication(
 
     if (error) {
         console.error("Error submitting creator application:", error);
-        return false;
+        return {
+            ok: false,
+            message: error.message || "Failed to submit creator application.",
+        };
     }
-    return true;
+    return { ok: true };
 }
 
 export async function recordTip(

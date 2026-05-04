@@ -164,6 +164,21 @@ export default function LibraryPage() {
                                             : `/novel/details?id=${encodeURIComponent(item.id)}`)
                                         : `/title?id=${encodeURIComponent(item.id)}&source=${encodeURIComponent(normalizeMangaSourceId(item.providerId || getDefaultMangaSourceId()))}`;
 
+                                    const badgeBackground = item.type === "anime"
+                                        ? "rgba(88, 101, 242, 0.85)"
+                                        : item.type === "novel"
+                                            ? "rgba(192, 132, 252, 0.85)"
+                                            : item.type === "comic"
+                                                ? "rgba(14, 165, 233, 0.85)"
+                                                : "rgba(255, 107, 157, 0.85)";
+                                    const badgeLabel = item.type === "anime"
+                                        ? "Anime"
+                                        : item.type === "novel"
+                                            ? "Novel"
+                                            : item.type === "comic"
+                                                ? "Comic"
+                                                : "Manga";
+
                                     return (
                                         <div key={`${item.type}-${item.id}`} style={{ position: "relative" }}>
                                             <Link href={href} className="manga-card" style={{ display: "block" }}>
@@ -174,14 +189,8 @@ export default function LibraryPage() {
                                                         alt={item.title}
                                                         referrerPolicy="no-referrer"
                                                     />
-                                                    <span className="manga-card-badge" style={{
-                                                        background: item.type === "anime"
-                                                            ? "rgba(88, 101, 242, 0.85)"
-                                                            : item.type === "novel"
-                                                            ? "rgba(192, 132, 252, 0.85)"
-                                                            : "rgba(255, 107, 157, 0.85)",
-                                                    }}>
-                                                        {item.type === "anime" ? "Anime" : item.type === "novel" ? "Novel" : "Manga"}
+                                                    <span className="manga-card-badge" style={{ background: badgeBackground }}>
+                                                        {badgeLabel}
                                                     </span>
                                                 </div>
                                                 <div className="manga-card-info">

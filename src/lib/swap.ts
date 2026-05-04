@@ -112,25 +112,75 @@ export async function executeSakuraSwap(
         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
 
         const signedTransaction = await signTransaction(transaction);
-
-        const latestBlockHash = await connection.getLatestBlockhash();
-
         const rawTransaction = signedTransaction.serialize();
-        const txid = await connection.sendRawTransaction(rawTransaction, {
-            skipPreflight: true,
-            maxRetries: 2
-        });
 
-        await connection.confirmTransaction({
-            blockhash: latestBlockHash.blockhash,
-            lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
-            signature: txid
-        }, 'confirmed');
+        // Use the blockhash that's actually in the signed transaction +
+        // Jupiter's reported lastValidBlockHeight. Fetching a fresh
+        // blockhash here would point confirmation at a different message
+        // than what the network is asked to land, and on slow public RPC
+        // the window expires before the tx propagates -> "block height
+        // exceeded".
+        const txBlockhash = signedTransaction.message.recentBlockhash;
+        const txLastValidBlockHeight: number =
+            swapData.lastValidBlockHeight ||
+            (await connection.getLatestBlockhash()).lastValidBlockHeight;
+
+        const txid = await sendAndConfirmWithRetry(
+            connection,
+            rawTransaction,
+            txBlockhash,
+            txLastValidBlockHeight,
+        );
 
         return { success: true, txid };
 
     } catch (error: any) {
         console.error("Jupiter Swap Error:", error);
         return { success: false, error: error.message || "Unknown error occurred during swap" };
+    }
+}
+
+/**
+ * Broadcast a signed raw transaction and rebroadcast every ~1.5s while
+ * polling for confirmation. Throws once the chain advances past
+ * lastValidBlockHeight or after a hard timeout. Removes the most common
+ * "block height exceeded" failure mode where a single initial broadcast
+ * gets dropped by a congested leader.
+ */
+async function sendAndConfirmWithRetry(
+    connection: ReturnType<typeof getConnection>,
+    rawTransaction: Uint8Array,
+    blockhash: string,
+    lastValidBlockHeight: number,
+): Promise<string> {
+    const signature = await connection.sendRawTransaction(rawTransaction, {
+        skipPreflight: true,
+        maxRetries: 0,
+    });
+    const start = Date.now();
+    while (true) {
+        const status = await connection.getSignatureStatus(signature, { searchTransactionHistory: false });
+        const value = status.value;
+        if (value && (value.confirmationStatus === "confirmed" || value.confirmationStatus === "finalized")) {
+            if (value.err) throw new Error(`Swap failed on-chain: ${JSON.stringify(value.err)}`);
+            return signature;
+        }
+        const currentHeight = await connection.getBlockHeight("confirmed");
+        if (currentHeight > lastValidBlockHeight) {
+            throw new Error(
+                "The transaction expired before confirming (network congestion). Please try again.",
+            );
+        }
+        if (Date.now() - start > 1500) {
+            try { await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 0 }); } catch {}
+        }
+        if (Date.now() - start > 90_000) {
+            throw new Error("Swap confirmation timed out after 90s.");
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        // Avoid suppressing the unused-var warning for `blockhash` — we
+        // intentionally don't pass it to confirmTransaction (we poll
+        // status directly), but it's kept for future debugging.
+        void blockhash;
     }
 }

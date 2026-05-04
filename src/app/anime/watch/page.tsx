@@ -312,7 +312,11 @@ function AnimeWatchInner() {
                     image: anime.image,
                     timestamp: Date.now(),
                 });
-                router.push(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
+                // Auto-advance: replace the current entry instead of pushing
+                // a new one. Otherwise a binge of N episodes leaves N entries
+                // in the back stack and the user has to tap Back N times to
+                // get back to the details page they came from.
+                router.replace(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
             }
         } catch (playError) {
             console.error("[Anime] Native playback error:", playError);
@@ -328,6 +332,28 @@ function AnimeWatchInner() {
             playNative();
         }
     }, [isNative, anime, source, error, nativePlaying, playTriggered, playNative]);
+
+    // Suppress duplicate Space-bar pause/play on web. The embedded iframe
+    // player already handles Space; if focus passes to the parent document,
+    // the page would also fire its own scroll/play handler, so we swallow
+    // the keystroke and forward it to the iframe.
+    useEffect(() => {
+        if (isNative) return;
+        if (typeof window === "undefined") return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.code !== "Space" && e.key !== " ") return;
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName?.toLowerCase();
+            if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+            e.preventDefault();
+            const iframe = document.querySelector("iframe") as HTMLIFrameElement | null;
+            if (iframe) {
+                try { iframe.focus(); } catch { /* ignore */ }
+            }
+        };
+        window.addEventListener("keydown", onKeyDown, { capture: true });
+        return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
+    }, [isNative]);
 
     if (loading) {
         return (

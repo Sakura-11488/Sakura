@@ -225,7 +225,7 @@ export default function AnimeBrowsePage() {
                 )}
 
                 {/* Search */}
-                <div style={{ padding: "16px 20px 0" }}>
+                <div className="sticky-search-wrap" style={{ padding: "16px 20px 0" }}>
                     <div className="search-bar-wrapper" ref={searchRef}>
                         <div className="search-bar" style={{ borderColor: "rgba(88, 101, 242, 0.4)", maxWidth: "100%" }}>
                             <span className="search-icon">
@@ -263,6 +263,12 @@ export default function AnimeBrowsePage() {
                             </div>
                         )}
                     </div>
+                    {isSearching && (
+                        <div className="active-query-pill">
+                            <span className="active-query-label">Searching for</span>
+                            <span className="active-query-value">{search.trim()}</span>
+                        </div>
+                    )}
                 </div>
 
                 {/* Genre Chips */}
@@ -319,7 +325,7 @@ export default function AnimeBrowsePage() {
                         ) : searchResults.length > 0 ? (
                             <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
                                 {searchResults.map((anime) => (
-                                    <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} />
+                                    <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} year={anime.year} showMeta />
                                 ))}
                             </div>
                         ) : !error ? (

@@ -18,24 +18,28 @@ import { getFavorites, addFavorite, removeFavorite } from "@/lib/supabase";
 import { getLocal, setLocal, STORAGE_KEYS, setChapterProgress, getChapterProgress, getReadChapters, getAllChapterProgress, READ_THRESHOLD, isInLibrary, type LibraryItem } from "@/lib/storage";
 import { useDownloads, downloadManager } from "@/lib/downloads";
 import ChapterComments from "@/components/ChapterComments";
+import { normalizeChaptersForReading, sortChaptersForDisplay } from "@/lib/chapter-order";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
 import { sourceSupportsCreatorLookup } from "@/lib/sources/source-meta";
-import { getDefaultMangaSourceId, MANGA_SOURCE_IDS, normalizeMangaSourceId } from "@/lib/sources/source-ids";
+import { getDefaultMangaSourceId, MANGA_SOURCE_IDS, getContentKindForSource, normalizeMangaSourceId } from "@/lib/sources/source-ids";
 import { resolveSeriesFallback } from "@/lib/sources/fallback";
 
 function FavoriteButton({ manga }: { manga: Manga }) {
     const [showLibraryModal, setShowLibraryModal] = useState(false);
     const [inLibrary, setInLibrary] = useState(false);
     const sourceId = normalizeMangaSourceId(manga.sourceStr);
+    const contentKind = getContentKindForSource(sourceId);
 
     useEffect(() => {
-        setInLibrary(isInLibrary(manga.id, 'manga', sourceId));
-    }, [manga.id, showLibraryModal, sourceId]);
+        setInLibrary(isInLibrary(manga.id, contentKind, sourceId));
+    }, [manga.id, showLibraryModal, sourceId, contentKind]);
 
     const libraryItem: LibraryItem = {
         id: manga.id,
         title: manga.title,
         image: manga.cover,
-        type: 'manga',
+        type: contentKind,
         providerId: sourceId,
         addedAt: Date.now(),
     };
@@ -51,14 +55,18 @@ function FavoriteButton({ manga }: { manga: Manga }) {
                     src={inLibrary ? "/icons/wired-outline-24-approved-checked-hover-loading.json" : "/icons/wired-outline-2620-bookmark-alt-hover-flutter.json"}
                     size={22}
                     playOnMount
-                    colorFilter={inLibrary ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
+                    colorFilter={
+                        inLibrary
+                            ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)"
+                            : "brightness(0) saturate(100%) invert(40%) sepia(82%) saturate(2861%) hue-rotate(316deg) brightness(96%) contrast(95%)"
+                    }
                 />
                 {inLibrary ? "Saved" : "Save"}
             </button>
             {showLibraryModal && (
                 <SaveToLibraryModal
                     item={libraryItem}
-                    onClose={() => { setShowLibraryModal(false); setInLibrary(isInLibrary(manga.id, 'manga', sourceId)); }}
+                    onClose={() => { setShowLibraryModal(false); setInLibrary(isInLibrary(manga.id, contentKind, sourceId)); }}
                 />
             )}
         </>
@@ -95,6 +103,7 @@ function SeriesContent() {
     const [showSummary, setShowSummary] = useState(false);
     const [showBatchDownload, setShowBatchDownload] = useState(false);
     const [showTipModal, setShowTipModal] = useState(false);
+    const [shareToast, setShareToast] = useState<string | null>(null);
     const [creatorWallet, setCreatorWallet] = useState<string | null>(null);
     const [isBatchQueuing, setIsBatchQueuing] = useState(false);
     const downloads = useDownloads();
@@ -183,13 +192,11 @@ function SeriesContent() {
         return () => window.removeEventListener("focus", refresh);
     }, [resolvedMangaId, resolvedSourceId]);
 
-    // Sort chapters based on sortOrder
+    const readingOrderChapters = useMemo(() => normalizeChaptersForReading(chapters), [chapters]);
+
+    // Sort chapters based on sortOrder using normalized reading order instead of raw provider order.
     const sortedChapters = useMemo(() => {
-        const sorted = [...chapters];
-        if (sortOrder === "asc") {
-            sorted.reverse(); // API returns newest first, so reverse for oldest first
-        }
-        return sorted;
+        return sortChaptersForDisplay(chapters, sortOrder);
     }, [chapters, sortOrder]);
 
     if (!id) {
@@ -232,9 +239,12 @@ function SeriesContent() {
             if (!pages || pages.length === 0) throw new Error("No pages found");
             if (!resolvedMangaId) throw new Error("Missing manga id");
             downloadManager.addDownload(resolvedMangaId, chapterId, title, series.cover, pages);
+            setShareToast(`Queued download: ${title}`);
+            window.setTimeout(() => setShareToast(null), 3000);
         } catch (e) {
             console.error("Failed to queue download", e);
-            alert("Failed to queue download. Check network.");
+            setShareToast("Failed to queue download. Check network.");
+            window.setTimeout(() => setShareToast(null), 3500);
         }
     };
 
@@ -260,10 +270,27 @@ function SeriesContent() {
         }
         setIsBatchQueuing(false);
         setShowBatchDownload(false);
+        setShareToast("Batch download queued");
+        window.setTimeout(() => setShareToast(null), 3000);
+    };
+
+    const handleShare = async () => {
+        if (!series || !resolvedMangaId) return;
+        const url = buildSakuraShareUrl({
+            kind: "manga",
+            id: resolvedMangaId,
+            source: resolvedSourceId,
+        });
+        const result = await shareOrCopyLink({ title: series.title, url });
+        if (result === "copied") {
+            setShareToast("Share link copied");
+            window.setTimeout(() => setShareToast(null), 3000);
+        }
     };
 
     return (
         <main className="main-content">
+            {shareToast && <div className="sakura-toast" role="status">{shareToast}</div>}
             {/* Tip Modal */}
             {showTipModal && (
                 <TipModal
@@ -286,12 +313,12 @@ function SeriesContent() {
             <div className="series-hero">
                 <div className="series-hero-bg">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={series.cover} alt="" referrerPolicy="no-referrer" />
+                    <img src={imageOrPlaceholder(series.cover)} alt="" referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} />
                 </div>
                 <div className="series-hero-content">
                     <div className="series-cover">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={series.cover} alt={series.title} referrerPolicy="no-referrer" />
+                        <img src={imageOrPlaceholder(series.cover)} alt={series.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} />
                     </div>
                     <div className="series-info">
                         <h1>{series.title}</h1>
@@ -381,9 +408,9 @@ function SeriesContent() {
                             </div>
                         </div>
                         <div className="series-actions">
-                            {chapters.length > 0 && (
+                            {readingOrderChapters.length > 0 && (
                                 <Link
-                                    href={`/chapter?id=${chapters[chapters.length - 1].id}&manga=${resolvedMangaId}&source=${resolvedSourceId}`}
+                                    href={`/chapter?id=${readingOrderChapters[0].id}&manga=${resolvedMangaId}&source=${resolvedSourceId}`}
                                     className="btn-primary"
                                 >
                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" /></svg> 読む — Read First
@@ -397,6 +424,14 @@ function SeriesContent() {
                             >
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>
                                 Tip Creator
+                            </button>
+                            <button
+                                className="btn-secondary"
+                                onClick={handleShare}
+                                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                            >
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" /></svg>
+                                Share
                             </button>
                             <Link href="/pass" className="btn-secondary">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2" /><line x1="2" x2="22" y1="10" y2="10" /></svg> 週間パス — Get Pass

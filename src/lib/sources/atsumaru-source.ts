@@ -2,6 +2,7 @@ import { Chapter, Manga, MangaSource } from "./types";
 import { MANGA_SOURCE_IDS } from "./source-ids";
 import { buildSourceCacheKey } from "./source-scope";
 import { cacheWrap } from "../cache";
+import { normalizeChaptersForReading } from "../chapter-order";
 
 const ATSUMARU_BASE_URL = "https://atsu.moe";
 const ATSUMARU_STATIC_BASE = `${ATSUMARU_BASE_URL}/static`;
@@ -155,12 +156,14 @@ export class AtsumaruSource implements MangaSource {
     }
 
     async getChapters(mangaId: string): Promise<Chapter[]> {
-        const cacheKey = buildSourceCacheKey(this.id, `chapters:${mangaId}`);
+        const cacheKey = buildSourceCacheKey(this.id, `chapters:v2:${mangaId}`);
         return cacheWrap(cacheKey, async () => {
             const data = await requestJson<{ chapters?: AtsumaruChapter[] }>(
                 `${ATSUMARU_BASE_URL}/api/manga/allChapters?mangaId=${encodeURIComponent(mangaId)}`,
             );
-            return (data.chapters || []).map((chapter) => mapChapter(mangaId, chapter));
+            return normalizeChaptersForReading(
+                (data.chapters || []).map((chapter) => mapChapter(mangaId, chapter)),
+            );
         });
     }
 

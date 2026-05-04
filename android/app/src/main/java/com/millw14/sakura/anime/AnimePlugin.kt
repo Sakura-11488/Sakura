@@ -13,11 +13,13 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 @CapacitorPlugin(name = "Anime")
@@ -26,6 +28,9 @@ class AnimePlugin : Plugin() {
     companion object {
         private const val TAG = "AnimePlugin"
     }
+
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+    private val cancelledDownloads = ConcurrentHashMap.newKeySet<String>()
 
     @PluginMethod
     fun playEpisode(call: PluginCall) {
@@ -88,14 +93,29 @@ class AnimePlugin : Plugin() {
             return
         }
         val m3u8Url = call.getString("m3u8Url") ?: ""
+        val referer = call.getString("referer") ?: ""
+        val isM3U8 = call.getBoolean("isM3U8", true) ?: true
         val title = call.getString("title") ?: "Episode"
         val animeTitle = call.getString("animeTitle") ?: "Anime"
 
         if (m3u8Url.isNotEmpty()) {
-            startDownload(call, episodeId, m3u8Url, "", title, animeTitle)
+            startDownload(call, episodeId, m3u8Url, referer, title, animeTitle, isM3U8)
         } else {
             call.reject("Download requires a direct stream URL. Play the episode first.")
         }
+    }
+
+    @PluginMethod
+    fun cancelDownload(call: PluginCall) {
+        val episodeId = call.getString("episodeId")
+        if (episodeId.isNullOrEmpty()) {
+            call.reject("Missing episodeId")
+            return
+        }
+        cancelledDownloads.add(episodeId)
+        activeCalls[episodeId]?.cancel()
+        notifyDownload(episodeId, 0, "cancelled")
+        call.resolve(JSObject().put("cancelled", true))
     }
 
     private fun startDownload(
@@ -104,10 +124,12 @@ class AnimePlugin : Plugin() {
         m3u8Url: String,
         referer: String,
         title: String,
-        animeTitle: String
+        animeTitle: String,
+        isM3U8: Boolean
     ) {
         Thread {
             try {
+                cancelledDownloads.remove(episodeId)
                 notifyDownload(episodeId, 0, "extracting")
 
                 val client = OkHttpClient.Builder()
@@ -115,8 +137,27 @@ class AnimePlugin : Plugin() {
                     .readTimeout(30, TimeUnit.SECONDS)
                     .build()
 
-                notifyDownload(episodeId, 3, "downloading")
+                notifyDownload(episodeId, 8, "extracting")
 
+                val safeName = "$animeTitle - $title"
+                    .replace(Regex("[^a-zA-Z0-9 \\-]"), "")
+                    .trim()
+                    .take(200)
+
+                if (!isM3U8 || !m3u8Url.contains(".m3u8", ignoreCase = true)) {
+                    val outputStream = createGalleryOutputStream(safeName, "mp4", "video/mp4")
+                        ?: throw Exception("Failed to create file in gallery")
+                    outputStream.use { out ->
+                        downloadFileToStream(client, episodeId, m3u8Url, referer, out)
+                    }
+                    val filePath = pendingMediaUri?.toString() ?: ""
+                    finalizeGalleryEntry()
+                    notifyDownload(episodeId, 100, "completed", filePath)
+                    call.resolve(JSObject().put("success", true).put("filePath", filePath))
+                    return@Thread
+                }
+
+                notifyDownload(episodeId, 12, "downloading")
                 val m3u8Content = httpGet(client, m3u8Url, referer)
                 val baseUrl = m3u8Url.substringBeforeLast("/") + "/"
                 var segments = parseM3u8Segments(m3u8Content, baseUrl, m3u8Url)
@@ -124,50 +165,53 @@ class AnimePlugin : Plugin() {
                 if (segments.isEmpty()) throw Exception("No segments in manifest")
 
                 if (segments.size == 1 && segments[0].endsWith(".m3u8")) {
-                    val variantContent = httpGet(client, segments[0], "")
+                    notifyDownload(episodeId, 16, "downloading")
+                    val variantContent = httpGet(client, segments[0], referer)
                     val variantBase = segments[0].substringBeforeLast("/") + "/"
                     segments = parseM3u8Segments(variantContent, variantBase, segments[0])
                     if (segments.isEmpty()) throw Exception("No segments in variant playlist")
                 }
 
-                notifyDownload(episodeId, 5, "downloading")
+                notifyDownload(episodeId, 20, "downloading")
 
-                val safeName = "$animeTitle - $title"
-                    .replace(Regex("[^a-zA-Z0-9 \\-]"), "")
-                    .trim()
-                    .take(200)
-
-                val outputStream = createGalleryOutputStream(safeName)
+                val outputStream = createGalleryOutputStream(safeName, "ts", "video/mp2t")
                     ?: throw Exception("Failed to create file in gallery")
 
                 outputStream.use { out ->
                     for ((index, segUrl) in segments.withIndex()) {
-                        downloadSegmentToStream(client, segUrl, referer, out)
-                        val progress = 5 + ((index + 1).toFloat() / segments.size * 95).toInt()
+                        checkCancelled(episodeId)
+                        downloadSegmentToStream(client, episodeId, segUrl, referer, out)
+                        val progress = 20 + ((index + 1).toFloat() / segments.size * 80).toInt()
                         notifyDownload(episodeId, progress, "downloading")
                     }
                 }
 
-                finalizeGalleryEntry()
-
                 val filePath = pendingMediaUri?.toString() ?: ""
+                finalizeGalleryEntry()
                 notifyDownload(episodeId, 100, "completed", filePath)
                 call.resolve(JSObject().put("success", true).put("filePath", filePath))
             } catch (e: Exception) {
                 Log.e(TAG, "downloadEpisode failed", e)
-                notifyDownload(episodeId ?: "", 0, "error")
-                call.reject("Download failed: ${e.message}", e)
+                if (cancelledDownloads.remove(episodeId)) {
+                    notifyDownload(episodeId, 0, "cancelled")
+                    call.reject("Download cancelled")
+                } else {
+                    notifyDownload(episodeId, 0, "error")
+                    call.reject("Download failed: ${e.message}", e)
+                }
+            } finally {
+                activeCalls.remove(episodeId)
             }
         }.start()
     }
 
     private var pendingMediaUri: android.net.Uri? = null
 
-    private fun createGalleryOutputStream(fileName: String): OutputStream? {
+    private fun createGalleryOutputStream(fileName: String, extension: String, mimeType: String): OutputStream? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, "$fileName.ts")
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp2t")
+                put(MediaStore.Video.Media.DISPLAY_NAME, "$fileName.$extension")
+                put(MediaStore.Video.Media.MIME_TYPE, mimeType)
                 put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Sakura")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
@@ -183,7 +227,7 @@ class AnimePlugin : Plugin() {
                 "Sakura"
             )
             dir.mkdirs()
-            val file = File(dir, "$fileName.ts")
+            val file = File(dir, "$fileName.$extension")
             pendingMediaUri = null
             FileOutputStream(file)
         }
@@ -206,6 +250,12 @@ class AnimePlugin : Plugin() {
             put("state", state)
             if (filePath.isNotEmpty()) put("filePath", filePath)
         })
+    }
+
+    private fun checkCancelled(episodeId: String) {
+        if (cancelledDownloads.contains(episodeId)) {
+            throw Exception("cancelled")
+        }
     }
 
     @ActivityCallback
@@ -234,11 +284,13 @@ class AnimePlugin : Plugin() {
             builder.header("Origin", referer.substringBeforeLast("/"))
         }
         val response = client.newCall(builder.build()).execute()
-        if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
-        return response.body?.string() ?: throw Exception("Empty response")
+        response.use {
+            if (!it.isSuccessful) throw Exception("HTTP ${it.code}")
+            return it.body?.string() ?: throw Exception("Empty response")
+        }
     }
 
-    private fun downloadSegmentToStream(client: OkHttpClient, url: String, referer: String, output: OutputStream) {
+    private fun downloadSegmentToStream(client: OkHttpClient, episodeId: String, url: String, referer: String, output: OutputStream) {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
@@ -246,11 +298,47 @@ class AnimePlugin : Plugin() {
             builder.header("Referer", referer)
             builder.header("Origin", referer.substringBeforeLast("/"))
         }
-        val response = client.newCall(builder.build()).execute()
-        if (!response.isSuccessful) throw Exception("HTTP ${response.code} for segment")
-        response.body?.byteStream()?.use { input ->
-            input.copyTo(output, bufferSize = 8192)
-        } ?: throw Exception("Empty segment body")
+        val activeCall = client.newCall(builder.build())
+        activeCalls[episodeId] = activeCall
+        val response = activeCall.execute()
+        response.use {
+            if (!it.isSuccessful) throw Exception("HTTP ${it.code} for segment")
+            it.body?.byteStream()?.use { input ->
+                input.copyTo(output, bufferSize = 8192)
+            } ?: throw Exception("Empty segment body")
+        }
+    }
+
+    private fun downloadFileToStream(client: OkHttpClient, episodeId: String, url: String, referer: String, output: OutputStream) {
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+        if (referer.isNotEmpty()) {
+            builder.header("Referer", referer)
+            builder.header("Origin", referer.substringBeforeLast("/"))
+        }
+        val activeCall = client.newCall(builder.build())
+        activeCalls[episodeId] = activeCall
+        val response = activeCall.execute()
+        response.use {
+            if (!it.isSuccessful) throw Exception("HTTP ${it.code}")
+            val total = it.body?.contentLength() ?: -1L
+            it.body?.byteStream()?.use { input ->
+                val buffer = ByteArray(8192)
+                var downloaded = 0L
+                while (true) {
+                    checkCancelled(episodeId)
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    output.write(buffer, 0, read)
+                    downloaded += read
+                    if (total > 0) {
+                        val progress = 12 + ((downloaded.toFloat() / total) * 88).toInt()
+                        notifyDownload(episodeId, progress.coerceIn(12, 99), "downloading")
+                    }
+                }
+            } ?: throw Exception("Empty response body")
+        }
     }
 
     private fun parseM3u8Segments(content: String, baseUrl: String, manifestUrl: String): List<String> {

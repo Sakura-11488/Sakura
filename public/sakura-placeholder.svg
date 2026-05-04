@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 448" role="img" aria-label="Sakura placeholder">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b1838"/>
+      <stop offset="0.55" stop-color="#171023"/>
+      <stop offset="1" stop-color="#0a0812"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0" stop-color="#ff6b9d" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ff6b9d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="320" height="448" rx="28" fill="url(#bg)"/>
+  <rect width="320" height="448" rx="28" fill="url(#glow)"/>
+  <path d="M160 112c18 34 51 32 65 8 4 32-19 55-49 47 22 26 13 61-16 75-29-14-38-49-16-75-30 8-53-15-49-47 14 24 47 26 65-8Z" fill="#ff8fba" opacity="0.9"/>
+  <circle cx="160" cy="204" r="10" fill="#ffd1e3"/>
+  <text x="160" y="292" text-anchor="middle" fill="#f7d9e8" font-family="Georgia, serif" font-size="34" font-weight="700">Sakura</text>
+  <text x="160" y="324" text-anchor="middle" fill="#b8a7c7" font-family="Arial, sans-serif" font-size="14" letter-spacing="3">MANGA + SOLANA</text>
+</svg>

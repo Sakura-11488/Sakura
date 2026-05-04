@@ -9,6 +9,8 @@ import { Capacitor } from "@capacitor/core";
 import { getLocal, setLocal, STORAGE_KEYS, getAnimeHistory, isInLibrary } from "@/lib/storage";
 import type { DownloadProgressEvent } from "@/plugins/anime";
 import { PSYOP_ID, PSYOP_INFO, PSYOP_STUDIO, PSYOP_CHARACTERS } from "@/lib/psyopAnime";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
 import dynamic from "next/dynamic";
 import LottieIcon from "@/components/LottieIcon";
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
@@ -52,6 +54,24 @@ function AnimeDetailsInner() {
     const [activeTab, setActiveTab] = useState<"episodes" | "info">("episodes");
     const [descExpanded, setDescExpanded] = useState(false);
     const [episodeRange, setEpisodeRange] = useState(0);
+    const [retrying, setRetrying] = useState(false);
+    const [statusToast, setStatusToast] = useState<string | null>(null);
+
+    const showToast = useCallback((message: string) => {
+        setStatusToast(message);
+        window.setTimeout(() => setStatusToast(null), 3500);
+    }, []);
+
+    const retryEpisodeLookup = useCallback(async () => {
+        if (!id || retrying) return;
+        setRetrying(true);
+        try {
+            const fresh = await refreshAnimeInfo(id);
+            if (fresh) setAnime(fresh);
+        } finally {
+            setRetrying(false);
+        }
+    }, [id, retrying]);
 
     useEffect(() => {
         setDlMap(getLocal<Record<string, AnimeDownloadEntry>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}));
@@ -72,6 +92,9 @@ function AnimeDetailsInner() {
                     if (updated[event.episodeId]) {
                         updated[event.episodeId] = { ...updated[event.episodeId], state: event.state, progress: event.progress };
                         if (event.filePath) updated[event.episodeId].filePath = event.filePath;
+                        if (event.state === "completed") showToast(`Download complete: ${updated[event.episodeId].episodeTitle}`);
+                        if (event.state === "error") showToast(`Download failed: ${updated[event.episodeId].episodeTitle}`);
+                        if (event.state === "cancelled") showToast(`Download cancelled: ${updated[event.episodeId].episodeTitle}`);
                     }
                     setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, updated);
                     return updated;
@@ -80,7 +103,22 @@ function AnimeDetailsInner() {
             listenerRef.current = handle;
         })();
         return () => { handle?.remove(); };
-    }, [isNative]);
+    }, [isNative, showToast]);
+
+    const handleCancelDownload = useCallback(async (episodeId: string) => {
+        try {
+            const { Anime } = await import("@/plugins/anime");
+            await Anime.cancelDownload({ episodeId });
+        } catch {
+            // The native listener updates state when available; keep UI responsive either way.
+        }
+        setDlMap(prev => {
+            const updated = { ...prev };
+            if (updated[episodeId]) updated[episodeId] = { ...updated[episodeId], state: "cancelled", progress: 0 };
+            setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, updated);
+            return updated;
+        });
+    }, []);
 
     const handleDownload = useCallback(async (ep: { id: string; number: number; title: string }) => {
         if (!anime) return;
@@ -109,9 +147,12 @@ function AnimeDetailsInner() {
             const sourceData = await fetchEpisodeSources(ep.id);
             if (!sourceData?.url) throw new Error("Could not resolve stream URL for download.");
             const { Anime } = await import("@/plugins/anime");
+            showToast(`Download started: ${ep.title || `Episode ${ep.number}`}`);
             const result = await Anime.downloadEpisode({
                 episodeId: ep.id, m3u8Url: sourceData.url,
                 title: ep.title || `Episode ${ep.number}`, animeTitle: anime.title,
+                referer: sourceData.referer,
+                isM3U8: sourceData.isM3U8,
             });
             if (result.filePath) {
                 setDlMap(prev => {
@@ -120,17 +161,20 @@ function AnimeDetailsInner() {
                     setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, updated);
                     return updated;
                 });
+                showToast(`Download complete: ${ep.title || `Episode ${ep.number}`}`);
             }
         } catch (e: any) {
             console.error("Download failed:", e);
+            const cancelled = /cancel/i.test(e?.message || "");
             setDlMap(prev => {
                 const updated = { ...prev };
-                if (updated[ep.id]) updated[ep.id] = { ...updated[ep.id], state: "error", progress: 0 };
+                if (updated[ep.id]) updated[ep.id] = { ...updated[ep.id], state: cancelled ? "cancelled" : "error", progress: 0 };
                 setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, updated);
                 return updated;
             });
+            showToast(`${cancelled ? "Download cancelled" : "Download failed"}: ${ep.title || `Episode ${ep.number}`}`);
         }
-    }, [anime, id, dlMap]);
+    }, [anime, id, dlMap, showToast]);
 
     useEffect(() => {
         if (!id || isPsyop) return;
@@ -202,10 +246,11 @@ function AnimeDetailsInner() {
     return (
         <>
             {/* Full-screen hero */}
+            {statusToast && <div className="sakura-toast" role="status">{statusToast}</div>}
             <div className="anime-details-hero">
                 <div className="anime-hero-bg">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={anime.cover || anime.image || "/sakura.png"} alt="" referrerPolicy="no-referrer" onError={(e) => { (e.target as HTMLImageElement).src = "/sakura.png"; }} />
+                    <img src={imageOrPlaceholder(anime.cover || anime.image)} alt="" referrerPolicy="no-referrer" onError={(e) => { (e.target as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} />
                 </div>
                 <button className="anime-details-close" onClick={() => router.back()} aria-label="Go back">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
@@ -264,12 +309,10 @@ function AnimeDetailsInner() {
                     </button>
                     <button
                         className="anime-action-btn"
-                        onClick={() => {
-                            if (navigator.share) {
-                                navigator.share({ title: anime.title, url: window.location.href }).catch(() => {});
-                            } else {
-                                navigator.clipboard?.writeText(window.location.href);
-                            }
+                        onClick={async () => {
+                            const url = buildSakuraShareUrl({ kind: "anime", id: anime.id });
+                            const result = await shareOrCopyLink({ title: anime.title, url });
+                            if (result === "copied") showToast("Share link copied");
                         }}
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" /></svg>
@@ -339,7 +382,7 @@ function AnimeDetailsInner() {
                                         <div className="anime-episode-thumb">
                                             {/* eslint-disable-next-line @next/next/no-img-element */}
                                             <img
-                                                src={ep.image || "/sakura.png"}
+                                                src={imageOrPlaceholder(ep.image || anime.cover || anime.image)}
                                                 alt=""
                                                 loading="lazy"
                                                 referrerPolicy="no-referrer"
@@ -347,7 +390,7 @@ function AnimeDetailsInner() {
                                                     const img = e.target as HTMLImageElement;
                                                     if (!img.dataset.fallback) {
                                                         img.dataset.fallback = "1";
-                                                        img.src = "/sakura.png";
+                                                        img.src = SAKURA_PLACEHOLDER_IMAGE;
                                                     }
                                                 }}
                                             />
@@ -375,9 +418,9 @@ function AnimeDetailsInner() {
                                                             <LottieIcon src="/icons/wired-outline-24-approved-checked-hover-loading.json" size={22} colorFilter="brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" playOnMount />
                                                         </button>
                                                     ) : isActive ? (
-                                                        <button className="anime-episode-dl" title={`${pct}%`} onClick={(e) => e.preventDefault()}>
+                                                        <button className="anime-episode-dl" title={`Cancel download (${pct}%)`} onClick={(e) => { e.preventDefault(); handleCancelDownload(ep.id); }}>
                                                             <div style={{ width: 22, height: 22, borderRadius: "50%", background: `conic-gradient(var(--sakura-pink) ${pct}%, rgba(255,255,255,0.1) 0)`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                                                <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#0a0a0f" }} />
+                                                                <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#0a0a0f", color: "#fff", fontSize: 10, lineHeight: "14px", textAlign: "center" }}>×</div>
                                                             </div>
                                                         </button>
                                                     ) : (
@@ -391,8 +434,30 @@ function AnimeDetailsInner() {
                                     </Link>
                                 );
                             }) : (
-                                <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
-                                    No episodes found.
+                                <div style={{
+                                    margin: "16px 0 32px",
+                                    padding: "20px 18px",
+                                    borderRadius: 12,
+                                    background: "rgba(233, 30, 123, 0.06)",
+                                    border: "1px solid rgba(233, 30, 123, 0.18)",
+                                    textAlign: "center",
+                                }}>
+                                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 6 }}>
+                                        No streaming source found for this title
+                                    </div>
+                                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 1.5, marginBottom: 14 }}>
+                                        {anime.episodeLoadError
+                                            ? `${anime.episodeLoadError}. Try again — sometimes the provider is just slow.`
+                                            : "Try again — sometimes the provider is just slow, or check back later."}
+                                    </div>
+                                    <button
+                                        onClick={retryEpisodeLookup}
+                                        disabled={retrying}
+                                        className="btn-secondary"
+                                        style={{ minWidth: 160 }}
+                                    >
+                                        {retrying ? "Searching…" : "Try search again"}
+                                    </button>
                                 </div>
                             )}
                         </div>

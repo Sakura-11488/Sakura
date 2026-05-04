@@ -81,7 +81,14 @@ export default function NewCreatorWorkPage() {
     }, [clearCoverFile]);
 
     const handleCreate = useCallback(async () => {
-        if (!wallet || !title.trim()) return;
+        if (!wallet) {
+            setError("Connect your wallet first.");
+            return;
+        }
+        if (!title.trim()) {
+            setError("Title is required.");
+            return;
+        }
 
         const issues = validateWorkDraft({
             kind,

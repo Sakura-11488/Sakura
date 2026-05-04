@@ -9,6 +9,7 @@ import novelIcon from "../../../../../wired-flat-3140-book-open-hover-pinch.json
 import mangaIcon from "../../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
 import animeIcon from "../../../../../wired-flat-2440-goku-hover-pinch.json";
 
+import DismissibleBanner from "@/components/DismissibleBanner";
 import Header from "@/components/Header";
 import LottieIcon from "@/components/LottieIcon";
 import { createCompressedMintSetupOnChain } from "@/lib/compressed-mint-setup";
@@ -94,7 +95,13 @@ export default function CreatorWorkManagePage() {
     const [mintRecords, setMintRecords] = useState<WorkMintRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Per-section feedback. The previous global `infoMessage` placed
+    // success notes far away from the action that produced them
+    // (e.g. "Mint setup created" rendered above the Create Release panel).
+    // Splitting them keeps each banner next to its section.
     const [infoMessage, setInfoMessage] = useState<string | null>(null);
+    const [releaseInfo, setReleaseInfo] = useState<string | null>(null);
+    const [mintInfo, setMintInfo] = useState<string | null>(null);
     const [coverState, setCoverState] = useState<"idle" | "uploading" | "error">("idle");
     const [releaseState, setReleaseState] = useState<"idle" | "saving" | "error">("idle");
     const [actionState, setActionState] = useState<"idle" | "saving">("idle");
@@ -261,7 +268,7 @@ export default function CreatorWorkManagePage() {
 
         setReleaseState("saving");
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
 
         const created = await createWorkRelease(work.id, wallet, {
             sequence_number: nextNumber,
@@ -288,7 +295,7 @@ export default function CreatorWorkManagePage() {
         setReleaseSummary("");
         setReleaseBody("");
         setReleaseState("idle");
-        setInfoMessage("Release created.");
+        setReleaseInfo("Release created.");
         await hydrateWork(work.id);
     }, [defaultContentType, hydrateWork, releaseBody, releaseSummary, releaseTitle, releases, wallet, work]);
 
@@ -328,7 +335,7 @@ export default function CreatorWorkManagePage() {
 
         setReleaseActionState(`save:${release.id}`);
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
         const updated = await updateWorkRelease(release.id, wallet, {
             title: draft.title.trim(),
             summary: draft.summary.trim(),
@@ -341,7 +348,7 @@ export default function CreatorWorkManagePage() {
             return;
         }
 
-        setInfoMessage(`Saved ${draft.title.trim()}.`);
+        setReleaseInfo(`Saved ${draft.title.trim()}.`);
         await hydrateWork(work.id);
     }, [hydrateWork, releaseDrafts, wallet, work]);
 
@@ -353,7 +360,7 @@ export default function CreatorWorkManagePage() {
 
         setReleaseActionState(`status:${release.id}:${status}`);
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
         const updated = await updateWorkRelease(release.id, wallet, {
             publication_status: status,
             visibility: status === "published" ? "public" : release.visibility,
@@ -366,7 +373,7 @@ export default function CreatorWorkManagePage() {
             return;
         }
 
-        setInfoMessage(`Release moved to ${status.replaceAll("_", " ")}.`);
+        setReleaseInfo(`Release moved to ${status.replaceAll("_", " ")}.`);
         await hydrateWork(work.id);
     }, [hydrateWork, wallet, work]);
 
@@ -376,7 +383,7 @@ export default function CreatorWorkManagePage() {
 
         setReleaseActionState(`delete:${release.id}`);
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
         const deleted = await deleteWorkRelease(release.id, wallet);
         setReleaseActionState(null);
 
@@ -385,7 +392,7 @@ export default function CreatorWorkManagePage() {
             return;
         }
 
-        setInfoMessage(`Deleted ${release.title}.`);
+        setReleaseInfo(`Deleted ${release.title}.`);
         await hydrateWork(work.id);
     }, [hydrateWork, wallet, work]);
 
@@ -398,7 +405,7 @@ export default function CreatorWorkManagePage() {
 
         setReleaseAssetState({ releaseId: release.id, kind, current: 1, total: 1 });
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
 
         try {
             const authHeaders = await signPublisherAction("creator-asset-upload");
@@ -430,7 +437,7 @@ export default function CreatorWorkManagePage() {
                 throw new Error("Asset uploaded, but release metadata could not be updated.");
             }
 
-            setInfoMessage(kind === "subtitle"
+            setReleaseInfo(kind === "subtitle"
                 ? "Subtitle uploaded for this release."
                 : "Video manifest uploaded for this release.");
             setReleaseAssetState(null);
@@ -449,7 +456,7 @@ export default function CreatorWorkManagePage() {
         const existingPages = (releaseAssets[release.id] || []).filter((asset) => asset.role === "manga_page").length;
         setReleaseAssetState({ releaseId: release.id, kind: "manga_page", current: 0, total: orderedFiles.length });
         setError(null);
-        setInfoMessage(null);
+        setReleaseInfo(null);
 
         try {
             const authHeaders = await signPublisherAction("creator-asset-upload");
@@ -485,7 +492,7 @@ export default function CreatorWorkManagePage() {
                 throw new Error("Pages uploaded, but release metadata could not be updated.");
             }
 
-            setInfoMessage(`${orderedFiles.length} manga pages uploaded in filename order.`);
+            setReleaseInfo(`${orderedFiles.length} manga pages uploaded in filename order.`);
             setReleaseAssetState(null);
             await hydrateWork(work.id);
         } catch (uploadError: any) {
@@ -539,7 +546,7 @@ export default function CreatorWorkManagePage() {
         }
 
         setWork((prev) => prev ? { ...prev, minting_enabled: enabled } : prev);
-        setInfoMessage(enabled ? "Minting enabled for this work." : "Minting disabled for this work.");
+        setMintInfo(enabled ? "Minting enabled for this work." : "Minting disabled for this work.");
     }, [wallet, work]);
 
     const handleCreateOnChainMintSetup = useCallback(async () => {
@@ -568,7 +575,7 @@ export default function CreatorWorkManagePage() {
 
         setMintState("saving");
         setError(null);
-        setInfoMessage(null);
+        setMintInfo(null);
 
         try {
             const createdSetup = await createCompressedMintSetupOnChain({
@@ -603,7 +610,7 @@ export default function CreatorWorkManagePage() {
                 setWork((prev) => prev ? { ...prev, minting_enabled: true } : prev);
             }
 
-            setInfoMessage("On-chain compressed mint setup created and verified.");
+            setMintInfo("On-chain compressed mint setup created and verified.");
             setMintState("idle");
             await hydrateWork(work.id);
         } catch (mintError: any) {
@@ -636,7 +643,7 @@ export default function CreatorWorkManagePage() {
 
         setMintState("saving");
         setError(null);
-        setInfoMessage(null);
+        setMintInfo(null);
 
         try {
             const authHeaders = await signPublisherAction("creator-mint-verify");
@@ -659,7 +666,7 @@ export default function CreatorWorkManagePage() {
                 setWork((prev) => prev ? { ...prev, minting_enabled: true } : prev);
             }
 
-            setInfoMessage("Existing on-chain mint setup verified and submitted for review.");
+            setMintInfo("Existing on-chain mint setup verified and submitted for review.");
             setMintState("idle");
             await hydrateWork(work.id);
         } catch (mintError: any) {
@@ -837,19 +844,38 @@ export default function CreatorWorkManagePage() {
                     )}
 
                     {error && (
-                        <div style={errorStyle}>
+                        <DismissibleBanner
+                            kind="error"
+                            onDismiss={() => setError(null)}
+                            autoDismissMs={6000}
+                        >
                             {error}
-                        </div>
+                        </DismissibleBanner>
                     )}
 
                     {infoMessage && (
-                        <div style={successStyle}>
+                        <DismissibleBanner
+                            kind="success"
+                            onDismiss={() => setInfoMessage(null)}
+                            autoDismissMs={4000}
+                        >
                             {infoMessage}
-                        </div>
+                        </DismissibleBanner>
                     )}
 
                     <div style={{ ...panelStyle, display: "block", marginBottom: 18 }}>
                         <h3 style={{ margin: "0 0 12px", color: "var(--text-primary)", fontWeight: 800 }}>Create Release</h3>
+                        {releaseInfo && (
+                            <div style={{ marginBottom: 10 }}>
+                                <DismissibleBanner
+                                    kind="success"
+                                    onDismiss={() => setReleaseInfo(null)}
+                                    autoDismissMs={4000}
+                                >
+                                    {releaseInfo}
+                                </DismissibleBanner>
+                            </div>
+                        )}
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                             <input
                                 type="text"
@@ -1126,6 +1152,18 @@ export default function CreatorWorkManagePage() {
                             </div>
                             <span style={pillStyle}>{work.minting_enabled ? "enabled" : "disabled"}</span>
                         </div>
+
+                        {mintInfo && (
+                            <div style={{ marginBottom: 10 }}>
+                                <DismissibleBanner
+                                    kind="success"
+                                    onDismiss={() => setMintInfo(null)}
+                                    autoDismissMs={4000}
+                                >
+                                    {mintInfo}
+                                </DismissibleBanner>
+                            </div>
+                        )}
 
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 10 }}>
                             <select value={mintType} onChange={(event) => setMintType(event.target.value as MintType)} style={inputStyle}>

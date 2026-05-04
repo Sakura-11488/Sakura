@@ -197,11 +197,13 @@ export interface LibraryItem {
     id: string;
     title: string;
     image?: string;
-    type: 'anime' | 'manga' | 'novel';
+    type: 'anime' | 'manga' | 'novel' | 'comic';
     source?: 'sakura' | 'external';
     providerId?: MangaSourceId;
     addedAt: number;
 }
+
+export type LibraryItemType = LibraryItem['type'];
 
 /* ── Novel Bookmark / Highlight ── */
 
@@ -298,18 +300,18 @@ const LIBRARY_KEY = 'sakura_library';
 const DEFAULT_CATEGORY = 'Default';
 
 function getLibraryItemProviderId(item: LibraryItem): MangaSourceId | null {
-    if (item.type !== 'manga') return null;
+    if (item.type !== 'manga' && item.type !== 'comic') return null;
     return normalizeMangaSourceId(item.providerId);
 }
 
 function isSameLibraryItem(
     item: LibraryItem,
     itemId: string,
-    itemType: 'anime' | 'manga' | 'novel',
+    itemType: LibraryItemType,
     providerId?: string | null,
 ): boolean {
     if (item.id !== itemId || item.type !== itemType) return false;
-    if (itemType !== 'manga') return true;
+    if (itemType !== 'manga' && itemType !== 'comic') return true;
     return getLibraryItemProviderId(item) === normalizeMangaSourceId(providerId);
 }
 
@@ -337,7 +339,7 @@ export function addToLibrary(categoryName: string, item: LibraryItem): void {
         cat = { name: categoryName, items: [] };
         lib.push(cat);
     }
-    const normalizedItem = item.type === 'manga'
+    const normalizedItem = (item.type === 'manga' || item.type === 'comic')
         ? { ...item, providerId: normalizeMangaSourceId(item.providerId) }
         : item;
 
@@ -348,7 +350,7 @@ export function addToLibrary(categoryName: string, item: LibraryItem): void {
     const w = getConnectedWallet(); if (w) schedulePushLibrary(w);
 }
 
-export function removeFromLibrary(categoryName: string, itemId: string, itemType: 'anime' | 'manga' | 'novel', providerId?: string | null): void {
+export function removeFromLibrary(categoryName: string, itemId: string, itemType: LibraryItemType, providerId?: string | null): void {
     const lib = getLibrary();
     const cat = lib.find(c => c.name === categoryName);
     if (cat) {
@@ -374,13 +376,13 @@ export function deleteLibraryCategory(name: string): void {
     const w = getConnectedWallet(); if (w) schedulePushLibrary(w);
 }
 
-export function getItemCategories(itemId: string, itemType: 'anime' | 'manga' | 'novel', providerId?: string | null): string[] {
+export function getItemCategories(itemId: string, itemType: LibraryItemType, providerId?: string | null): string[] {
     return getLibrary()
         .filter(c => c.items.some(i => isSameLibraryItem(i, itemId, itemType, providerId)))
         .map(c => c.name);
 }
 
-export function isInLibrary(itemId: string, itemType: 'anime' | 'manga' | 'novel', providerId?: string | null): boolean {
+export function isInLibrary(itemId: string, itemType: LibraryItemType, providerId?: string | null): boolean {
     return getLibrary().some(c => c.items.some(i => isSameLibraryItem(i, itemId, itemType, providerId)));
 }
 

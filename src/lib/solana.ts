@@ -2,13 +2,26 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 // ============ Network Config ============
 export const SOLANA_NETWORK = "mainnet-beta";
-export const RPC_ENDPOINT = "https://api.mainnet-beta.solana.com";
+
+// Default to Helius if a key is configured (Capacitor build embeds the
+// NEXT_PUBLIC_HELIUS_API_KEY env at build-time). Helius is significantly
+// faster and more reliable than the public mainnet RPC, which matters for
+// time-bounded confirmations like Jupiter swaps where "block height
+// exceeded" errors come from public RPC lag.
+const HELIUS_KEY = (process.env.NEXT_PUBLIC_HELIUS_API_KEY || "").trim();
+export const RPC_ENDPOINT = HELIUS_KEY
+    ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`
+    : "https://api.mainnet-beta.solana.com";
 
 // ============ $SAKURA Token Config (Token-2022) ============
 export const SAKURA_MINT = new PublicKey(
     "EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump"
 );
-export const SAKURA_DECIMALS = 9;
+// On-chain mint reports decimals = 6 (Token-2022, pump.fun launch). The
+// previous value of 9 silently scaled balances by 1000x and caused Jupiter
+// swap quotes to come back ~1000x too large. Verified via getAsset and
+// getAccountInfo on mainnet.
+export const SAKURA_DECIMALS = 6;
 
 // ============ Ino On-Chain Registry ============
 // Core program for chapter unlocks, milestone tracking, and support recording.

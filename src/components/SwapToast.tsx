@@ -129,10 +129,17 @@ export function SwapToastProvider({ children }: { children: React.ReactNode }) {
                             )}
                         </div>
 
-                        {/* Dismiss button */}
-                        {toast.state !== "pending" && (
-                            <button className="swap-toast-close" onClick={dismiss}>×</button>
-                        )}
+                        {/* Dismiss button — pending toasts also dismissable
+                            so the user can clear the UI if a swap is taking
+                            forever; the on-chain transaction continues
+                            independently. */}
+                        <button
+                            className="swap-toast-close"
+                            onClick={(e) => { e.stopPropagation(); dismiss(); }}
+                            aria-label="Dismiss"
+                        >
+                            ×
+                        </button>
                     </div>
                 </div>
             )}

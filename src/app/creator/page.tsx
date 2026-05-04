@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { getAuthorDetails, getMangaByAuthor, type Manga } from "@/lib/content-source";
 import { getCreatorProfile, getCreatorTips, type CreatorProfile, type TipRecord } from "@/lib/creator";
+import { getCreatorWorksByCreator } from "@/lib/creator-works";
 import { getWalletSakuraBalance } from "@/lib/treasury";
 import { truncateAddress } from "@/lib/solana";
 import MangaCard from "@/components/MangaCard";
@@ -16,6 +17,32 @@ function CreatorPageContent() {
     const searchParams = useSearchParams();
     const id = searchParams?.get("id");
     const { publicKey } = useWallet();
+    const walletAddress = publicKey?.toBase58() ?? null;
+    const [hasCreatorState, setHasCreatorState] = useState(false);
+
+    useEffect(() => {
+        if (!walletAddress) {
+            setHasCreatorState(false);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const [profile, works] = await Promise.all([
+                    getCreatorProfile(walletAddress),
+                    getCreatorWorksByCreator(walletAddress),
+                ]);
+                if (!cancelled) {
+                    setHasCreatorState(Boolean(profile) || (works?.length ?? 0) > 0);
+                }
+            } catch {
+                if (!cancelled) setHasCreatorState(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [walletAddress]);
 
     const [author, setAuthor] = useState<any>(null);
     const [creator, setCreator] = useState<CreatorProfile | null>(null);
@@ -81,10 +108,33 @@ function CreatorPageContent() {
     }
 
     if (error || (!author && !creator)) {
+        const showWorkspaceCta = walletAddress && hasCreatorState;
+        const isLanding = !id;
         return (
             <div className="page-container" style={{ paddingBottom: 100, textAlign: "center", paddingTop: 100 }}>
-                <h2 style={{ marginBottom: 16 }}>{error || "Creator Not Found"}</h2>
-                <Link href="/" className="btn-primary">Return Home</Link>
+                <h2 style={{ marginBottom: 16 }}>
+                    {isLanding ? "Creator" : (error || "Creator Not Found")}
+                </h2>
+                {isLanding && (
+                    <p style={{ color: "var(--text-secondary)", maxWidth: 480, margin: "0 auto 20px", lineHeight: 1.5 }}>
+                        Publish novels, manga, or anime from the Sakura creator workspace.
+                    </p>
+                )}
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                    {showWorkspaceCta && (
+                        <Link href="/creator/works" className="btn-primary">
+                            Open My Workspace
+                        </Link>
+                    )}
+                    {walletAddress && !hasCreatorState && (
+                        <Link href="/creator/works/new" className="btn-primary">
+                            Start a Work
+                        </Link>
+                    )}
+                    <Link href="/" className={showWorkspaceCta || walletAddress ? "btn-secondary" : "btn-primary"}>
+                        Return Home
+                    </Link>
+                </div>
             </div>
         );
     }
@@ -231,13 +281,13 @@ function CreatorPageContent() {
                         </div>
                     )}
 
-                    {isOwnerProfile && (
+                    {(isOwnerProfile || (walletAddress && hasCreatorState)) && (
                         <Link
                             href="/creator/works"
-                            className="btn-secondary"
+                            className="btn-primary"
                             style={{ marginTop: 4, fontSize: "0.9rem" }}
                         >
-                            Manage Works
+                            Open My Workspace
                         </Link>
                     )}
 

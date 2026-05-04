@@ -56,14 +56,17 @@ function CreatorApplyPageContent() {
                 contentAuthorId.trim() || null
             );
 
-            if (result) {
+            if (result.ok) {
                 setSuccess(true);
                 // Optionally redirect to their new profile after a few seconds
                 setTimeout(() => {
                     router.push(`/creator?id=${publicKey.toBase58()}`);
                 }, 3000);
             } else {
-                setError("Failed to submit application. Please try again.");
+                // Surface the actual Supabase error (RLS denial, missing
+                // table, validation, etc.) so users can act on it instead
+                // of seeing a flat "Failed to submit".
+                setError(result.message);
             }
         } catch (err: any) {
             console.error("Application error:", err);
