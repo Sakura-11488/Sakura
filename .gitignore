@@ -1,6 +1,3 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
 /node_modules
 /.pnp
 .pnp.*
@@ -9,126 +6,64 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# testing
 /coverage
-
-# next.js
 /.next/
 /out/
-
-# production
 /build
-
-# misc
 .DS_Store
 *.pem
-
-# debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
 .env*
-
-# vercel
 .vercel
-
-# typescript
 *.tsbuildinfo
 next-env.d.ts
-
-# manga files (too large)
 /Weekly Viz*/
 /public/manga/
-
-# test files
 test-*
 scripts/test-*
-
-# build artifacts
 build.log
-
-# Anchor / Solana build artifacts & keypairs
 /target/
 Cargo.lock
-
-# Release APK & signing keys
 *.apk
 *.keystore
 *.jks
 android/gradle.properties
-
-# Docs & Supabase SQL — keep local only (not in repo)
-*.md
-!TERMS.md
-!PRIVACY.md
-!COPYRIGHT.md
-supabase*.sql
-comments_schema.sql
-
-# reference repos
-aniyomi-main/
-
-# backend
-backend/node_modules/
-backend/dist/
-backend/.env
-
-# Docs & Supabase SQL — keep local only (not in repo)
+luna.md
 *.md
 !README.md
 !TERMS.md
 !PRIVACY.md
 !COPYRIGHT.md
 !supabase/README.md
-
-# Internal architecture notes (not for public)
-.sakura-internal
 supabase*.sql
 comments_schema.sql
-
-# private source providers
+aniyomi-main/
+backend/node_modules/
+backend/dist/
+backend/.env
+.sakura-internal
 src/lib/sources/hianime.ts
 src/lib/sources/megacloud.ts
 android/app/src/main/java/com/millw14/sakura/anime/AnimeScraper.kt
 android/app/src/main/java/com/millw14/sakura/anime/WebViewExtractor.kt
 android/app/src/main/java/com/millw14/sakura/anime/CloudflareBypass.kt
-
-# local tool artifacts
 supabase/.temp/
 hianime-node/node_modules/
-
-# ---------------------------------------------------------------------------
-# Proprietary / sensitive core (keep local only)
-# Rust in programs/** (e.g. programs/sakura-treasury) is NOT listed here — keep tracking *.rs as usual.
-# If any path below was already committed:  git rm -r --cached -- path
-# Fresh clones will need stubs or a private mirror for a working app build.
-# ---------------------------------------------------------------------------
-
-# Sakura AI (routing, prompts, vendor integrations, chain helpers)
 src/lib/sakura-ai/
-
-# Anime pipeline + linked source adapters
 src/lib/anime.ts
 src/lib/sources/gogoanime.ts
 src/lib/sources/sakura-source.ts
 src/lib/sources/atsumaru-source.ts
 src/lib/sources/comics/
-
-# Mobile / Capacitor bridge to native anime stack
 src/plugins/anime.ts
 android/app/src/main/java/com/millw14/sakura/anime/AnimePlugin.kt
-
-# Internal ops: deploy targets, scraper hosts, wallet recovery, AI smoke tests
 scripts/droplet/
 scripts/recover-wallet*.py
 scripts/smoke-sakura-ai*.mjs
 scripts/run-manga-source-bakeoff.mjs
 scripts/deploy-treasury.ps1
-
-# Scratch binaries / one-off exports at repo root
 *.bin
 /main.js
