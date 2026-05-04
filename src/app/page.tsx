@@ -2,12 +2,20 @@
 
 import Header from "@/components/Header";
 import MangaCard from "@/components/MangaCard";
+import SakuraAIButton from "@/components/SakuraAIButton";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { getFeaturedManga, searchManga, searchMangaByGenre, MANGA_GENRES, type Manga } from "@/lib/content-source";
+import { searchMangaByGenre, MANGA_GENRES } from "@/lib/content-source";
+import { type Manga } from "@/lib/sources/types";
+import { getSource, searchAllComics } from "@/lib/sources";
+import { getComicSource } from "@/lib/sources/comics/comics-index";
 import { useRouter } from "next/navigation";
-import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
+import { getLocal, setLocal } from "@/lib/storage";
 import LottieIcon from "@/components/LottieIcon";
+import { getDefaultMangaSourceId, getHomeMangaSourceId, getPrimaryComicSourceId } from "@/lib/sources/source-ids";
+
+type BrowseMode = "manga" | "comic";
+const BROWSE_MODE_KEY = "sakura_browse_mode";
 
 export default function Home() {
   const router = useRouter();
@@ -21,15 +29,45 @@ export default function Home() {
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
   const [genreResults, setGenreResults] = useState<Manga[]>([]);
   const [genreLoading, setGenreLoading] = useState(false);
+  const [mode, setMode] = useState<BrowseMode>("manga");
+  const homeSourceId = getHomeMangaSourceId();
+  const homeSource = getSource(homeSourceId);
+  const primaryComicSourceId = getPrimaryComicSourceId();
+  const comicSource = getComicSource(primaryComicSourceId);
 
   useEffect(() => {
+    const saved = getLocal<BrowseMode>(BROWSE_MODE_KEY, "manga");
+    if (saved === "comic" || saved === "manga") setMode(saved);
+  }, []);
+
+  const handleModeChange = useCallback((next: BrowseMode) => {
+    setMode(next);
+    setLocal(BROWSE_MODE_KEY, next);
+    setSearchQuery("");
+    setSearchResults([]);
+    setShowSearch(false);
+    setSelectedGenre(null);
+    setGenreResults([]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     async function loadFeatured() {
-      const data = await getFeaturedManga();
-      setFeatured(data);
-      setLoading(false);
+      setLoading(true);
+      try {
+        const source = mode === "comic" ? comicSource : homeSource;
+        const data = await source.getTrending(20);
+        if (!cancelled) setFeatured(data);
+      } catch (e) {
+        console.error(`${mode} featured load failed`, e);
+        if (!cancelled) setFeatured([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
     loadFeatured();
-  }, []);
+    return () => { cancelled = true; };
+  }, [homeSource, comicSource, mode]);
 
   // Debounced search
   useEffect(() => {
@@ -43,7 +81,9 @@ export default function Home() {
     searchTimerRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const results = await searchManga(searchQuery);
+        const results = mode === "comic"
+          ? await searchAllComics(searchQuery)
+          : await homeSource.searchManga(searchQuery, 20, 0);
         setSearchResults(results);
       } catch (e) {
         console.error(e);
@@ -51,7 +91,7 @@ export default function Home() {
       setSearching(false);
     }, 600);
     return () => clearTimeout(searchTimerRef.current);
-  }, [searchQuery]);
+  }, [homeSource, searchQuery, mode]);
 
   const handleGenreSelect = useCallback(async (tagId: string | null) => {
     setSelectedGenre(tagId);
@@ -66,6 +106,11 @@ export default function Home() {
     <>
       <Header />
       <main className="main-content">
+        {/* Sakura AI launcher — always at the very top of the home feed */}
+        <section className="section" style={{ paddingTop: 12, paddingBottom: 0 }}>
+          <SakuraAIButton />
+        </section>
+
         {/* Compact Hero Banner */}
         <section className="home-hero-compact">
           <div className="home-hero-inner">
@@ -78,6 +123,54 @@ export default function Home() {
           </div>
         </section>
 
+        {/* Manga / Comics segmented toggle */}
+        <section className="section" style={{ paddingTop: 8, paddingBottom: 0 }}>
+          <div
+            role="tablist"
+            aria-label="Content type"
+            style={{
+              display: "flex",
+              margin: "0 auto 8px",
+              maxWidth: 320,
+              padding: 4,
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            {(["manga", "comic"] as BrowseMode[]).map((m) => {
+              const active = mode === m;
+              return (
+                <button
+                  key={m}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => handleModeChange(m)}
+                  style={{
+                    flex: 1,
+                    padding: "10px 16px",
+                    borderRadius: 999,
+                    border: "none",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                    fontSize: 13,
+                    letterSpacing: 0.3,
+                    color: active ? "#fff" : "var(--text-muted)",
+                    background: active
+                      ? (m === "comic"
+                        ? "linear-gradient(135deg, rgba(14,165,233,0.85), rgba(34,211,238,0.85))"
+                        : "linear-gradient(135deg, rgba(255,107,157,0.85), rgba(236,72,153,0.85))")
+                      : "transparent",
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  {m === "comic" ? "Comics" : "Manga"}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         {/* Search Bar */}
         <section className="section" style={{ paddingTop: 8, paddingBottom: 0 }}>
           <div className="search-bar" style={{ marginBottom: 0 }}>
@@ -86,7 +179,9 @@ export default function Home() {
             </span>
             <input
               type="text"
-              placeholder="マンガを検索... Search manga..."
+              placeholder={mode === "comic"
+                ? "Search for Marvel, DC, Image, and more..."
+                : "マンガを検索... Search manga..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -126,7 +221,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={series.sourceStr || (mode === "comic" ? primaryComicSourceId : homeSourceId)}
                   />
                 ))}
               </div>
@@ -138,8 +233,8 @@ export default function Home() {
           </section>
         )}
 
-        {/* Genre Filter Chips */}
-        {!showSearch && (
+        {/* Genre Filter Chips — manga only; comics use a different taxonomy */}
+        {!showSearch && mode === "manga" && (
           <section className="section" style={{ paddingTop: 12, paddingBottom: 0 }}>
             <div className="genre-filters" style={{ maxWidth: 700, margin: '0 auto' }}>
               <button
@@ -185,7 +280,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={getDefaultMangaSourceId()}
                   />
                 ))}
               </div>
@@ -197,12 +292,16 @@ export default function Home() {
           </section>
         )}
 
-        {/* Recommended Manga — Main Focus (Hidden during search and genre filter) */}
+        {/* Recommended — Main Focus (Hidden during search and genre filter) */}
         {!showSearch && !selectedGenre && (
           <section className="section" style={{ paddingTop: 12 }}>
             <div className="section-header">
-              <h2 className="section-title">おすすめ</h2>
-              <p className="section-subtitle">Recommended For You</p>
+              <h2 className="section-title">
+                {mode === "comic" ? "Popular Comics" : "おすすめ"}
+              </h2>
+              <p className="section-subtitle">
+                {mode === "comic" ? "Trending Issues & Series" : "Recommended For You"}
+              </p>
             </div>
 
             {loading ? (
@@ -226,7 +325,7 @@ export default function Home() {
                     genres={series.tags.slice(0, 3)}
                     follows={series.follows}
                     rating={series.rating}
-                    source="mangadex"
+                    source={series.sourceStr || (mode === "comic" ? primaryComicSourceId : homeSourceId)}
                   />
                 ))}
               </div>
@@ -234,7 +333,9 @@ export default function Home() {
 
             <div style={{ textAlign: "center", marginTop: 32 }}>
               <Link href="/manga" className="btn-secondary">
-                全てのマンガを見る — View All Manga →
+                {mode === "comic"
+                  ? "View All Comics →"
+                  : "全てのマンガを見る — View All Manga →"}
               </Link>
             </div>
           </section>

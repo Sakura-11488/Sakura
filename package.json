@@ -1,12 +1,13 @@
 {
   "name": "sakura",
-  "version": "1.5.1",
+  "version": "1.7.8",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "manga:bakeoff": "node scripts/run-manga-source-bakeoff.mjs",
     "postinstall": "node scripts/fix-biometric-gradle.js"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/ios": "^8.1.0",
     "@capacitor/preferences": "^8.0.1",
+    "@mayanfinance/swap-sdk": "^13.3.0",
     "@metaplex-foundation/mpl-bubblegum": "^5.0.2",
     "@metaplex-foundation/umi": "^1.5.1",
     "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
@@ -40,6 +42,7 @@
     "capacitor-native-biometric": "^4.2.2",
     "cheerio": "^1.2.0",
     "crypto-js": "^4.2.0",
+    "ethers": "^6.16.0",
     "hls.js": "^1.6.15",
     "htmlparser2": "^12.0.0",
     "jszip": "^3.10.1",

@@ -11,6 +11,7 @@ import { checkPassStatus } from "@/lib/pass-check";
 import { getCreatorProfile, searchCreators, type CreatorProfile } from "@/lib/creator";
 import Link from "next/link";
 import LottieIcon from "@/components/LottieIcon";
+import DismissibleBanner from "@/components/DismissibleBanner";
 import { schedulePushSettings } from "@/lib/cloud-sync";
 import { APP_VERSION } from "@/lib/app-version";
 
@@ -28,6 +29,7 @@ export default function SettingsPage() {
     const [subscriptionAlerts, setSubscriptionAlerts] = useState(false);
     const [userEmail, setUserEmail] = useState("");
     const [emailSaved, setEmailSaved] = useState(false);
+    const [alertGateMessage, setAlertGateMessage] = useState<string | null>(null);
 
     // Profile name state
     const [displayName, setDisplayName] = useState("");
@@ -128,11 +130,21 @@ export default function SettingsPage() {
     };
 
     const handleNewReleaseToggle = (val: boolean) => {
+        if (val && !publicKey) {
+            setNewReleaseAlerts(false);
+            setAlertGateMessage("Sign in or create a wallet to receive alerts.");
+            return;
+        }
         setNewReleaseAlerts(val);
         updateSetting('newReleaseAlerts', val);
     };
 
     const handleSubscriptionToggle = (val: boolean) => {
+        if (val && !publicKey) {
+            setSubscriptionAlerts(false);
+            setAlertGateMessage("Sign in or create a wallet to receive alerts.");
+            return;
+        }
         setSubscriptionAlerts(val);
         updateSetting('subscriptionAlerts', val);
     };
@@ -173,17 +185,17 @@ export default function SettingsPage() {
                                     {publicKey
                                         ? creatorProfile
                                             ? "Manage your creator profile, works, manga chapters, anime releases, and mint setup."
-                                            : "Start publishing novels, manga, or anime from the shared creator workspace."
+                                            : "Open the workspace to draft novels, manga, or anime — no profile required."
                                         : "Connect your wallet to start publishing as a creator."}
                                 </span>
                             </div>
                             {publicKey ? (
                                 <Link
-                                    href={creatorProfile ? "/creator/works" : "/creator/works/new"}
+                                    href="/creator/works"
                                     className="btn-primary"
                                     style={{ fontSize: 13, padding: "8px 16px", textDecoration: "none" }}
                                 >
-                                    {creatorProfile ? "Open Workspace" : "Become a Creator"}
+                                    Open Workspace
                                 </Link>
                             ) : (
                                 <button
@@ -590,6 +602,23 @@ export default function SettingsPage() {
                     {/* Notifications */}
                     <div className="settings-group">
                         <h3 className="settings-group-title">通知 Notifications</h3>
+                        {alertGateMessage && (
+                            <div
+                                style={{ marginBottom: 12, cursor: "pointer" }}
+                                onClick={() => {
+                                    setAlertGateMessage(null);
+                                    setVisible(true);
+                                }}
+                            >
+                                <DismissibleBanner
+                                    kind="info"
+                                    onDismiss={() => setAlertGateMessage(null)}
+                                    autoDismissMs={6000}
+                                >
+                                    {alertGateMessage} Tap to open the wallet menu.
+                                </DismissibleBanner>
+                            </div>
+                        )}
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">New Chapter Alerts</span>

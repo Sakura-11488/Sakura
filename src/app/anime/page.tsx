@@ -3,12 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Header from "@/components/Header";
 import AnimeCard from "@/components/AnimeCard";
-import { searchAnime, fetchAiringAnime, fetchAnimeByGenre, ANIME_GENRES, type AnimeResult } from "@/lib/anime";
+import { searchAnime, fetchAiringAnime, fetchPopularAnime, fetchAnimeByGenre, ANIME_GENRES, type AnimeResult } from "@/lib/anime";
+import { getLastAniListDebug } from "@/lib/anilist";
 import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
-import { PSYOP_SEARCH_RESULT, matchesPsyopQuery } from "@/lib/psyopAnime";
+import { PSYOP_ID, PSYOP_INFO, PSYOP_EPISODES } from "@/lib/psyopAnime";
 import Link from "next/link";
 
-// Debounce hook
 function useDebounce(value: string, delay: number) {
     const [debouncedValue, setDebouncedValue] = useState(value);
     useEffect(() => {
@@ -23,27 +23,61 @@ const MAX_RECENT_SEARCHES = 8;
 export default function AnimeBrowsePage() {
     const [searchResults, setSearchResults] = useState<AnimeResult[]>([]);
     const [airingAnime, setAiringAnime] = useState<AnimeResult[]>([]);
+    const [popularAnime, setPopularAnime] = useState<AnimeResult[]>([]);
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(false);
     const [airingLoading, setAiringLoading] = useState(true);
+    const [popularLoading, setPopularLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const debouncedSearch = useDebounce(search, 800);
     const [continueWatching, setContinueWatching] = useState<AnimeHistoryEntry[]>([]);
     const [selectedGenre, setSelectedGenre] = useState<number | null>(null);
     const [genreResults, setGenreResults] = useState<AnimeResult[]>([]);
     const [genreLoading, setGenreLoading] = useState(false);
-
     const [recentSearches, setRecentSearches] = useState<string[]>([]);
     const [showRecent, setShowRecent] = useState(false);
     const searchRef = useRef<HTMLDivElement>(null);
 
+    const [apiError, setApiError] = useState<string | null>(null);
+
+    const loadRows = useCallback(async () => {
+        setAiringLoading(true);
+        setPopularLoading(true);
+        setApiError(null);
+
+        let gotAny = false;
+        const errors: string[] = [];
+
+        try {
+            const airing = await fetchAiringAnime();
+            setAiringAnime(airing);
+            if (airing.length > 0) gotAny = true;
+            else errors.push("trending:empty");
+        } catch (e: any) {
+            errors.push(`trending:${e?.message || "error"}`);
+        }
+        setAiringLoading(false);
+
+        try {
+            const popular = await fetchPopularAnime();
+            setPopularAnime(popular);
+            if (popular.length > 0) gotAny = true;
+            else errors.push("popular:empty");
+        } catch (e: any) {
+            errors.push(`popular:${e?.message || "error"}`);
+        }
+        setPopularLoading(false);
+
+        if (!gotAny) {
+            const dbg = getLastAniListDebug();
+            setApiError(`${errors.join(" | ")}. DBG: ${dbg.slice(0, 180)}. Tap to retry`);
+        }
+    }, []);
+
     useEffect(() => {
         setContinueWatching(getAnimeHistory());
-        fetchAiringAnime().then(data => {
-            setAiringAnime(data);
-            setAiringLoading(false);
-        }).catch(() => setAiringLoading(false));
-    }, []);
+        loadRows();
+    }, [loadRows]);
 
     useEffect(() => {
         setRecentSearches(getLocal<string[]>(STORAGE_KEYS.RECENT_SEARCHES + "_ANIME", []));
@@ -121,125 +155,85 @@ export default function AnimeBrowsePage() {
     }, []);
 
     const isSearching = search.trim().length > 0;
+    const firstEp = PSYOP_EPISODES[0];
 
     return (
         <>
             <Header />
-            <main className="main-content">
-                <section className="section" style={{ paddingTop: 40 }}>
-                    <div className="section-header">
-                        <h2 className="section-title">アニメ一覧</h2>
-                        <p className="section-subtitle">
-                            {isSearching
-                                ? (loading ? "Searching..." : `${searchResults.length} Results`)
-                                : "Browse & Discover Anime"
-                            }
-                        </p>
-                    </div>
+            <main style={{ background: "#0a0a0f", minHeight: "100vh", paddingBottom: 140 }}>
 
-                    {/* PsyopAnime Featured Banner — blurred / disabled */}
-                    {!isSearching && (
-                        <div style={{ marginBottom: 24, filter: 'blur(8px)', opacity: 0.25, pointerEvents: 'none', userSelect: 'none' }}>
-                            <div style={{
-                                position: 'relative',
-                                borderRadius: 20,
-                                overflow: 'hidden',
-                                height: 200,
-                                background: '#0a0a1a',
-                                border: '1px solid rgba(233,30,123,0.2)',
-                                boxShadow: '0 0 40px rgba(233,30,123,0.15), 0 8px 32px rgba(0,0,0,0.4)',
-                            }}>
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                    src="/psyopanime.png"
-                                    alt="PsyopAnime"
-                                    style={{
-                                        width: '100%',
-                                        height: '100%',
-                                        objectFit: 'cover',
-                                        opacity: 0.45,
-                                        filter: 'saturate(1.2)',
-                                    }}
-                                />
-                                <div style={{
-                                    position: 'absolute',
-                                    inset: 0,
-                                    background: 'linear-gradient(160deg, rgba(147,51,234,0.5) 0%, rgba(233,30,123,0.3) 30%, rgba(10,10,26,0.92) 70%)',
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    justifyContent: 'flex-end',
-                                    padding: '24px 24px',
-                                }}>
-                                    <div style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: 8,
-                                        marginBottom: 10,
-                                    }}>
-                                        <span style={{
-                                            display: 'inline-block',
-                                            background: 'linear-gradient(135deg, #E91E7B, #9333ea)',
-                                            color: '#fff',
-                                            fontSize: 9,
-                                            fontWeight: 800,
-                                            padding: '4px 12px',
-                                            borderRadius: 20,
-                                            letterSpacing: 1.5,
-                                            textTransform: 'uppercase',
-                                        }}>
-                                            PsyopAnime × Sakura
-                                        </span>
-                                        <span style={{
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: 4,
-                                            color: 'rgba(255,255,255,0.5)',
-                                            fontSize: 10,
-                                            fontWeight: 600,
-                                        }}>
-                                            <span style={{
-                                                width: 6, height: 6, borderRadius: '50%',
-                                                background: '#4ade80',
-                                                display: 'inline-block',
-                                                boxShadow: '0 0 6px #4ade80',
-                                            }} />
-                                            Now streaming
-                                        </span>
-                                    </div>
-                                    <h3 style={{
-                                        margin: 0,
-                                        color: '#fff',
-                                        fontSize: 24,
-                                        fontWeight: 900,
-                                        lineHeight: 1.15,
-                                        letterSpacing: -0.5,
-                                        textShadow: '0 2px 20px rgba(233,30,123,0.4)',
-                                    }}>
-                                        PsyopAnime: The Series
-                                    </h3>
-                                    <p style={{
-                                        margin: '6px 0 0',
-                                        color: 'rgba(255,255,255,0.5)',
-                                        fontSize: 12,
-                                        fontWeight: 500,
-                                        letterSpacing: 0.3,
-                                    }}>
-                                        Sci-Fi Action · Psychological Thriller · Satire
-                                    </p>
-                                </div>
+                {/* Hero Banner */}
+                {!isSearching && (
+                    <div className="anime-hero">
+                        <div className="anime-hero-bg">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src="/psyopanime.png" alt="" />
+                        </div>
+                        <div className="anime-hero-content">
+                            <span className="anime-hero-badge">PsyopAnime × Sakura</span>
+                            <h1 className="anime-hero-title">{PSYOP_INFO.title}</h1>
+                            <div className="anime-hero-meta">
+                                <span style={{ color: "#4ade80", fontWeight: 700 }}>Ongoing</span>
+                                <span>·</span>
+                                {PSYOP_INFO.genres?.map(g => <span key={g}>{g}</span>)}
+                            </div>
+                            <p className="anime-hero-desc">{PSYOP_INFO.description}</p>
+                            <div className="anime-hero-actions">
+                                <Link
+                                    href={`/anime/watch?id=${PSYOP_ID}&ep=${encodeURIComponent(firstEp.id)}`}
+                                    className="anime-hero-play"
+                                >
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                    Start Watching
+                                </Link>
+                                <Link href={`/anime/details?id=${PSYOP_ID}`} className="anime-hero-save" aria-label="Details">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+                                </Link>
                             </div>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {/* Search */}
+                {/* Continue Watching */}
+                {!isSearching && continueWatching.length > 0 && (
+                    <div className="anime-row">
+                        <div className="anime-row-header">
+                            <h2 className="anime-row-title">Continue Watching</h2>
+                        </div>
+                        <div className="anime-row-scroll">
+                            {continueWatching.map(entry => (
+                                <Link
+                                    key={entry.animeId}
+                                    href={`/anime/watch?id=${encodeURIComponent(entry.animeId)}&ep=${encodeURIComponent(entry.episodeId)}`}
+                                    className="anime-cw-card"
+                                >
+                                    <div className="anime-cw-card-img">
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img src={entry.image || "/sakura.png"} alt={entry.animeTitle} referrerPolicy="no-referrer" onError={(e) => { (e.target as HTMLImageElement).src = "/sakura.png"; }} />
+                                        <div className="anime-cw-overlay">
+                                            <div className="cw-play">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="anime-cw-ep">{entry.animeTitle}</div>
+                                    <div className="anime-cw-title">Episode {entry.episodeNumber} · {entry.episodeTitle}</div>
+                                </Link>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Search */}
+                <div className="sticky-search-wrap" style={{ padding: "16px 20px 0" }}>
                     <div className="search-bar-wrapper" ref={searchRef}>
-                        <div className="search-bar" style={{ borderColor: "rgba(88, 101, 242, 0.4)" }}>
+                        <div className="search-bar" style={{ borderColor: "rgba(88, 101, 242, 0.4)", maxWidth: "100%" }}>
                             <span className="search-icon">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(88, 101, 242, 1)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /></svg>
                             </span>
                             <input
                                 type="text"
-                                placeholder="アニメを検索... Search anime..."
+                                placeholder="Search anime..."
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
                                 onFocus={() => setShowRecent(true)}
@@ -269,174 +263,174 @@ export default function AnimeBrowsePage() {
                             </div>
                         )}
                     </div>
+                    {isSearching && (
+                        <div className="active-query-pill">
+                            <span className="active-query-label">Searching for</span>
+                            <span className="active-query-value">{search.trim()}</span>
+                        </div>
+                    )}
+                </div>
 
-                    {/* Genre Filter Chips */}
-                    {!isSearching && (
-                        <div className="genre-filters" style={{ maxWidth: 700, margin: '0 auto 24px' }}>
-                            <button
-                                className={`genre-chip ${selectedGenre === null ? 'active' : ''}`}
-                                onClick={() => handleGenreSelect(null)}
-                            >
-                                All
-                            </button>
+                {/* Genre Chips */}
+                {!isSearching && (
+                    <div style={{ padding: "8px 20px 0" }}>
+                        <div className="genre-filters" style={{ maxWidth: "100%", margin: 0 }}>
+                            <button className={`genre-chip ${selectedGenre === null ? "active" : ""}`} onClick={() => handleGenreSelect(null)}>All</button>
                             {ANIME_GENRES.map(g => (
-                                <button
-                                    key={g.id}
-                                    className={`genre-chip ${selectedGenre === g.id ? 'active' : ''}`}
-                                    onClick={() => handleGenreSelect(g.id)}
-                                >
-                                    {g.name}
-                                </button>
+                                <button key={g.id} className={`genre-chip ${selectedGenre === g.id ? "active" : ""}`} onClick={() => handleGenreSelect(g.id)}>{g.name}</button>
                             ))}
                         </div>
-                    )}
-
-                    {/* Error */}
-                    {error && (
-                        <div className="error-container" style={{ margin: "40px auto", maxWidth: 600 }}>
-                            <p className="error-message">{error}</p>
-                        </div>
-                    )}
-
-                    {/* Search Results */}
-                    {isSearching && (
-                        <>
-                            {loading ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {Array.from({ length: 6 }).map((_, i) => (
-                                        <div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />
-                                    ))}
-                                </div>
-                            ) : searchResults.length > 0 ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {searchResults.map((anime) => (
-                                        <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} />
-                                    ))}
-                                </div>
-                            ) : !error ? (
-                                <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                    <p style={{ fontFamily: "var(--font-jp)", fontSize: 18 }}>アニメが見つかりませんでした</p>
-                                    <p style={{ fontSize: 14 }}>No results found.</p>
-                                </div>
-                            ) : null}
-                        </>
-                    )}
-
-                    {/* Genre Results — shown when a genre is selected */}
-                    {!isSearching && selectedGenre !== null && (
-                        <>
-                            <div className="section-header" style={{ marginTop: 8 }}>
-                                <h2 className="section-title" style={{ fontSize: 20 }}>
-                                    {ANIME_GENRES.find(g => g.id === selectedGenre)?.name}
-                                </h2>
-                                <p className="section-subtitle">Filtered by genre</p>
-                            </div>
-                            {genreLoading ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {Array.from({ length: 6 }).map((_, i) => (
-                                        <div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />
-                                    ))}
-                                </div>
-                            ) : genreResults.length > 0 ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {genreResults.map((anime) => (
-                                        <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} />
-                                    ))}
-                                </div>
-                            ) : (
-                                <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                    <p style={{ fontSize: 14 }}>No anime found for this genre.</p>
-                                </div>
-                            )}
-                        </>
-                    )}
-
-                    {/* Continue Watching + Airing/Trending — shown when not searching and no genre filter */}
-                    {!isSearching && selectedGenre === null && (
-                        <>
-                            {continueWatching.length > 0 && (
-                                <>
-                                    <div className="section-header" style={{ marginTop: 24 }}>
-                                        <h2 className="section-title" style={{ fontSize: 20 }}>▶ 視聴を続ける</h2>
-                                        <p className="section-subtitle">Continue Watching</p>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8, WebkitOverflowScrolling: 'touch' }}>
-                                        {continueWatching.map(entry => (
-                                            <Link
-                                                key={entry.animeId}
-                                                href={`/anime/watch?id=${encodeURIComponent(entry.animeId)}&ep=${encodeURIComponent(entry.episodeId)}`}
-                                                style={{ textDecoration: 'none', flexShrink: 0, width: 140 }}
-                                            >
-                                                <div style={{ position: 'relative', borderRadius: 'var(--radius-md)', overflow: 'hidden', aspectRatio: '2/3', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                                    <img
-                                                        src={entry.image || '/sakura.png'}
-                                                        alt={entry.animeTitle}
-                                                        referrerPolicy="no-referrer"
-                                                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                                    />
-                                                    <div style={{
-                                                        position: 'absolute', bottom: 0, left: 0, right: 0,
-                                                        background: 'linear-gradient(transparent, rgba(0,0,0,0.9))',
-                                                        padding: '24px 8px 8px'
-                                                    }}>
-                                                        <span style={{
-                                                            display: 'inline-block',
-                                                            background: 'var(--sakura-pink)',
-                                                            color: '#fff',
-                                                            fontSize: 11,
-                                                            fontWeight: 700,
-                                                            padding: '2px 6px',
-                                                            borderRadius: 4,
-                                                            marginBottom: 4
-                                                        }}>
-                                                            Ep {entry.episodeNumber}
-                                                        </span>
-                                                        <p style={{ margin: 0, color: '#fff', fontSize: 12, fontWeight: 600, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                            {entry.animeTitle}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            </Link>
-                                        ))}
-                                    </div>
-                                </>
-                            )}
-
-                            <div className="section-header" style={{ marginTop: 24 }}>
-                                <h2 className="section-title" style={{ fontSize: 20 }}>🔥 放送中</h2>
-                                <p className="section-subtitle">Currently Airing</p>
-                            </div>
-
-                            {airingLoading ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {Array.from({ length: 6 }).map((_, i) => (
-                                        <div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />
-                                    ))}
-                                </div>
-                            ) : airingAnime.length > 0 ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {airingAnime.map((anime) => (
-                                        <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} />
-                                    ))}
-                                </div>
-                            ) : (
-                                <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                    <p style={{ fontSize: 14 }}>Could not load airing anime. Try searching instead.</p>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </section>
-
-                <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                    <div className="footer-solana">
-                        <span className="sol-dot" />
-                        Built on Solana
                     </div>
-                </footer>
+                )}
+
+                {/* Error */}
+                {error && (
+                    <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-muted)" }}>
+                        <p>{error}</p>
+                    </div>
+                )}
+
+                {/* API connection error + retry */}
+                {apiError && !isSearching && (
+                    <button
+                        onClick={loadRows}
+                        style={{
+                            display: "block",
+                            margin: "12px 20px",
+                            padding: "12px 20px",
+                            width: "calc(100% - 40px)",
+                            background: "rgba(233,30,123,0.1)",
+                            border: "1px solid rgba(233,30,123,0.25)",
+                            borderRadius: 12,
+                            color: "var(--sakura-pink)",
+                            fontSize: 13,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            textAlign: "center",
+                        }}
+                    >
+                        {apiError}
+                    </button>
+                )}
+
+                {/* Search Results */}
+                {isSearching && (
+                    <div style={{ padding: "16px 20px" }}>
+                        {loading ? (
+                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                                {Array.from({ length: 6 }).map((_, i) => (
+                                    <div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />
+                                ))}
+                            </div>
+                        ) : searchResults.length > 0 ? (
+                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                                {searchResults.map((anime) => (
+                                    <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} year={anime.year} showMeta />
+                                ))}
+                            </div>
+                        ) : !error ? (
+                            <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
+                                <p style={{ fontSize: 14 }}>No results found.</p>
+                            </div>
+                        ) : null}
+                    </div>
+                )}
+
+                {/* Genre Results */}
+                {!isSearching && selectedGenre !== null && (
+                    <div style={{ padding: "16px 20px" }}>
+                        <h3 className="anime-row-title" style={{ marginBottom: 16 }}>
+                            {ANIME_GENRES.find(g => g.id === selectedGenre)?.name}
+                        </h3>
+                        {genreLoading ? (
+                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                                {Array.from({ length: 6 }).map((_, i) => (
+                                    <div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />
+                                ))}
+                            </div>
+                        ) : genreResults.length > 0 ? (
+                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                                {genreResults.map((anime) => (
+                                    <AnimeCard key={anime.id} id={anime.id} title={anime.title} image={anime.image} type={anime.type} />
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
+                                <p style={{ fontSize: 14 }}>No anime found for this genre.</p>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Currently Airing Row */}
+                {!isSearching && selectedGenre === null && (
+                    <div className="anime-row" style={{ paddingTop: 8 }}>
+                        <div className="anime-row-header">
+                            <h2 className="anime-row-title">Currently Airing</h2>
+                        </div>
+                        {airingLoading ? (
+                            <div className="anime-row-scroll">
+                                {Array.from({ length: 5 }).map((_, i) => (
+                                    <div key={i} className="anime-row-card">
+                                        <div className="loading-skeleton" style={{ width: 130, height: 185, borderRadius: 8 }} />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : airingAnime.length > 0 ? (
+                            <div className="anime-row-scroll">
+                                {airingAnime.map((anime) => (
+                                    <Link key={anime.id} href={`/anime/details?id=${encodeURIComponent(anime.id)}`} className="anime-row-card">
+                                        <div className="anime-row-card-img">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                            <img src={anime.image || "/sakura.png"} alt={anime.title} referrerPolicy="no-referrer" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).src = "/sakura.png"; }} />
+                                        </div>
+                                        {anime.score && <div className="anime-row-card-label">★ {anime.score}</div>}
+                                        <div className="anime-row-card-title">{anime.title}</div>
+                                    </Link>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ padding: "20px", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                                Could not load airing anime — check your connection.
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Popular / Top Picks Row */}
+                {!isSearching && selectedGenre === null && (
+                    <div className="anime-row" style={{ paddingTop: 0 }}>
+                        <div className="anime-row-header">
+                            <h2 className="anime-row-title">Top Picks</h2>
+                        </div>
+                        {popularLoading ? (
+                            <div className="anime-row-scroll">
+                                {Array.from({ length: 5 }).map((_, i) => (
+                                    <div key={i} className="anime-row-card">
+                                        <div className="loading-skeleton" style={{ width: 130, height: 185, borderRadius: 8 }} />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : popularAnime.length > 0 ? (
+                            <div className="anime-row-scroll">
+                                {popularAnime.map((anime) => (
+                                    <Link key={anime.id} href={`/anime/details?id=${encodeURIComponent(anime.id)}`} className="anime-row-card">
+                                        <div className="anime-row-card-img">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                            <img src={anime.image || "/sakura.png"} alt={anime.title} referrerPolicy="no-referrer" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).src = "/sakura.png"; }} />
+                                        </div>
+                                        {anime.score && <div className="anime-row-card-label">★ {anime.score}</div>}
+                                        <div className="anime-row-card-title">{anime.title}</div>
+                                    </Link>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ padding: "20px", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                                Could not load popular anime.
+                            </div>
+                        )}
+                    </div>
+                )}
             </main>
         </>
     );

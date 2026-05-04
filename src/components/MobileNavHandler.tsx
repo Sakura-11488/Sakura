@@ -22,6 +22,8 @@ export default function MobileNavHandler() {
                 // Use window.history for reliable back navigation
                 if (window.history.length > 1) {
                     router.back();
+                } else if (pathnameRef.current === "/downloads") {
+                    router.push("/settings");
                 } else {
                     // Fallback to home
                     router.push("/");

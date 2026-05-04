@@ -10,6 +10,7 @@ import {
     type LibraryCategory,
     type LibraryItem,
 } from "@/lib/storage";
+import { getDefaultMangaSourceId, normalizeMangaSourceId } from "@/lib/sources/source-ids";
 
 function ConfirmModal({ title, message, onConfirm, onCancel }: {
     title: string; message: string; onConfirm: () => void; onCancel: () => void;
@@ -55,7 +56,7 @@ export default function LibraryPage() {
 
     const confirmRemoveItem = () => {
         if (!confirmRemove) return;
-        removeFromLibrary(confirmRemove.catName, confirmRemove.item.id, confirmRemove.item.type);
+        removeFromLibrary(confirmRemove.catName, confirmRemove.item.id, confirmRemove.item.type, confirmRemove.item.providerId);
         setConfirmRemove(null);
         reload();
     };
@@ -74,7 +75,7 @@ export default function LibraryPage() {
 
     const allItems = categories.flatMap(c => c.items);
     const uniqueAll = allItems.filter((item, idx, arr) =>
-        arr.findIndex(i => i.id === item.id && i.type === item.type) === idx
+        arr.findIndex(i => i.id === item.id && i.type === item.type && normalizeMangaSourceId(i.providerId) === normalizeMangaSourceId(item.providerId)) === idx
     );
 
     return (
@@ -161,7 +162,22 @@ export default function LibraryPage() {
                                         ? (item.source === "external"
                                             ? `/novel/details?source=external&path=${encodeURIComponent(item.id)}`
                                             : `/novel/details?id=${encodeURIComponent(item.id)}`)
-                                        : `/title?id=${encodeURIComponent(item.id)}&source=mangadex`;
+                                        : `/title?id=${encodeURIComponent(item.id)}&source=${encodeURIComponent(normalizeMangaSourceId(item.providerId || getDefaultMangaSourceId()))}`;
+
+                                    const badgeBackground = item.type === "anime"
+                                        ? "rgba(88, 101, 242, 0.85)"
+                                        : item.type === "novel"
+                                            ? "rgba(192, 132, 252, 0.85)"
+                                            : item.type === "comic"
+                                                ? "rgba(14, 165, 233, 0.85)"
+                                                : "rgba(255, 107, 157, 0.85)";
+                                    const badgeLabel = item.type === "anime"
+                                        ? "Anime"
+                                        : item.type === "novel"
+                                            ? "Novel"
+                                            : item.type === "comic"
+                                                ? "Comic"
+                                                : "Manga";
 
                                     return (
                                         <div key={`${item.type}-${item.id}`} style={{ position: "relative" }}>
@@ -173,14 +189,8 @@ export default function LibraryPage() {
                                                         alt={item.title}
                                                         referrerPolicy="no-referrer"
                                                     />
-                                                    <span className="manga-card-badge" style={{
-                                                        background: item.type === "anime"
-                                                            ? "rgba(88, 101, 242, 0.85)"
-                                                            : item.type === "novel"
-                                                            ? "rgba(192, 132, 252, 0.85)"
-                                                            : "rgba(255, 107, 157, 0.85)",
-                                                    }}>
-                                                        {item.type === "anime" ? "Anime" : item.type === "novel" ? "Novel" : "Manga"}
+                                                    <span className="manga-card-badge" style={{ background: badgeBackground }}>
+                                                        {badgeLabel}
                                                     </span>
                                                 </div>
                                                 <div className="manga-card-info">

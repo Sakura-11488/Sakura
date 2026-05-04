@@ -14,6 +14,37 @@ import { downloadManager } from "@/lib/downloads";
 import ChapterComments from "@/components/ChapterComments";
 import LottieIcon from "@/components/LottieIcon";
 import TradeCheckModal from "@/components/TradeCheckModal";
+import { getChapterNeighbors } from "@/lib/chapter-order";
+import { getDefaultMangaSourceId, isComicSourceId, normalizeMangaSourceId } from "@/lib/sources/source-ids";
+import { getChapterScopedKey, parseScopedKey } from "@/lib/sources/source-scope";
+
+const COMIC_CACHE_VERSION_KEY = "sakura_comic_cache_version";
+const CURRENT_COMIC_CACHE_VERSION = "4";
+
+/**
+ * One-time migration: comic chapter URLs used to be raw xoxocomic.com CDN
+ * links, which Cloudflare sometimes serves as HTML at edge nodes far from
+ * upstream. The reader now routes every page through the droplet's /img
+ * proxy. Drop any cached entries that were saved before that change.
+ */
+function invalidateStaleComicChapterCache() {
+    if (typeof window === "undefined") return;
+    try {
+        const stored = localStorage.getItem(COMIC_CACHE_VERSION_KEY);
+        if (stored === CURRENT_COMIC_CACHE_VERSION) return;
+        const cache = getLocal<Record<string, string[]>>(STORAGE_KEYS.CHAPTER_CACHE, {});
+        const cleaned: Record<string, string[]> = {};
+        for (const [key, value] of Object.entries(cache)) {
+            const { sourceId } = parseScopedKey(key);
+            if (isComicSourceId(sourceId)) continue;
+            cleaned[key] = value;
+        }
+        setLocal(STORAGE_KEYS.CHAPTER_CACHE, cleaned);
+        localStorage.setItem(COMIC_CACHE_VERSION_KEY, CURRENT_COMIC_CACHE_VERSION);
+    } catch (e) {
+        console.warn("comic cache migration failed", e);
+    }
+}
 
 type ReadingMode = 'scroll' | 'page';
 type ReadingDirection = 'ltr' | 'rtl';
@@ -374,7 +405,7 @@ function ReaderContent() {
     const router = useRouter();
     const chapterId = searchParams.get("id");
     const mangaId = searchParams.get("manga");
-    const sourceStr = searchParams.get("source") || "weebcentral";
+    const sourceStr = normalizeMangaSourceId(searchParams.get("source") || getDefaultMangaSourceId());
 
     const { publicKey } = useWallet();
     const { setVisible } = useSakuraWalletModal();
@@ -513,8 +544,11 @@ function ReaderContent() {
                 setError(null);
                 setExternalUrl(null);
 
+                invalidateStaleComicChapterCache();
+
+                const cacheKey = getChapterScopedKey(chapterId, sourceStr);
                 const cache = getLocal<Record<string, string[]>>(STORAGE_KEYS.CHAPTER_CACHE, {});
-                const isCached = cache[chapterId] && cache[chapterId].length > 0;
+                const isCached = cache[cacheKey] && cache[cacheKey].length > 0;
 
                 const source = getSource(sourceStr);
                 let requiresPass = false;
@@ -524,24 +558,19 @@ function ReaderContent() {
                 if (mangaId) {
                     try {
                         chapterList = await source.getChapters(mangaId, 500, 0);
-                        if (isMounted) setAllChapters(chapterList);
-
-                        const currentIdx = chapterList.findIndex(ch => ch.id === chapterId);
-                        if (currentIdx >= 0 && isMounted) {
-                            setCurrentChapterInfo(chapterList[currentIdx]);
-                        }
-                        if (currentIdx > 0 && isMounted) {
-                            setNextChapter(chapterList[currentIdx - 1]);
-                        }
-                        if (currentIdx < chapterList.length - 1 && isMounted) {
-                            setPrevChapter(chapterList[currentIdx + 1]);
+                        const neighbors = getChapterNeighbors(chapterList, chapterId);
+                        if (isMounted) {
+                            setAllChapters(neighbors.ordered);
+                            setCurrentChapterInfo(neighbors.current);
+                            setNextChapter(neighbors.next);
+                            setPrevChapter(neighbors.prev);
                         }
                     } catch (e) { console.warn("Failed to fetch chapter list", e); }
                 }
 
                 if (isCached) {
                     if (isMounted) {
-                        setPages(cache[chapterId]);
+                        setPages(cache[cacheKey]);
                         setHasAccess(true);
                         setLoading(false);
                     }
@@ -565,7 +594,9 @@ function ReaderContent() {
                         manga = mangaDetails;
 
                         if (manga?.status === "ongoing") {
-                            const latestChapters = chapterList.slice(0, 3);
+                            const latestChapters = [...chapterList]
+                                .sort((a, b) => new Date(b.publishAt || 0).getTime() - new Date(a.publishAt || 0).getTime())
+                                .slice(0, 3);
                             const isLatest = latestChapters.some(ch => ch.id === chapterId);
                             if (isLatest) requiresPass = true;
                         }
@@ -613,10 +644,10 @@ function ReaderContent() {
                                 const entries = Object.entries(existingCache);
                                 if (entries.length > 20) {
                                     const trimmed = Object.fromEntries(entries.slice(-19));
-                                    trimmed[chapterId!] = urls;
+                                    trimmed[cacheKey] = urls;
                                     setLocal(STORAGE_KEYS.CHAPTER_CACHE, trimmed);
                                 } else {
-                                    existingCache[chapterId!] = urls;
+                                    existingCache[cacheKey] = urls;
                                     setLocal(STORAGE_KEYS.CHAPTER_CACHE, existingCache);
                                 }
                             } catch (e) { console.warn("Cache save failed", e); }
@@ -626,11 +657,12 @@ function ReaderContent() {
                                 const newEntry = {
                                     mangaId,
                                     chapterId,
+                                    sourceId: sourceStr,
                                     title: manga?.title || "Unknown Title",
                                     cover: manga?.cover || "/placeholder.png",
                                     lastReadAt: Date.now()
                                 };
-                                const filtered = history.filter((h: any) => h.mangaId !== mangaId);
+                                const filtered = history.filter((h: any) => !(h.mangaId === mangaId && normalizeMangaSourceId(h.sourceId) === sourceStr));
                                 setLocal(STORAGE_KEYS.HISTORY, [newEntry, ...filtered].slice(0, 50));
                             } catch (e) { console.error("Failed to save history", e); }
                         } else {
@@ -676,13 +708,26 @@ function ReaderContent() {
 
     // Scroll-mode header hide + progress tracking + page indicator
     const scrollThrottleRef = useRef(false);
+    // Track scroll direction so the header reveals on scroll-up and hides
+    // on scroll-down — instead of the old "only visible in the first 100px"
+    // behaviour, which made the chapter navbar effectively unreachable
+    // mid-chapter unless the user scrolled all the way back up.
+    const lastScrollYRef = useRef(0);
     const handleScroll = useCallback(() => {
         if (scrollThrottleRef.current) return;
         scrollThrottleRef.current = true;
-        setTimeout(() => { scrollThrottleRef.current = false; }, 200);
+        setTimeout(() => { scrollThrottleRef.current = false; }, 100);
 
         const scrollY = window.scrollY;
-        setHeaderVisible(scrollY < 100);
+        const last = lastScrollYRef.current;
+        if (scrollY < 100) {
+            setHeaderVisible(true);
+        } else if (scrollY < last - 4) {
+            setHeaderVisible(true);
+        } else if (scrollY > last + 8) {
+            setHeaderVisible(false);
+        }
+        lastScrollYRef.current = scrollY;
 
         if (readingMode === 'scroll') {
             const images = document.querySelectorAll(".reader-page");
@@ -700,7 +745,7 @@ function ReaderContent() {
             const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
             if (scrollHeight > 0 && mangaId && chapterId) {
                 const progress = (scrollY / scrollHeight) * 100;
-                saveChapterProgress(mangaId, chapterId, progress);
+                saveChapterProgress(mangaId, chapterId, progress, sourceStr);
             }
         }
     }, [readingMode, mangaId, chapterId]);
@@ -713,7 +758,7 @@ function ReaderContent() {
     useEffect(() => {
         if (readingMode === 'page' && pages.length > 0 && mangaId && chapterId) {
             const progress = (currentPage / pages.length) * 100;
-            saveChapterProgress(mangaId, chapterId, progress);
+            saveChapterProgress(mangaId, chapterId, progress, sourceStr);
         }
     }, [currentPage, pages.length, readingMode, mangaId, chapterId]);
 
@@ -721,7 +766,7 @@ function ReaderContent() {
     useEffect(() => {
         if (!pages.length || !mangaId || !chapterId || !readingMode) return;
 
-        const savedProgress = getChapterProgress(mangaId, chapterId);
+        const savedProgress = getChapterProgress(mangaId, chapterId, sourceStr);
         if (savedProgress > 5 && savedProgress < 95) {
             if (readingMode === 'scroll') {
                 const timer = setTimeout(() => {

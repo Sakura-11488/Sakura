@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchEpisodeSources, type StreamingSource, fetchAnimeInfo, refreshAnimeInfo, type AnimeInfo } from "@/lib/anime";
+import { PSYOP_ID, isPsyopEpisode } from "@/lib/psyopAnime";
 import Link from "next/link";
 import { Capacitor } from "@capacitor/core";
 import { getLocal, STORAGE_KEYS, saveAnimeWatchEntry } from "@/lib/storage";
@@ -85,7 +86,7 @@ function AnimeWatchInner() {
         ? anime?.episodes[currentEpisodeIndex + 1]
         : null;
     const errorGuidance = error ? getErrorGuidance(error) : null;
-    const canRematch = !!error && (
+    const canRematch = !!error && !isPsyopEpisode(episodeId) && (
         error.stage === "mapping"
         || error.stage === "episodes"
         || error.code === "MISSING_SLUG"
@@ -121,7 +122,8 @@ function AnimeWatchInner() {
 
                 if (animeData) {
                     setAnime(animeData);
-                    if (!animeData.episodes.some((episode) => episode.id === episodeId)) {
+                    const isPsyop = id === PSYOP_ID;
+                    if (!isPsyop && !animeData.episodes.some((episode) => episode.id === episodeId)) {
                         const currentNumber = parseEpisodeNumber(episodeId);
                         throw {
                             message: "The current episode is missing from the matched provider list.",
@@ -310,7 +312,11 @@ function AnimeWatchInner() {
                     image: anime.image,
                     timestamp: Date.now(),
                 });
-                router.push(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
+                // Auto-advance: replace the current entry instead of pushing
+                // a new one. Otherwise a binge of N episodes leaves N entries
+                // in the back stack and the user has to tap Back N times to
+                // get back to the details page they came from.
+                router.replace(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
             }
         } catch (playError) {
             console.error("[Anime] Native playback error:", playError);
@@ -326,6 +332,28 @@ function AnimeWatchInner() {
             playNative();
         }
     }, [isNative, anime, source, error, nativePlaying, playTriggered, playNative]);
+
+    // Suppress duplicate Space-bar pause/play on web. The embedded iframe
+    // player already handles Space; if focus passes to the parent document,
+    // the page would also fire its own scroll/play handler, so we swallow
+    // the keystroke and forward it to the iframe.
+    useEffect(() => {
+        if (isNative) return;
+        if (typeof window === "undefined") return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.code !== "Space" && e.key !== " ") return;
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName?.toLowerCase();
+            if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+            e.preventDefault();
+            const iframe = document.querySelector("iframe") as HTMLIFrameElement | null;
+            if (iframe) {
+                try { iframe.focus(); } catch { /* ignore */ }
+            }
+        };
+        window.addEventListener("keydown", onKeyDown, { capture: true });
+        return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
+    }, [isNative]);
 
     if (loading) {
         return (
@@ -441,7 +469,7 @@ function AnimeWatchInner() {
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {availableCategories.length > 1 && (
+                    {!isPsyopEpisode(episodeId) && availableCategories.length > 1 && (
                         <button
                             onClick={toggleCategory}
                             disabled={categoryLoading}
@@ -528,6 +556,7 @@ function AnimeWatchInner() {
                     <h3 style={{ margin: "0 0 4px 0", fontSize: 18 }}>{currentEpisode?.title || `Episode ${currentEpisode?.number}`}</h3>
                     <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 14 }}>
                         {(() => {
+                            if (isPsyopEpisode(episodeId)) return "PsyopAnime \u00d7 Sakura";
                             const allDownloads = typeof window !== "undefined" ? getLocal<Record<string, any>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}) : {};
                             return allDownloads[episodeId]?.state === "completed" ? "Playing offline" : "Streaming via Sakura Engine";
                         })()}

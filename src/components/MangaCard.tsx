@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { memo } from "react";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import { getDefaultMangaSourceId } from "@/lib/sources/source-ids";
 
 interface MangaCardProps {
     slug: string;
@@ -24,10 +26,19 @@ const MangaCard = memo(function MangaCard({
     source
 }: MangaCardProps) {
     return (
-        <Link href={`/title?id=${slug}&source=${source || 'weebcentral'}`} className="manga-card">
+        <Link href={`/title?id=${slug}&source=${source || getDefaultMangaSourceId()}`} className="manga-card">
             <div className="manga-card-cover">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={cover} alt={title} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+                <img
+                    src={imageOrPlaceholder(cover)}
+                    alt={title}
+                    loading="lazy"
+                    decoding="async"
+                    referrerPolicy="no-referrer"
+                    onError={(event) => {
+                        event.currentTarget.src = SAKURA_PLACEHOLDER_IMAGE;
+                    }}
+                />
                 <div className="manga-card-badge">
                     {/* Removed source badge based on user request to make it cleaner */}
                     {follows ? (

@@ -6,6 +6,8 @@ import {
     schedulePushMangaProgress,
     schedulePushSearches,
 } from "./cloud-sync";
+import { getChapterScopedKey, getMangaScopedKey } from "./sources/source-scope";
+import { getDefaultMangaSourceId, normalizeMangaSourceId, type MangaSourceId } from "./sources/source-ids";
 
 function getConnectedWallet(): string | null {
     if (typeof window === 'undefined') return null;
@@ -39,6 +41,14 @@ export const STORAGE_KEYS = {
     NOVEL_AMBIENT_SETTINGS: 'sakura_novel_ambient_settings',
     TERMS_ACCEPTED: 'sakura_terms_accepted',
 };
+
+function getScopedMangaKey(mangaId: string, sourceId?: string | null): string {
+    return getMangaScopedKey(mangaId, sourceId);
+}
+
+function getScopedChapterKey(chapterId: string, sourceId?: string | null): string {
+    return getChapterScopedKey(chapterId, sourceId);
+}
 
 // ── Secure Storage (Capacitor Preferences) ──
 
@@ -99,19 +109,21 @@ export function removeLocal(key: string): void {
 /** Threshold: chapter is "read" when progress >= this % */
 export const READ_THRESHOLD = 85;
 
-export function markChapterRead(mangaId: string, chapterId: string): void {
+export function markChapterRead(mangaId: string, chapterId: string, sourceId: string = getDefaultMangaSourceId()): void {
     const all = getLocal<Record<string, string[]>>(STORAGE_KEYS.READ_CHAPTERS, {});
-    const list = all[mangaId] || [];
-    if (!list.includes(chapterId)) {
-        list.push(chapterId);
-        all[mangaId] = list;
+    const scopedMangaId = getScopedMangaKey(mangaId, sourceId);
+    const scopedChapterId = getScopedChapterKey(chapterId, sourceId);
+    const list = all[scopedMangaId] || [];
+    if (!list.includes(scopedChapterId)) {
+        list.push(scopedChapterId);
+        all[scopedMangaId] = list;
         setLocal(STORAGE_KEYS.READ_CHAPTERS, all);
     }
 }
 
-export function getReadChapters(mangaId: string): string[] {
+export function getReadChapters(mangaId: string, sourceId: string = getDefaultMangaSourceId()): string[] {
     const all = getLocal<Record<string, string[]>>(STORAGE_KEYS.READ_CHAPTERS, {});
-    return all[mangaId] || [];
+    return all[getScopedMangaKey(mangaId, sourceId)] || [];
 }
 
 /* ── Chapter Progress Tracking (Netflix-style) ── */
@@ -120,16 +132,18 @@ export function getReadChapters(mangaId: string): string[] {
  * Save reading progress for a chapter (0–100%).
  * Automatically marks the chapter as "read" if progress >= READ_THRESHOLD.
  */
-export function setChapterProgress(mangaId: string, chapterId: string, percent: number): void {
+export function setChapterProgress(mangaId: string, chapterId: string, percent: number, sourceId: string = getDefaultMangaSourceId()): void {
     const clamped = Math.min(100, Math.max(0, Math.round(percent)));
 
     const all = getLocal<Record<string, Record<string, number>>>(STORAGE_KEYS.CHAPTER_PROGRESS, {});
-    if (!all[mangaId]) all[mangaId] = {};
-    all[mangaId][chapterId] = clamped;
+    const scopedMangaId = getScopedMangaKey(mangaId, sourceId);
+    const scopedChapterId = getScopedChapterKey(chapterId, sourceId);
+    if (!all[scopedMangaId]) all[scopedMangaId] = {};
+    all[scopedMangaId][scopedChapterId] = clamped;
     setLocal(STORAGE_KEYS.CHAPTER_PROGRESS, all);
 
     if (clamped >= READ_THRESHOLD) {
-        markChapterRead(mangaId, chapterId);
+        markChapterRead(mangaId, chapterId, sourceId);
     }
     const w = getConnectedWallet(); if (w) schedulePushMangaProgress(w);
 }
@@ -137,18 +151,18 @@ export function setChapterProgress(mangaId: string, chapterId: string, percent: 
 /**
  * Get reading progress for a chapter (0–100%).
  */
-export function getChapterProgress(mangaId: string, chapterId: string): number {
+export function getChapterProgress(mangaId: string, chapterId: string, sourceId: string = getDefaultMangaSourceId()): number {
     const all = getLocal<Record<string, Record<string, number>>>(STORAGE_KEYS.CHAPTER_PROGRESS, {});
-    return all[mangaId]?.[chapterId] || 0;
+    return all[getScopedMangaKey(mangaId, sourceId)]?.[getScopedChapterKey(chapterId, sourceId)] || 0;
 }
 
 /**
  * Get all chapter progress for a manga.
  * Returns { chapterId: percent }
  */
-export function getAllChapterProgress(mangaId: string): Record<string, number> {
+export function getAllChapterProgress(mangaId: string, sourceId: string = getDefaultMangaSourceId()): Record<string, number> {
     const all = getLocal<Record<string, Record<string, number>>>(STORAGE_KEYS.CHAPTER_PROGRESS, {});
-    return all[mangaId] || {};
+    return all[getScopedMangaKey(mangaId, sourceId)] || {};
 }
 
 /* ── Anime Watch History ── */
@@ -183,10 +197,13 @@ export interface LibraryItem {
     id: string;
     title: string;
     image?: string;
-    type: 'anime' | 'manga' | 'novel';
+    type: 'anime' | 'manga' | 'novel' | 'comic';
     source?: 'sakura' | 'external';
+    providerId?: MangaSourceId;
     addedAt: number;
 }
+
+export type LibraryItemType = LibraryItem['type'];
 
 /* ── Novel Bookmark / Highlight ── */
 
@@ -282,6 +299,22 @@ export interface LibraryCategory {
 const LIBRARY_KEY = 'sakura_library';
 const DEFAULT_CATEGORY = 'Default';
 
+function getLibraryItemProviderId(item: LibraryItem): MangaSourceId | null {
+    if (item.type !== 'manga' && item.type !== 'comic') return null;
+    return normalizeMangaSourceId(item.providerId);
+}
+
+function isSameLibraryItem(
+    item: LibraryItem,
+    itemId: string,
+    itemType: LibraryItemType,
+    providerId?: string | null,
+): boolean {
+    if (item.id !== itemId || item.type !== itemType) return false;
+    if (itemType !== 'manga' && itemType !== 'comic') return true;
+    return getLibraryItemProviderId(item) === normalizeMangaSourceId(providerId);
+}
+
 function getLibrary(): LibraryCategory[] {
     const lib = getLocal<LibraryCategory[]>(LIBRARY_KEY, []);
     if (lib.length === 0) return [{ name: DEFAULT_CATEGORY, items: [] }];
@@ -306,18 +339,22 @@ export function addToLibrary(categoryName: string, item: LibraryItem): void {
         cat = { name: categoryName, items: [] };
         lib.push(cat);
     }
-    if (!cat.items.find(i => i.id === item.id && i.type === item.type)) {
-        cat.items.unshift(item);
+    const normalizedItem = (item.type === 'manga' || item.type === 'comic')
+        ? { ...item, providerId: normalizeMangaSourceId(item.providerId) }
+        : item;
+
+    if (!cat.items.find(i => isSameLibraryItem(i, normalizedItem.id, normalizedItem.type, normalizedItem.providerId))) {
+        cat.items.unshift(normalizedItem);
     }
     saveLibrary(lib);
     const w = getConnectedWallet(); if (w) schedulePushLibrary(w);
 }
 
-export function removeFromLibrary(categoryName: string, itemId: string, itemType: 'anime' | 'manga' | 'novel'): void {
+export function removeFromLibrary(categoryName: string, itemId: string, itemType: LibraryItemType, providerId?: string | null): void {
     const lib = getLibrary();
     const cat = lib.find(c => c.name === categoryName);
     if (cat) {
-        cat.items = cat.items.filter(i => !(i.id === itemId && i.type === itemType));
+        cat.items = cat.items.filter(i => !isSameLibraryItem(i, itemId, itemType, providerId));
         saveLibrary(lib);
         const w = getConnectedWallet(); if (w) schedulePushLibrary(w);
     }
@@ -339,14 +376,14 @@ export function deleteLibraryCategory(name: string): void {
     const w = getConnectedWallet(); if (w) schedulePushLibrary(w);
 }
 
-export function getItemCategories(itemId: string, itemType: 'anime' | 'manga' | 'novel'): string[] {
+export function getItemCategories(itemId: string, itemType: LibraryItemType, providerId?: string | null): string[] {
     return getLibrary()
-        .filter(c => c.items.some(i => i.id === itemId && i.type === itemType))
+        .filter(c => c.items.some(i => isSameLibraryItem(i, itemId, itemType, providerId)))
         .map(c => c.name);
 }
 
-export function isInLibrary(itemId: string, itemType: 'anime' | 'manga' | 'novel'): boolean {
-    return getLibrary().some(c => c.items.some(i => i.id === itemId && i.type === itemType));
+export function isInLibrary(itemId: string, itemType: LibraryItemType, providerId?: string | null): boolean {
+    return getLibrary().some(c => c.items.some(i => isSameLibraryItem(i, itemId, itemType, providerId)));
 }
 
 /* ── Cloud-synced setLocal wrappers ── */

@@ -1,5 +1,10 @@
-import { fetchJikanSearch, fetchJikanTrending, fetchJikanInfo, fetchJikanByGenre, ANIME_GENRES, type JikanAnime } from "./jikan";
+import { fetchJikanSearch, fetchJikanTrending, fetchJikanPopular, fetchJikanInfo, fetchJikanByGenre, ANIME_GENRES, type JikanAnime } from "./jikan";
 export { ANIME_GENRES } from "./jikan";
+import { alTrending, alPopular, alSearch, alByGenre, type SimpleAnime } from "./anilist";
+
+function simpleToResult(a: SimpleAnime): AnimeResult {
+    return { id: String(a.mal_id), title: a.title, image: a.image, type: a.type, score: a.score, year: a.year };
+}
 import {
     searchAnimeSource,
     getAnimeSourceEpisodes,
@@ -10,7 +15,7 @@ import {
     getLastConsumetError,
     getLastConsumetErrorDetails,
 } from "./sources/gogoanime";
-import { PSYOP_SEARCH_RESULT, matchesPsyopQuery } from "./psyopAnime";
+import { PSYOP_SEARCH_RESULT, PSYOP_INFO, PSYOP_ID, matchesPsyopQuery, isPsyopEpisode, getPsyopStreamUrl } from "./psyopAnime";
 
 export interface AnimeResult {
     id: string;
@@ -19,6 +24,7 @@ export interface AnimeResult {
     type?: string;
     releaseDate?: string;
     score?: number | null;
+    year?: number | null;
 }
 
 export interface AnimeInfo extends AnimeResult {
@@ -32,6 +38,12 @@ export interface AnimeInfo extends AnimeResult {
         title: string;
         image?: string;
     }[];
+    /**
+     * Populated when the streaming source could not be resolved or
+     * returned no episodes. Surfaces the underlying diagnostic so the
+     * details page can render an informative empty-state.
+     */
+    episodeLoadError?: string | null;
 }
 
 export interface StreamingSource {
@@ -86,7 +98,13 @@ interface TitleSignals {
     special: boolean;
 }
 
-const CACHE_PREFIX = "sakura_anime_v6_";
+// Bumped to v8 to also wipe stale `srcmap_v4_*` entries written by the
+// previous scoring algorithm, which couldn't read Roman numerals. Without
+// the bump, a returning user would keep seeing "The Outcast 4th Season"
+// pinned to MAL id 59708 because the cached mapping survives the must-
+// have-token fix below. Touching the prefix recomputes every srcmap on
+// first launch of the new build.
+const CACHE_PREFIX = "sakura_anime_v8_";
 const TTL_SEARCH = 30 * 60 * 1000;
 const TTL_TRENDING = 2 * 60 * 60 * 1000;
 const TTL_INFO = 24 * 60 * 60 * 1000;
@@ -177,13 +195,39 @@ function toOrdinalNumber(value: string | undefined): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+// Map trailing Roman numerals (II, III, IV, …) to season numbers. HiAnime
+// publishes sequels like "Classroom of the Elite IV" with no "4th Season"
+// suffix, while Jikan's canonical title says "4th Season". Without this,
+// the must-have-token gate in `scoreCandidate` rejects the correct slug
+// because it lacks the synthetic `season4` token, and a wrong-but-numbered
+// match like "The Outcast 4th Season" scores higher.
+const ROMAN_NUMERALS: Record<string, number> = {
+    ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10,
+};
+
+function extractRomanSeason(rawValue: string | null | undefined): number | undefined {
+    if (!rawValue) return undefined;
+    // Use the part of the title before the first colon ("base" title) and
+    // require the Roman numeral to be the final token. This catches cases
+    // like "Classroom of the Elite IV" and "Classroom of the Elite IV:
+    // Year 2" while staying safe against mid-title V/X (rare anime word
+    // tokens like "V" appearing in the middle of a name).
+    const base = rawValue.split(":")[0].toLowerCase();
+    const cleaned = base.replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+    const trailing = cleaned.match(/(?:^|\s)(ii|iii|iv|v|vi|vii|viii|ix|x)$/);
+    if (!trailing) return undefined;
+    return ROMAN_NUMERALS[trailing[1]];
+}
+
 function extractTitleSignals(value: string | null | undefined): TitleSignals {
     const title = normalizeTitle(value);
     const seasonMatch = title.match(/\b(?:(\d+)(?:st|nd|rd|th)?|(first|second|third|fourth|fifth)) season\b/);
     const partMatch = title.match(/\bpart\s*(\d+)\b/);
     const courMatch = title.match(/\b(\d+)(?:st|nd|rd|th)? cour\b|\bcour\s*(\d+)\b/);
+    const seasonFromWords = toOrdinalNumber(seasonMatch?.[1] || seasonMatch?.[2]);
+    const seasonFromRoman = seasonFromWords ? undefined : extractRomanSeason(value);
     return {
-        season: toOrdinalNumber(seasonMatch?.[1] || seasonMatch?.[2]),
+        season: seasonFromWords ?? seasonFromRoman,
         part: partMatch ? parseInt(partMatch[1], 10) : undefined,
         cour: courMatch ? parseInt(courMatch[1] || courMatch[2], 10) : undefined,
         movie: /\bmovie\b|\bfilm\b/.test(title),
@@ -209,6 +253,79 @@ function getDistinctiveTokens(jikanData: JikanAnime): string[] {
         }
     }
     return [...unique];
+}
+
+// Tokens that must appear in a candidate title for it to be a plausible
+// match for sequels / continuations. Without this gate "naruto shippuden"
+// gets matched against the plain "naruto" slug and the first 50 episodes
+// look identical to the original series.
+const SEQUEL_KEYWORDS = new Set([
+    "shippuden",
+    "shippuuden",
+    "boruto",
+    "next",
+    "generations",
+    "kai",
+    "brotherhood",
+    "afterstory",
+    "aftermath",
+    "rebellion",
+    "ressurection",
+    "resurrection",
+    "redux",
+    "remake",
+    "remix",
+    "reborn",
+    "returns",
+    "revolution",
+    "advance",
+    "advanced",
+    "destiny",
+    "frontier",
+    "ultimate",
+    "unlimited",
+    "legacy",
+    "legend",
+    "reincarnated",
+    "isekai",
+    "zero",
+]);
+
+// Pull "must-have" tokens from the canonical Jikan title so that a
+// candidate which lacks ALL of them gets a hard penalty. We look at three
+// signals:
+//   - any sequel keyword we recognise (e.g. shippuden, boruto)
+//   - any non-ordinal token after a colon (e.g. "Part 2: Awakening" → "awakening")
+//   - any explicit season/part number ("season 4", "part 2") encoded as a synthetic token
+function getMustHaveTokens(jikanData: JikanAnime): string[] {
+    const tokens = new Set<string>();
+    for (const variant of getSourceTitleVariants(jikanData)) {
+        const lower = (variant || "").toLowerCase();
+        for (const tok of tokenizeTitle(variant)) {
+            if (SEQUEL_KEYWORDS.has(tok)) tokens.add(tok);
+        }
+        const colonIdx = lower.indexOf(":");
+        if (colonIdx >= 0) {
+            const tail = lower.slice(colonIdx + 1);
+            for (const tok of tokenizeTitle(tail)) {
+                // Skip common ordinal words; keep the meaningful subtitle words.
+                if (["first", "second", "third", "fourth", "fifth", "season", "part", "cour", "1", "2", "3", "4", "5"].includes(tok)) continue;
+                if (tok.length >= 4) tokens.add(tok);
+            }
+        }
+        const signals = extractTitleSignals(variant);
+        if (signals.season && signals.season > 1) tokens.add(`season${signals.season}`);
+        if (signals.part && signals.part > 1) tokens.add(`part${signals.part}`);
+    }
+    return [...tokens];
+}
+
+function candidateTokenSet(candidateTitle: string): Set<string> {
+    const set = new Set(tokenizeTitle(candidateTitle));
+    const signals = extractTitleSignals(candidateTitle);
+    if (signals.season && signals.season > 1) set.add(`season${signals.season}`);
+    if (signals.part && signals.part > 1) set.add(`part${signals.part}`);
+    return set;
 }
 
 function getSourceTitleVariants(jikanData: JikanAnime): string[] {
@@ -261,6 +378,8 @@ function scoreCandidate(jikanData: JikanAnime, candidateTitle: string, queryInde
     const expectedSignals = getSourceTitleVariants(jikanData).map(extractTitleSignals);
     const expectedType = normalizeTitle(jikanData.type);
     const distinctiveTokens = getDistinctiveTokens(jikanData);
+    const mustHaveTokens = getMustHaveTokens(jikanData);
+    const candidateTokenLookup = candidateTokenSet(candidateTitle);
 
     let bestTitleScore = -100;
     for (const title of getSourceTitleVariants(jikanData)) {
@@ -318,6 +437,19 @@ function scoreCandidate(jikanData: JikanAnime, candidateTitle: string, queryInde
         }
     }
 
+    // Must-have token gate: if Jikan's title carries a sequel keyword
+    // (Shippuden, Boruto, Part 2 …), a candidate that contains NONE of
+    // those tokens cannot be a real match. Cap its score so any
+    // candidate that does contain at least one of them wins.
+    if (mustHaveTokens.length > 0) {
+        const matched = mustHaveTokens.filter((t) => candidateTokenLookup.has(t)).length;
+        if (matched === 0) {
+            score = Math.min(score, 100) - 80;
+        } else {
+            score += matched * 35;
+        }
+    }
+
     return score;
 }
 
@@ -329,6 +461,10 @@ function getSuspiciousMatchReason(jikanData: JikanAnime, candidateTitle: string,
     const normalizedType = normalizeTitle(jikanData.type);
     const expectedEpisodes = jikanData.episodes || 0;
     const titleSignals = extractTitleSignals(candidateTitle);
+    // Currently airing shows haven't aired all episodes yet; if HiAnime
+    // is ahead of MAL with 4 of 24 episodes, we'd rather show those 4
+    // than reject the match and display "0 episodes".
+    const isAiring = /currently airing|airing/i.test(jikanData.status || "");
 
     if (normalizedType !== "movie" && titleSignals.movie) {
         return "tv series matched a movie listing";
@@ -342,11 +478,11 @@ function getSuspiciousMatchReason(jikanData: JikanAnime, candidateTitle: string,
         return "series matched a single-entry episode list";
     }
 
-    if (expectedEpisodes >= 24 && episodeCount < 5) {
+    if (!isAiring && expectedEpisodes >= 24 && episodeCount < 5) {
         return `expected a multi-episode series but only found ${episodeCount} episode(s)`;
     }
 
-    if (expectedEpisodes >= 75 && episodeCount < 15) {
+    if (!isAiring && expectedEpisodes >= 75 && episodeCount < 15) {
         return `expected a long-running series but only found ${episodeCount} episode(s)`;
     }
 
@@ -375,7 +511,7 @@ async function loadEpisodesForAnimeId(
 
 function clearAnimeInfoCache(malId: string, animeId?: string): void {
     cacheRemove(`info_${malId}`);
-    cacheRemove(`srcmap_v3_${malId}`);
+    cacheRemove(`srcmap_v4_${malId}`);
     if (animeId) {
         cacheRemove(`episodes_${animeId}`);
     }
@@ -386,7 +522,7 @@ async function resolveSourceMatch(
     options: { forceRefresh?: boolean; rejectedSlugs?: Set<string> } = {},
 ): Promise<ResolvedSourceMatch | null> {
     const malId = String(jikanData.mal_id);
-    const mapKey = `srcmap_v3_${malId}`;
+    const mapKey = `srcmap_v4_${malId}`;
     const rejectedSlugs = options.rejectedSlugs || new Set<string>();
 
     if (!options.forceRefresh) {
@@ -461,21 +597,45 @@ async function resolveSourceMatch(
         return null;
     }
 
-    const rejectedReasons: string[] = [];
-    for (const candidate of ranked) {
-        let animeId = candidate.animeId;
-        if (!animeId) {
-            const providerInfo = await getAnimeInfo(candidate.slug);
-            animeId = providerInfo?.animeId || "";
-        }
+    // Resolve episode counts for the top candidates so we can apply a soft
+    // tiebreaker: prefer entries whose episode count is within ±20% of
+    // Jikan's reported episode count. We resolve in declared order, then
+    // sort by (score + episode-bonus). Episode lists are cached so the
+    // chosen candidate's data is reused below.
+    const expectedEpisodes = jikanData.episodes || 0;
+    const enriched = await Promise.all(
+        ranked.map(async (candidate) => {
+            let animeId = candidate.animeId;
+            if (!animeId) {
+                const providerInfo = await getAnimeInfo(candidate.slug);
+                animeId = providerInfo?.animeId || "";
+            }
+            if (!animeId) {
+                return { candidate, animeId: "", episodes: [] as AnimeInfo["episodes"], finalScore: candidate.score };
+            }
+            setSlugForAnimeId(animeId, candidate.slug);
+            const episodes = await loadEpisodesForAnimeId(animeId, { useCache: false });
+            let bonus = 0;
+            if (expectedEpisodes > 0 && episodes.length > 0) {
+                const ratio = episodes.length / expectedEpisodes;
+                if (ratio >= 0.8 && ratio <= 1.2) bonus += 30;
+                else if (ratio >= 0.6 && ratio <= 1.4) bonus += 10;
+                else if (ratio < 0.4 || ratio > 2.0) bonus -= 25;
+            }
+            return { candidate, animeId, episodes, finalScore: candidate.score + bonus };
+        }),
+    );
 
+    enriched.sort((a, b) => b.finalScore - a.finalScore);
+
+    const rejectedReasons: string[] = [];
+    for (const entry of enriched) {
+        const { candidate, animeId, episodes } = entry;
         if (!animeId) {
             rejectedReasons.push(`${candidate.slug}: missing animeId`);
             continue;
         }
 
-        setSlugForAnimeId(animeId, candidate.slug);
-        const episodes = await loadEpisodesForAnimeId(animeId, { useCache: false });
         const suspiciousReason = getSuspiciousMatchReason(jikanData, candidate.title, episodes.length);
 
         if (suspiciousReason) {
@@ -488,7 +648,7 @@ async function resolveSourceMatch(
             slug: candidate.slug,
             animeId,
             matchedTitle: candidate.title,
-            score: candidate.score,
+            score: entry.finalScore,
             query: candidate.query,
             cacheHit: false,
             episodes,
@@ -527,6 +687,11 @@ function buildAnimeInfo(jikanData: JikanAnime, episodes: AnimeInfo["episodes"]):
 async function loadAnimeInfo(id: string, options: AnimeInfoRefreshOptions = {}): Promise<AnimeInfo | null> {
     _lastDiag = "";
 
+    if (id === PSYOP_ID) {
+        _lastDiag = `[psyopanime] eps=${PSYOP_INFO.episodes.length}`;
+        return PSYOP_INFO;
+    }
+
     const cacheKey = `info_${id}`;
     if (!options.forceSourceRefresh) {
         const cached = cacheGet<AnimeInfo>(cacheKey);
@@ -563,6 +728,12 @@ async function loadAnimeInfo(id: string, options: AnimeInfoRefreshOptions = {}):
     }
 
     const info = buildAnimeInfo(jikanData, episodes);
+    if (episodes.length === 0) {
+        // Surface the diagnostic on the details page instead of silently
+        // showing "0 episodes". Callers can read this from `info.episodeLoadError`.
+        const tail = _lastDiag.split(" -> ").slice(-1)[0]?.trim();
+        info.episodeLoadError = tail || "Streaming source unavailable for this title.";
+    }
     if (episodes.length > 0) {
         cacheSet(cacheKey, info, TTL_INFO);
     }
@@ -578,21 +749,33 @@ export async function searchAnime(query: string): Promise<AnimeResult[]> {
     const cached = cacheGet<AnimeResult[]>(cacheKey);
     if (cached) return cached;
 
-    const results = await fetchJikanSearch(query);
-    const mapped: AnimeResult[] = results.map((result) => ({
-        id: String(result.mal_id),
-        title: result.title_english || result.title,
-        image: result.images?.webp?.large_image_url || result.images?.webp?.image_url,
-        type: result.type,
-        releaseDate: result.year ? String(result.year) : undefined,
-        score: result.score,
-    }));
+    let mapped: AnimeResult[] = [];
+
+    try {
+        const al = await alSearch(query);
+        if (al.length > 0) mapped = al.map(simpleToResult);
+    } catch (e) {
+        console.warn("[searchAnime] AniList failed:", (e as any)?.message);
+    }
+
+    if (mapped.length === 0) {
+        try {
+            const results = await fetchJikanSearch(query);
+            mapped = results.map((r) => ({
+                id: String(r.mal_id), title: r.title_english || r.title,
+                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+                type: r.type, score: r.score, year: r.year ?? null,
+            }));
+        } catch (e) {
+            console.warn("[searchAnime] Jikan also failed:", (e as any)?.message);
+        }
+    }
 
     if (matchesPsyopQuery(query)) {
         mapped.unshift(PSYOP_SEARCH_RESULT);
     }
 
-    cacheSet(cacheKey, mapped, TTL_SEARCH);
+    if (mapped.length > 0) cacheSet(cacheKey, mapped, TTL_SEARCH);
     return mapped;
 }
 
@@ -601,15 +784,32 @@ export async function fetchAnimeByGenre(genreId: number): Promise<AnimeResult[]>
     const cached = cacheGet<AnimeResult[]>(cacheKey);
     if (cached) return cached;
 
-    const results = await fetchJikanByGenre(genreId);
-    const mapped = results.map((result) => ({
-        id: String(result.mal_id),
-        title: result.title_english || result.title,
-        image: result.images?.webp?.large_image_url || result.images?.webp?.image_url,
-        type: result.type,
-        score: result.score,
-    }));
-    cacheSet(cacheKey, mapped, TTL_SEARCH);
+    const genreName = ANIME_GENRES.find(g => g.id === genreId)?.name;
+    let mapped: AnimeResult[] = [];
+
+    if (genreName) {
+        try {
+            const al = await alByGenre(genreName);
+            if (al.length > 0) mapped = al.map(simpleToResult);
+        } catch (e) {
+            console.warn("[fetchAnimeByGenre] AniList failed:", (e as any)?.message);
+        }
+    }
+
+    if (mapped.length === 0) {
+        try {
+            const results = await fetchJikanByGenre(genreId);
+            mapped = results.map((r) => ({
+                id: String(r.mal_id), title: r.title_english || r.title,
+                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+                type: r.type, score: r.score, year: r.year ?? null,
+            }));
+        } catch (e) {
+            console.warn("[fetchAnimeByGenre] Jikan also failed:", (e as any)?.message);
+        }
+    }
+
+    if (mapped.length > 0) cacheSet(cacheKey, mapped, TTL_SEARCH);
     return mapped;
 }
 
@@ -618,15 +818,60 @@ export async function fetchAiringAnime(): Promise<AnimeResult[]> {
     const cached = cacheGet<AnimeResult[]>(cacheKey);
     if (cached) return cached;
 
-    const results = await fetchJikanTrending();
-    const mapped = results.map((result) => ({
-        id: String(result.mal_id),
-        title: result.title_english || result.title,
-        image: result.images?.webp?.large_image_url || result.images?.webp?.image_url,
-        type: "Trending",
-        score: result.score,
-    }));
-    cacheSet(cacheKey, mapped, TTL_TRENDING);
+    let mapped: AnimeResult[] = [];
+
+    try {
+        const al = await alTrending();
+        if (al.length > 0) mapped = al.map(simpleToResult);
+    } catch (e) {
+        console.warn("[fetchAiringAnime] AniList failed:", (e as any)?.message);
+    }
+
+    if (mapped.length === 0) {
+        try {
+            const results = await fetchJikanTrending();
+            mapped = results.map((r) => ({
+                id: String(r.mal_id), title: r.title_english || r.title,
+                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+                type: "Trending", score: r.score,
+            }));
+        } catch (e) {
+            console.warn("[fetchAiringAnime] Jikan also failed:", (e as any)?.message);
+        }
+    }
+
+    if (mapped.length > 0) cacheSet(cacheKey, mapped, TTL_TRENDING);
+    return mapped;
+}
+
+export async function fetchPopularAnime(): Promise<AnimeResult[]> {
+    const cacheKey = "popular";
+    const cached = cacheGet<AnimeResult[]>(cacheKey);
+    if (cached) return cached;
+
+    let mapped: AnimeResult[] = [];
+
+    try {
+        const al = await alPopular();
+        if (al.length > 0) mapped = al.map(simpleToResult);
+    } catch (e) {
+        console.warn("[fetchPopularAnime] AniList failed:", (e as any)?.message);
+    }
+
+    if (mapped.length === 0) {
+        try {
+            const results = await fetchJikanPopular();
+            mapped = results.map((r) => ({
+                id: String(r.mal_id), title: r.title_english || r.title,
+                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+                type: r.type, score: r.score, year: r.year ?? null,
+            }));
+        } catch (e) {
+            console.warn("[fetchPopularAnime] Jikan also failed:", (e as any)?.message);
+        }
+    }
+
+    if (mapped.length > 0) cacheSet(cacheKey, mapped, TTL_TRENDING);
     return mapped;
 }
 
@@ -650,6 +895,12 @@ export async function fetchEpisodeSources(
     episodeId: string,
     category: "sub" | "dub" = "sub",
 ): Promise<StreamingSource | null> {
+    if (isPsyopEpisode(episodeId)) {
+        const url = getPsyopStreamUrl(episodeId);
+        if (!url) return null;
+        return { url, isM3U8: false };
+    }
+
     try {
         const result = await getStreamingSources(episodeId, category);
         if (!result || result.sources.length === 0) {

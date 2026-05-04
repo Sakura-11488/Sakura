@@ -17,6 +17,8 @@ import {
     addNovelDownload, getNovelDownloadsIndex, removeNovelDownload,
     isInLibrary, type NovelDownloadEntry,
 } from "@/lib/storage";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
 import LottieIcon from "@/components/LottieIcon";
 
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
@@ -44,6 +46,7 @@ function ExternalDetailsContent() {
     const [inLibrary, setInLibrary] = useState(false);
     const [downloadedSet, setDownloadedSet] = useState<Set<string>>(new Set());
     const [downloading, setDownloading] = useState<Set<string>>(new Set());
+    const [shareToast, setShareToast] = useState<string | null>(null);
 
     useEffect(() => {
         if (path) setInLibrary(isInLibrary(path, 'novel'));
@@ -81,13 +84,31 @@ function ExternalDetailsContent() {
             };
             addNovelDownload(entry, content);
             setDownloadedSet(prev => new Set(prev).add(ch.path));
-        } catch (e) { console.error("Download failed:", e); }
+            setShareToast(`Downloaded: ${ch.name || `Chapter ${ch.chapterNumber}`}`);
+            window.setTimeout(() => setShareToast(null), 3000);
+        } catch (e) {
+            console.error("Download failed:", e);
+            setShareToast("Novel download failed");
+            window.setTimeout(() => setShareToast(null), 3500);
+        }
         setDownloading(prev => { const n = new Set(prev); n.delete(ch.path); return n; });
     };
 
     const handleRemoveDownload = (ch: AllNovelChapter) => {
         removeNovelDownload("sakura", path, ch.path);
         setDownloadedSet(prev => { const n = new Set(prev); n.delete(ch.path); return n; });
+        setShareToast("Novel download removed");
+        window.setTimeout(() => setShareToast(null), 3000);
+    };
+
+    const handleShare = async () => {
+        if (!detail) return;
+        const url = buildSakuraShareUrl({ kind: "novel", source: "external", path });
+        const result = await shareOrCopyLink({ title: detail.name, url });
+        if (result === "copied") {
+            setShareToast("Share link copied");
+            window.setTimeout(() => setShareToast(null), 3000);
+        }
     };
 
     if (loading) {
@@ -122,17 +143,18 @@ function ExternalDetailsContent() {
         <>
             <Header />
             <main className="main-content">
+                {shareToast && <div className="sakura-toast" role="status">{shareToast}</div>}
                 <div style={{ position: "relative", width: "100%", height: 280, overflow: "hidden" }}>
                     {detail.cover && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={detail.cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(20px) brightness(0.4)", transform: "scale(1.1)" }} />
+                        <img src={imageOrPlaceholder(detail.cover)} alt="" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(20px) brightness(0.4)", transform: "scale(1.1)" }} />
                     )}
                     <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, transparent 0%, var(--bg-deep) 100%)" }} />
                     <div style={{ position: "absolute", bottom: 20, left: 20, right: 20, display: "flex", gap: 16, alignItems: "flex-end" }}>
                         <div style={{ width: 120, flexShrink: 0, borderRadius: 12, overflow: "hidden", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
                             {detail.cover ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={detail.cover} alt={detail.name} style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", imageRendering: "auto" }} />
+                                <img src={imageOrPlaceholder(detail.cover)} alt={detail.name} onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", imageRendering: "auto" }} />
                             ) : (
                                 <div style={{ width: "100%", aspectRatio: "2/3", background: "var(--bg-surface)", display: "flex", alignItems: "center", justifyContent: "center" }}><BookIcon size={40} /></div>
                             )}
@@ -182,6 +204,9 @@ function ExternalDetailsContent() {
                                 playOnMount
                                 colorFilter={inLibrary ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
                             />
+                        </button>
+                        <button onClick={handleShare} style={{ padding: "10px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-primary)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>
+                            Share
                         </button>
                     </div>
 
@@ -262,6 +287,7 @@ function SakuraDetailsContent() {
     const [milestones, setMilestones] = useState<NovelMilestone[]>([]);
     const [downloadedSet, setDownloadedSet] = useState<Set<string>>(new Set());
     const [downloading, setDownloading] = useState<Set<string>>(new Set());
+    const [shareToast, setShareToast] = useState<string | null>(null);
 
     useEffect(() => {
         if (novelId) setInLibrary(isInLibrary(novelId, 'novel'));
@@ -312,9 +338,25 @@ function SakuraDetailsContent() {
                 };
                 addNovelDownload(entry, full.content);
                 setDownloadedSet(prev => new Set(prev).add(String(ch.chapter_number)));
+                setShareToast(`Downloaded: ${ch.title || `Chapter ${ch.chapter_number}`}`);
+                window.setTimeout(() => setShareToast(null), 3000);
             }
-        } catch (e) { console.error("Download failed:", e); }
+        } catch (e) {
+            console.error("Download failed:", e);
+            setShareToast("Novel download failed");
+            window.setTimeout(() => setShareToast(null), 3500);
+        }
         setDownloading(prev => { const n = new Set(prev); n.delete(String(ch.chapter_number)); return n; });
+    };
+
+    const handleShare = async () => {
+        if (!novel) return;
+        const url = buildSakuraShareUrl({ kind: "novel", id: novel.id });
+        const result = await shareOrCopyLink({ title: novel.title, url });
+        if (result === "copied") {
+            setShareToast("Share link copied");
+            window.setTimeout(() => setShareToast(null), 3000);
+        }
     };
 
     if (loading) {
@@ -332,17 +374,18 @@ function SakuraDetailsContent() {
         <>
             <Header />
             <main className="main-content">
+                {shareToast && <div className="sakura-toast" role="status">{shareToast}</div>}
                 <div style={{ position: "relative", width: "100%", height: 280, overflow: "hidden" }}>
                     {novel.cover_url && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={novel.cover_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(20px) brightness(0.4)", transform: "scale(1.1)" }} />
+                        <img src={imageOrPlaceholder(novel.cover_url)} alt="" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(20px) brightness(0.4)", transform: "scale(1.1)" }} />
                     )}
                     <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to bottom, transparent 0%, var(--bg-deep) 100%)" }} />
                     <div style={{ position: "absolute", bottom: 20, left: 20, right: 20, display: "flex", gap: 16, alignItems: "flex-end" }}>
                         <div style={{ width: 120, flexShrink: 0, borderRadius: 12, overflow: "hidden", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
                             {novel.cover_url ? (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={novel.cover_url} alt={novel.title} style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", imageRendering: "auto" }} />
+                                <img src={imageOrPlaceholder(novel.cover_url)} alt={novel.title} onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", imageRendering: "auto" }} />
                             ) : (
                                 <div style={{ width: "100%", aspectRatio: "2/3", background: "var(--bg-surface)", display: "flex", alignItems: "center", justifyContent: "center" }}><BookIcon size={40} /></div>
                             )}
@@ -390,6 +433,9 @@ function SakuraDetailsContent() {
                                 playOnMount
                                 colorFilter={inLibrary ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
                             />
+                        </button>
+                        <button onClick={handleShare} style={{ padding: "10px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "var(--text-primary)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>
+                            Share
                         </button>
                     </div>
 
@@ -458,7 +504,16 @@ function SakuraDetailsContent() {
                                     </Link>
                                     {canRead && (
                                         <button
-                                            onClick={() => isDownloaded ? removeNovelDownload("sakura", novelId, String(ch.chapter_number)) : handleDownloadChapter(ch)}
+                                            onClick={() => {
+                                                if (isDownloaded) {
+                                                    removeNovelDownload("sakura", novelId, String(ch.chapter_number));
+                                                    setDownloadedSet(prev => { const n = new Set(prev); n.delete(String(ch.chapter_number)); return n; });
+                                                    setShareToast("Novel download removed");
+                                                    window.setTimeout(() => setShareToast(null), 3000);
+                                                } else {
+                                                    handleDownloadChapter(ch);
+                                                }
+                                            }}
                                             disabled={isDownloading}
                                             style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: isDownloaded ? "rgba(74,222,128,0.15)" : "rgba(255,255,255,0.04)", color: isDownloaded ? "#4ade80" : "var(--text-muted)", cursor: isDownloading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 14 }}
                                         >

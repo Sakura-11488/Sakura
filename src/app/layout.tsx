@@ -21,6 +21,7 @@ import BottomNav from "@/components/BottomNav";
 import FloatingTradeWidget from "@/components/FloatingTradeWidget";
 import CloudSyncProvider from "@/components/CloudSyncProvider";
 import TermsGate from "@/components/TermsGate";
+import HttpImageShim from "@/components/HttpImageShim";
 
 export default function RootLayout({
   children,
@@ -61,6 +62,7 @@ export default function RootLayout({
           ))}
         </div>
 
+        <HttpImageShim />
         <SolanaProvider>
           <TermsGate>
             <CloudSyncProvider />

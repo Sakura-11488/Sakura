@@ -8,6 +8,7 @@ import {
 } from "@solana/wallet-adapter-react";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import { SakuraWalletModalProvider } from "./SakuraWalletModal";
+import { SakuraAIProvider } from "./SakuraAIModal";
 import { SwapToastProvider } from "./SwapToast";
 import { RPC_ENDPOINT } from "@/lib/solana";
 import { SakuraNativeWalletAdapter } from "@/lib/wallet-adapter";
@@ -47,8 +48,10 @@ export default function SolanaProvider({
             <WalletProvider wallets={wallets} autoConnect>
                 <SwapToastProvider>
                     <SakuraWalletModalProvider>
-                        <WalletPersistence />
-                        {children}
+                        <SakuraAIProvider>
+                            <WalletPersistence />
+                            {children}
+                        </SakuraAIProvider>
                     </SakuraWalletModalProvider>
                 </SwapToastProvider>
             </WalletProvider>

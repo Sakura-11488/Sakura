@@ -3,8 +3,10 @@
 import Header from "@/components/Header";
 import Link from "next/link";
 import { useDownloads, downloadManager } from "@/lib/downloads";
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { getLocal, setLocal, STORAGE_KEYS, getNovelDownloadsIndex, removeNovelDownload, removeAllNovelDownloads, type NovelDownloadEntry } from "@/lib/storage";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import type { DownloadProgressEvent } from "@/plugins/anime";
 import dynamic from "next/dynamic";
 
 const Lottie = dynamic(() => import("lottie-react"), { ssr: false });
@@ -27,19 +29,62 @@ interface AnimeDownloadEntry {
     state: string;
     progress: number;
     timestamp: number;
+    filePath?: string;
 }
 
-function useAnimeDownloads() {
+function useAnimeDownloads(onToast?: (message: string) => void) {
     const [data, setData] = useState<Record<string, AnimeDownloadEntry>>({});
     useEffect(() => {
         setData(getLocal<Record<string, AnimeDownloadEntry>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}));
-    }, []);
+        let handle: { remove: () => void } | null = null;
+        let cancelled = false;
+        (async () => {
+            try {
+                const { Anime } = await import("@/plugins/anime");
+                handle = await Anime.addListener("downloadProgress", (event: DownloadProgressEvent) => {
+                    if (cancelled) return;
+                    setData(prev => {
+                        const updated = { ...prev };
+                        if (updated[event.episodeId]) {
+                            updated[event.episodeId] = {
+                                ...updated[event.episodeId],
+                                state: event.state,
+                                progress: event.progress,
+                                filePath: event.filePath || updated[event.episodeId].filePath,
+                            };
+                            setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, updated);
+                            if (event.state === "completed") onToast?.(`Anime download complete: ${updated[event.episodeId].episodeTitle}`);
+                            if (event.state === "error") onToast?.(`Anime download failed: ${updated[event.episodeId].episodeTitle}`);
+                            if (event.state === "cancelled") onToast?.(`Anime download cancelled: ${updated[event.episodeId].episodeTitle}`);
+                        }
+                        return updated;
+                    });
+                });
+            } catch {
+                // Web builds do not have the native anime plugin.
+            }
+        })();
+        const id = window.setInterval(() => {
+            setData(getLocal<Record<string, AnimeDownloadEntry>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}));
+        }, 3000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(id);
+            handle?.remove();
+        };
+    }, [onToast]);
     return data;
 }
 
 export default function DownloadsPage() {
     const downloads = useDownloads();
-    const animeDownloads = useAnimeDownloads();
+    const [toast, setToast] = useState<string | null>(null);
+    const showToast = useCallback((message: string) => {
+        setToast(message);
+        window.setTimeout(() => setToast(null), 3500);
+    }, []);
+    const animeDownloads = useAnimeDownloads(showToast);
+    const previousDownloadStates = useRef<Record<string, string>>({});
 
     // Group downloads by Manga
     const groupedDownloads = useMemo(() => {
@@ -63,12 +108,36 @@ export default function DownloadsPage() {
         return groups;
     }, [animeDownloads]);
 
+    useEffect(() => {
+        for (const task of Object.values(downloads)) {
+            const previous = previousDownloadStates.current[task.chapterId];
+            if (previous && previous !== task.state) {
+                if (task.state === "completed") showToast(`Manga download complete: ${task.title}`);
+                if (task.state === "error") showToast(`Manga download failed: ${task.title}`);
+                if (task.state === "paused") showToast(`Manga download paused: ${task.title}`);
+            }
+            previousDownloadStates.current[task.chapterId] = task.state;
+        }
+    }, [downloads, showToast]);
+
     const deleteAnimeDownload = (episodeId: string) => {
         if (!confirm("Remove this entry? (The video in your gallery is not affected.)")) return;
         const all = getLocal<Record<string, AnimeDownloadEntry>>(STORAGE_KEYS.ANIME_DOWNLOADS, {});
         delete all[episodeId];
         setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, all);
-        window.location.reload();
+    };
+
+    const cancelAnimeDownload = async (episodeId: string) => {
+        try {
+            const { Anime } = await import("@/plugins/anime");
+            await Anime.cancelDownload({ episodeId });
+        } catch {
+            // Native plugin may not be available in web preview.
+        }
+        const all = getLocal<Record<string, AnimeDownloadEntry>>(STORAGE_KEYS.ANIME_DOWNLOADS, {});
+        if (all[episodeId]) all[episodeId] = { ...all[episodeId], state: "cancelled", progress: 0 };
+        setLocal(STORAGE_KEYS.ANIME_DOWNLOADS, all);
+        showToast("Anime download cancelled");
     };
 
     /* ── Novel Downloads ── */
@@ -136,20 +205,24 @@ export default function DownloadsPage() {
         if (!task) return;
         if (task.state === 'downloading') {
             downloadManager.pause(chapterId);
+            showToast("Download paused");
         } else if (task.state === 'paused' || task.state === 'error') {
             downloadManager.resume(chapterId);
+            showToast("Download resumed");
         }
     };
 
     const handleDelete = async (chapterId: string) => {
         if (confirm("Are you sure you want to delete this chapter from your device?")) {
             await downloadManager.remove(chapterId);
+            showToast("Download removed");
         }
     };
 
     return (
         <>
             <Header />
+            {toast && <div className="sakura-toast" role="status">{toast}</div>}
             <main className="main-content" style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                     <div>
@@ -197,20 +270,32 @@ export default function DownloadsPage() {
                                                         {ep.state === 'downloading' && <span style={{ color: 'var(--sakura-pink)', fontSize: '12px' }}>Downloading {ep.progress}%</span>}
                                                         {ep.state === 'extracting' && <span style={{ color: 'var(--sakura-pink)', fontSize: '12px' }}>Extracting stream...</span>}
                                                         {ep.state === 'error' && <span style={{ color: '#ff6b6b', fontSize: '12px' }}>Download failed</span>}
+                                                        {ep.state === 'cancelled' && <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Cancelled</span>}
                                                     </div>
-                                                    {ep.state !== 'completed' && ep.state !== 'error' && (
+                                                    {ep.state !== 'completed' && ep.state !== 'error' && ep.state !== 'cancelled' && (
                                                         <div style={{ height: '4px', background: 'rgba(0,0,0,0.3)', borderRadius: '2px', marginTop: '8px', overflow: 'hidden' }}>
                                                             <div style={{ height: '100%', width: `${ep.progress}%`, background: 'var(--sakura-pink)', transition: 'width 0.3s' }} />
                                                         </div>
                                                     )}
                                                 </div>
-                                                <button
-                                                    onClick={() => deleteAnimeDownload(ep.episodeId)}
-                                                    style={{ width: 36, height: 36, borderRadius: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,105,180,0.05)', color: '#ff6b6b', border: 'none', cursor: 'pointer', marginLeft: '16px' }}
-                                                    title="Remove entry"
-                                                >
-                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                                                </button>
+                                                <div style={{ display: 'flex', gap: 8, marginLeft: '16px' }}>
+                                                    {(ep.state === 'downloading' || ep.state === 'extracting') && (
+                                                        <button
+                                                            onClick={() => cancelAnimeDownload(ep.episodeId)}
+                                                            style={{ width: 36, height: 36, borderRadius: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', border: 'none', cursor: 'pointer' }}
+                                                            title="Cancel download"
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        onClick={() => deleteAnimeDownload(ep.episodeId)}
+                                                        style={{ width: 36, height: 36, borderRadius: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,105,180,0.05)', color: '#ff6b6b', border: 'none', cursor: 'pointer' }}
+                                                        title="Remove entry"
+                                                    >
+                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                                    </button>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -227,8 +312,12 @@ export default function DownloadsPage() {
                                     <div style={{ padding: '16px', display: 'flex', gap: '16px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                                         {/* eslint-disable-next-line @next/next/no-img-element */}
                                         <img
-                                            src={firstTask.cover || "/placeholder.png"}
+                                            src={imageOrPlaceholder(firstTask.cover)}
                                             alt="Cover"
+                                            referrerPolicy="no-referrer"
+                                            onError={(event) => {
+                                                event.currentTarget.src = SAKURA_PLACEHOLDER_IMAGE;
+                                            }}
                                             style={{ width: 60, height: 85, objectFit: 'cover', borderRadius: '8px' }}
                                         />
                                         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
@@ -308,7 +397,14 @@ export default function DownloadsPage() {
                                     <div style={{ padding: '16px', display: 'flex', gap: '16px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                                         {first.coverUrl ? (
                                             // eslint-disable-next-line @next/next/no-img-element
-                                            <img src={first.coverUrl} alt="" style={{ width: 60, height: 85, objectFit: 'cover', borderRadius: '8px', imageRendering: 'auto' }} />
+                                            <img
+                                                src={imageOrPlaceholder(first.coverUrl)}
+                                                alt=""
+                                                onError={(event) => {
+                                                    event.currentTarget.src = SAKURA_PLACEHOLDER_IMAGE;
+                                                }}
+                                                style={{ width: 60, height: 85, objectFit: 'cover', borderRadius: '8px', imageRendering: 'auto' }}
+                                            />
                                         ) : (
                                             <div style={{ width: 60, height: 85, borderRadius: '8px', background: 'linear-gradient(135deg, rgba(139,92,246,0.3), rgba(255,105,180,0.3))', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                                                 <BookIconSmall />

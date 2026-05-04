@@ -13,25 +13,34 @@ import dynamic from "next/dynamic";
 const TipModal = dynamic(() => import("@/components/TipModal"), { ssr: false });
 import LottieIcon from "@/components/LottieIcon";
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
-import { getCreatorProfile } from "@/lib/creator";
+import { getCreatorProfileByContentAuthor } from "@/lib/creator";
 import { getFavorites, addFavorite, removeFavorite } from "@/lib/supabase";
 import { getLocal, setLocal, STORAGE_KEYS, setChapterProgress, getChapterProgress, getReadChapters, getAllChapterProgress, READ_THRESHOLD, isInLibrary, type LibraryItem } from "@/lib/storage";
 import { useDownloads, downloadManager } from "@/lib/downloads";
 import ChapterComments from "@/components/ChapterComments";
+import { normalizeChaptersForReading, sortChaptersForDisplay } from "@/lib/chapter-order";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
+import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
+import { sourceSupportsCreatorLookup } from "@/lib/sources/source-meta";
+import { getDefaultMangaSourceId, MANGA_SOURCE_IDS, getContentKindForSource, normalizeMangaSourceId } from "@/lib/sources/source-ids";
+import { resolveSeriesFallback } from "@/lib/sources/fallback";
 
 function FavoriteButton({ manga }: { manga: Manga }) {
     const [showLibraryModal, setShowLibraryModal] = useState(false);
     const [inLibrary, setInLibrary] = useState(false);
+    const sourceId = normalizeMangaSourceId(manga.sourceStr);
+    const contentKind = getContentKindForSource(sourceId);
 
     useEffect(() => {
-        setInLibrary(isInLibrary(manga.id, 'manga'));
-    }, [manga.id, showLibraryModal]);
+        setInLibrary(isInLibrary(manga.id, contentKind, sourceId));
+    }, [manga.id, showLibraryModal, sourceId, contentKind]);
 
     const libraryItem: LibraryItem = {
         id: manga.id,
         title: manga.title,
         image: manga.cover,
-        type: 'manga',
+        type: contentKind,
+        providerId: sourceId,
         addedAt: Date.now(),
     };
 
@@ -46,14 +55,18 @@ function FavoriteButton({ manga }: { manga: Manga }) {
                     src={inLibrary ? "/icons/wired-outline-24-approved-checked-hover-loading.json" : "/icons/wired-outline-2620-bookmark-alt-hover-flutter.json"}
                     size={22}
                     playOnMount
-                    colorFilter={inLibrary ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)" : undefined}
+                    colorFilter={
+                        inLibrary
+                            ? "brightness(0) saturate(100%) invert(62%) sepia(61%) saturate(483%) hue-rotate(79deg) brightness(96%) contrast(92%)"
+                            : "brightness(0) saturate(100%) invert(40%) sepia(82%) saturate(2861%) hue-rotate(316deg) brightness(96%) contrast(95%)"
+                    }
                 />
                 {inLibrary ? "Saved" : "Save"}
             </button>
             {showLibraryModal && (
                 <SaveToLibraryModal
                     item={libraryItem}
-                    onClose={() => { setShowLibraryModal(false); setInLibrary(isInLibrary(manga.id, 'manga')); }}
+                    onClose={() => { setShowLibraryModal(false); setInLibrary(isInLibrary(manga.id, contentKind, sourceId)); }}
                 />
             )}
         </>
@@ -78,15 +91,19 @@ function SummaryModal({ description, onClose }: { description: string; onClose: 
 function SeriesContent() {
     const searchParams = useSearchParams();
     const id = searchParams.get("id"); // Series ID
-    const sourceStr = searchParams.get("source") || "weebcentral";
+    const sourceStr = normalizeMangaSourceId(searchParams.get("source") || getDefaultMangaSourceId());
 
     const [series, setSeries] = useState<Manga | null>(null);
     const [chapters, setChapters] = useState<Chapter[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [resolvedMangaId, setResolvedMangaId] = useState<string | null>(id);
+    const [resolvedSourceId, setResolvedSourceId] = useState(sourceStr);
+    const [fallbackSourceId, setFallbackSourceId] = useState<string | null>(null);
     const [showSummary, setShowSummary] = useState(false);
     const [showBatchDownload, setShowBatchDownload] = useState(false);
     const [showTipModal, setShowTipModal] = useState(false);
+    const [shareToast, setShareToast] = useState<string | null>(null);
     const [creatorWallet, setCreatorWallet] = useState<string | null>(null);
     const [isBatchQueuing, setIsBatchQueuing] = useState(false);
     const downloads = useDownloads();
@@ -94,7 +111,7 @@ function SeriesContent() {
     const [readChapterIds, setReadChapterIds] = useState<string[]>([]);
     const [chapterProgress, setChapterProgress] = useState<Record<string, number>>({});
 
-    const source = useMemo(() => getSource(sourceStr), [sourceStr]);
+    const source = useMemo(() => getSource(resolvedSourceId), [resolvedSourceId]);
 
     useEffect(() => {
         if (!id) return;
@@ -102,13 +119,45 @@ function SeriesContent() {
         async function loadData() {
             setLoading(true);
             setError(null);
+            setResolvedMangaId(id);
+            setResolvedSourceId(sourceStr);
+            setFallbackSourceId(null);
             try {
-                const [mangaData, chaptersData] = await Promise.all([
-                    source.getMangaDetails(id!),
-                    source.getChapters(id!)
+                const requestedSource = getSource(sourceStr);
+                const [requestedMangaData, requestedChaptersData] = await Promise.all([
+                    requestedSource.getMangaDetails(id!),
+                    requestedSource.getChapters(id!)
                 ]);
-                setSeries(mangaData);
-                setChapters(chaptersData);
+
+                if (!requestedMangaData) {
+                    throw new Error("Manga not found.");
+                }
+
+                const fallback = await resolveSeriesFallback(
+                    sourceStr,
+                    requestedMangaData,
+                    requestedChaptersData,
+                );
+
+                if (fallback) {
+                    setResolvedMangaId(fallback.mangaId);
+                    setResolvedSourceId(fallback.sourceId);
+                    setFallbackSourceId(fallback.sourceId);
+                    setSeries(fallback.manga);
+                    setChapters(fallback.chapters);
+                } else {
+                    setSeries({
+                        ...requestedMangaData,
+                        sourceStr,
+                    });
+                    setChapters(
+                        requestedChaptersData.map((chapter) => ({
+                            ...chapter,
+                            mangaId: id!,
+                            sourceStr,
+                        })),
+                    );
+                }
             } catch (error: any) {
                 console.error("Failed to load series:", error);
                 setError(error.message || "Failed to load series.");
@@ -120,35 +169,34 @@ function SeriesContent() {
     }, [id, sourceStr]);
 
     useEffect(() => {
-        if (!series?.authorId || sourceStr !== "mangadex") return;
-        getCreatorProfile(series.authorId).then((profile) => {
+        setCreatorWallet(null);
+        if (!series?.authorId || !sourceSupportsCreatorLookup(resolvedSourceId)) return;
+        getCreatorProfileByContentAuthor(resolvedSourceId, series.authorId).then((profile) => {
             if (profile?.is_verified && profile.wallet_address) {
                 setCreatorWallet(profile.wallet_address);
             }
         });
-    }, [series?.authorId, sourceStr]);
+    }, [resolvedSourceId, series?.authorId]);
 
     // Load read chapters + progress from local storage (and refresh on window focus)
     useEffect(() => {
-        if (!id) return;
+        if (!resolvedMangaId) return;
 
         const refresh = () => {
-            setReadChapterIds(getReadChapters(id));
-            setChapterProgress(getAllChapterProgress(id));
+            setReadChapterIds(getReadChapters(resolvedMangaId, resolvedSourceId));
+            setChapterProgress(getAllChapterProgress(resolvedMangaId, resolvedSourceId));
         };
 
         refresh();
         window.addEventListener("focus", refresh);
         return () => window.removeEventListener("focus", refresh);
-    }, [id]);
+    }, [resolvedMangaId, resolvedSourceId]);
 
-    // Sort chapters based on sortOrder
+    const readingOrderChapters = useMemo(() => normalizeChaptersForReading(chapters), [chapters]);
+
+    // Sort chapters based on sortOrder using normalized reading order instead of raw provider order.
     const sortedChapters = useMemo(() => {
-        const sorted = [...chapters];
-        if (sortOrder === "asc") {
-            sorted.reverse(); // API returns newest first, so reverse for oldest first
-        }
-        return sorted;
+        return sortChaptersForDisplay(chapters, sortOrder);
     }, [chapters, sortOrder]);
 
     if (!id) {
@@ -189,10 +237,14 @@ function SeriesContent() {
         try {
             const pages = await source.getChapterPages(chapterId);
             if (!pages || pages.length === 0) throw new Error("No pages found");
-            downloadManager.addDownload(id, chapterId, title, series.cover, pages);
+            if (!resolvedMangaId) throw new Error("Missing manga id");
+            downloadManager.addDownload(resolvedMangaId, chapterId, title, series.cover, pages);
+            setShareToast(`Queued download: ${title}`);
+            window.setTimeout(() => setShareToast(null), 3000);
         } catch (e) {
             console.error("Failed to queue download", e);
-            alert("Failed to queue download. Check network.");
+            setShareToast("Failed to queue download. Check network.");
+            window.setTimeout(() => setShareToast(null), 3500);
         }
     };
 
@@ -209,7 +261,8 @@ function SeriesContent() {
 
                 const pages = await source.getChapterPages(chap.id);
                 if (pages && pages.length > 0) {
-                    downloadManager.addDownload(id, chap.id, chap.title || `Chapter ${chap.chapter}`, series.cover, pages);
+                    if (!resolvedMangaId) continue;
+                    downloadManager.addDownload(resolvedMangaId, chap.id, chap.title || `Chapter ${chap.chapter}`, series.cover, pages);
                 }
             } catch (e) {
                 console.error(`Failed to get pages for ${chap.id}`, e);
@@ -217,10 +270,27 @@ function SeriesContent() {
         }
         setIsBatchQueuing(false);
         setShowBatchDownload(false);
+        setShareToast("Batch download queued");
+        window.setTimeout(() => setShareToast(null), 3000);
+    };
+
+    const handleShare = async () => {
+        if (!series || !resolvedMangaId) return;
+        const url = buildSakuraShareUrl({
+            kind: "manga",
+            id: resolvedMangaId,
+            source: resolvedSourceId,
+        });
+        const result = await shareOrCopyLink({ title: series.title, url });
+        if (result === "copied") {
+            setShareToast("Share link copied");
+            window.setTimeout(() => setShareToast(null), 3000);
+        }
     };
 
     return (
         <main className="main-content">
+            {shareToast && <div className="sakura-toast" role="status">{shareToast}</div>}
             {/* Tip Modal */}
             {showTipModal && (
                 <TipModal
@@ -243,20 +313,39 @@ function SeriesContent() {
             <div className="series-hero">
                 <div className="series-hero-bg">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={series.cover} alt="" referrerPolicy="no-referrer" />
+                    <img src={imageOrPlaceholder(series.cover)} alt="" referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} />
                 </div>
                 <div className="series-hero-content">
                     <div className="series-cover">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={series.cover} alt={series.title} referrerPolicy="no-referrer" />
+                        <img src={imageOrPlaceholder(series.cover)} alt={series.title} referrerPolicy="no-referrer" onError={(e) => { (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE; }} />
                     </div>
                     <div className="series-info">
                         <h1>{series.title}</h1>
+                        {fallbackSourceId === MANGA_SOURCE_IDS.ATSUMARU && (
+                            <div
+                                style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    marginBottom: 12,
+                                    padding: "6px 10px",
+                                    borderRadius: 999,
+                                    background: "rgba(255, 105, 180, 0.12)",
+                                    border: "1px solid rgba(255, 105, 180, 0.25)",
+                                    color: "var(--sakura-pink)",
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                }}
+                            >
+                                Using Atsumaru fallback for fuller chapter coverage
+                            </div>
+                        )}
 
                         {series.author && (
                             <div className="series-author" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                 <span style={{ color: "var(--text-muted)" }}>By</span>
-                                {sourceStr === 'mangadex' && series.authorId ? (
+                                {sourceSupportsCreatorLookup(resolvedSourceId) && series.authorId ? (
                                     <Link href={`/creator?id=${series.authorId}`} style={{ color: "var(--sakura-pink)", fontWeight: "bold", textDecoration: "none" }}>
                                         {series.author}
                                     </Link>
@@ -319,9 +408,9 @@ function SeriesContent() {
                             </div>
                         </div>
                         <div className="series-actions">
-                            {chapters.length > 0 && (
+                            {readingOrderChapters.length > 0 && (
                                 <Link
-                                    href={`/chapter?id=${chapters[chapters.length - 1].id}&manga=${id}&source=${sourceStr}`}
+                                    href={`/chapter?id=${readingOrderChapters[0].id}&manga=${resolvedMangaId}&source=${resolvedSourceId}`}
                                     className="btn-primary"
                                 >
                                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" /></svg> 読む — Read First
@@ -335,6 +424,14 @@ function SeriesContent() {
                             >
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>
                                 Tip Creator
+                            </button>
+                            <button
+                                className="btn-secondary"
+                                onClick={handleShare}
+                                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                            >
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" /></svg>
+                                Share
                             </button>
                             <Link href="/pass" className="btn-secondary">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2" /><line x1="2" x2="22" y1="10" y2="10" /></svg> 週間パス — Get Pass
@@ -412,7 +509,7 @@ function SeriesContent() {
                     return (
                         <Link
                             key={chapter.id}
-                            href={`/chapter?id=${chapter.id}&manga=${id}&source=${sourceStr}`}
+                            href={`/chapter?id=${chapter.id}&manga=${resolvedMangaId}&source=${resolvedSourceId}`}
                             className={`chapter-item ${isRead ? 'chapter-read' : 'chapter-unread'} ${isContinue || isNextUp ? 'chapter-continue' : ''}`}
                         >
                             <div className="chapter-item-left">
