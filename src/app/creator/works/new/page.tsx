@@ -9,7 +9,6 @@ import novelIcon from "../../../../../wired-flat-3140-book-open-hover-pinch.json
 import mangaIcon from "../../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
 import animeIcon from "../../../../../wired-flat-2440-goku-hover-pinch.json";
 
-import Header from "@/components/Header";
 import LottieIcon from "@/components/LottieIcon";
 import { createCreatorWork, updateCreatorWork } from "@/lib/creator-works";
 import { uploadCreatorAsset } from "@/lib/publisher-assets";
@@ -160,7 +159,6 @@ export default function NewCreatorWorkPage() {
     if (!connected || !wallet) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <p style={{ fontSize: 48, margin: "0 0 16px" }}>🌸</p>
@@ -178,7 +176,6 @@ export default function NewCreatorWorkPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40, paddingBottom: 100 }}>
                     <div className="title-header" style={{ marginBottom: 20 }}>

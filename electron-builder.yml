@@ -1,0 +1,50 @@
+appId: com.millw14.sakura
+productName: Sakura
+copyright: Copyright © 2026 Milla
+
+directories:
+  output: dist-electron
+
+files:
+  - electron/**/*
+  - out/**/*
+  - hianime-node/**/*
+  - public/app-icon.ico
+  - public/app-icon.png
+  - package.json
+
+asarUnpack:
+  - hianime-node/**/*
+
+extraMetadata:
+  main: electron/main.js
+
+win:
+  icon: public/app-icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: dir
+      arch:
+        - x64
+  artifactName: "${productName}-Setup-${version}.${ext}"
+  forceCodeSigning: false
+  signAndEditExecutable: false
+  executableName: Sakura
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Sakura
+  installerIcon: public/app-icon.ico
+  uninstallerIcon: public/app-icon.ico
+  include: build/installer.nsh
+  deleteAppDataOnUninstall: false
+
+asar: true
+
+npmRebuild: false

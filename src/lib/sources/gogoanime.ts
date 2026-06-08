@@ -1,8 +1,43 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
+import { isElectron } from "../platform";
 
-const API_BASE = (
-    process.env.NEXT_PUBLIC_CONSUMET_URL || ""
-).replace(/\/+$/, '');
+/** Default HiAnime bridge (see electron/main.js HIANIME_PORT). Use 127.0.0.1 — in Electron, `localhost` often fails (IPv6/loopback quirks) while the Node child listens on IPv4. */
+const DEFAULT_ELECTRON_HIANIME_BRIDGE = "http://127.0.0.1:4789";
+
+type ElectronApi = { hianimeBridgeUrl?: string };
+
+/**
+ * Resolved at call time (not only import time) so Electron `app://` can apply fallbacks.
+ * Episodes stay at 0 when this is empty: no local server URL → `isConfigured()` false → no HiAnime search/episodes.
+ */
+function getApiBase(): string {
+    if (typeof window !== "undefined") {
+        const fromPreload = (window as unknown as { electronAPI?: ElectronApi }).electronAPI?.hianimeBridgeUrl?.trim();
+        if (fromPreload) {
+            return fromPreload.replace(/\/+$/, "").replace(/localhost/g, "127.0.0.1");
+        }
+    }
+
+    let base = (
+        typeof process !== "undefined" && process.env?.NEXT_PUBLIC_CONSUMET_URL
+            ? String(process.env.NEXT_PUBLIC_CONSUMET_URL)
+            : ""
+    ).trim().replace(/\/+$/, "");
+
+    if (typeof window !== "undefined") {
+        const proto = window.location?.protocol || "";
+        const isElectronShell = proto === "app:" || proto === "file:";
+        if (isElectronShell || isElectron()) {
+            if (!base) {
+                base = DEFAULT_ELECTRON_HIANIME_BRIDGE;
+            } else if (base.includes("localhost")) {
+                base = base.replace(/localhost/g, "127.0.0.1");
+            }
+        }
+    }
+
+    return base;
+}
 
 const HIANIME_BASE = "https://hianime.dk";
 
@@ -61,6 +96,7 @@ async function parseFetchError(res: Response): Promise<AnimeSourceError> {
 }
 
 async function apiGet(path: string, timeout = 15000) {
+    const API_BASE = getApiBase();
     if (!API_BASE) throw new Error("NEXT_PUBLIC_CONSUMET_URL not set");
     const url = `${API_BASE}${path}`;
     if (Capacitor.isNativePlatform()) {
@@ -77,11 +113,23 @@ async function apiGet(path: string, timeout = 15000) {
         return typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
     } else {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
+        const timer = setTimeout(() => {
+            controller.abort(new Error(`HiAnime bridge request timed out after ${timeout}ms`));
+        }, timeout);
         try {
             const res = await fetch(url, { signal: controller.signal });
             if (!res.ok) throw await parseFetchError(res);
             return res.json();
+        } catch (error: any) {
+            if (error?.name === "AbortError" || controller.signal.aborted) {
+                throw new AnimeSourceError({
+                    message: `HiAnime bridge timed out while resolving the stream (${Math.round(timeout / 1000)}s).`,
+                    code: "STREAM_REQUEST_TIMEOUT",
+                    stage: "extractor",
+                    details: { path, timeout },
+                });
+            }
+            throw error;
         } finally {
             clearTimeout(timer);
         }
@@ -89,7 +137,7 @@ async function apiGet(path: string, timeout = 15000) {
 }
 
 export function isConfigured(): boolean {
-    return !!API_BASE;
+    return !!getApiBase();
 }
 
 let _lastError = '';
@@ -97,12 +145,27 @@ let _lastErrorDetails: AnimeSourceErrorPayload | null = null;
 export function getLastConsumetError(): string { return _lastError; }
 export function getLastConsumetErrorDetails(): AnimeSourceErrorPayload | null { return _lastErrorDetails; }
 
+export async function fetchHiAnimeTrending(): Promise<{ slug: string; title: string; poster: string }[]> {
+    try {
+        const data = await apiGet('/api/home');
+        const results = data.results || [];
+        return results.map((r: any) => ({
+            slug: r.slug || '',
+            title: r.name || '',
+            poster: r.poster || '',
+        })).filter((r: any) => r.slug && r.title);
+    } catch (e) {
+        console.error('[HiAnime] Home page fetch failed:', e);
+        return [];
+    }
+}
+
 export async function searchAnimeSource(query: string): Promise<{ id: string; title: string; slug?: string; animeId?: string; poster?: string }[]> {
     try {
         _lastError = '';
         _lastErrorDetails = null;
         const url = `/api/search?keyword=${encodeURIComponent(query)}`;
-        console.log(`[HiAnime] Searching: ${API_BASE}${url}`);
+        console.log(`[HiAnime] Searching: ${getApiBase()}${url}`);
         const data = await apiGet(url);
         const results = data.results || data.animes || [];
         if (!Array.isArray(results) || results.length === 0) {
@@ -149,9 +212,7 @@ export async function getAnimeInfo(slug: string): Promise<{ animeId: string; nam
         _lastErrorDetails = null;
         const data = await apiGet(`/api/info/${encodeURIComponent(slug)}`);
         if (!data.animeId) return null;
-        if (data.animeId) {
-            _slugByAnimeId.set(data.animeId, slug);
-        }
+        setSlugForAnimeId(data.animeId, slug);
         return {
             animeId: data.animeId,
             name: data.name || '',
@@ -180,9 +241,30 @@ export async function getAnimeInfo(slug: string): Promise<{ animeId: string; nam
 
 const _serverIdsCache = new Map<string, string>();
 const _slugByAnimeId = new Map<string, string>();
+const SLUG_STORAGE_PREFIX = "hianime_slug_";
 
 export function setSlugForAnimeId(animeId: string, slug: string) {
     _slugByAnimeId.set(animeId, slug);
+    try {
+        if (typeof window !== "undefined") {
+            localStorage.setItem(SLUG_STORAGE_PREFIX + animeId, slug);
+        }
+    } catch {}
+}
+
+function getPersistedSlug(animeId: string): string | null {
+    const mem = _slugByAnimeId.get(animeId);
+    if (mem) return mem;
+    try {
+        if (typeof window !== "undefined") {
+            const stored = localStorage.getItem(SLUG_STORAGE_PREFIX + animeId);
+            if (stored) {
+                _slugByAnimeId.set(animeId, stored);
+                return stored;
+            }
+        }
+    } catch {}
+    return null;
 }
 
 export async function getAnimeSourceEpisodes(animeIdOrSlug: string): Promise<{ id: string; number: number; title: string }[]> {
@@ -276,13 +358,13 @@ export async function getStreamingSources(episodeId: string, category: 'sub' | '
         }
         const [, animeId, epNum] = parts;
 
-        const slug = _slugByAnimeId.get(animeId);
-        if (!slug) {
+        let resolvedSlug = getPersistedSlug(animeId);
+        if (!resolvedSlug) {
             console.log(`[HiAnime] No slug cached for animeId=${animeId}, refetching...`);
             await getAnimeSourceEpisodes(animeId);
+            resolvedSlug = getPersistedSlug(animeId);
         }
 
-        const resolvedSlug = _slugByAnimeId.get(animeId);
         if (!resolvedSlug) {
             throw new AnimeSourceError({
                 message: `Could not resolve provider slug for anime ${animeId}`,
@@ -293,7 +375,7 @@ export async function getStreamingSources(episodeId: string, category: 'sub' | '
         }
 
         try {
-            const data = await apiGet(`/api/m3u8/${encodeURIComponent(resolvedSlug)}/${epNum}?category=${category}`, 30000);
+            const data = await apiGet(`/api/m3u8/${encodeURIComponent(resolvedSlug)}/${epNum}?category=${category}`, 120000);
             if (data?.sources?.length > 0) {
                 const src = data.sources[0];
                 console.log(`[HiAnime] SUCCESS (m3u8, ${category}): ${src.url.substring(0, 80)}...`);

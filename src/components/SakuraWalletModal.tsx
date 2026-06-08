@@ -5,6 +5,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { truncateAddress, getConnection, SAKURA_MINT, SOLANA_NETWORK } from "@/lib/solana";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { generateWallet, storeWalletSecurely, removeWalletSecurely } from "@/lib/wallet";
+import { SakuraNativeWalletAdapter } from "@/lib/wallet-adapter";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import bs58 from "bs58";
@@ -43,7 +44,7 @@ export function SakuraWalletModalProvider({ children }: { children: React.ReactN
 
 /* ─── The Modal ─── */
 function SakuraWalletModal({ onClose }: { onClose: () => void }) {
-    const { wallets, select, connect, publicKey, disconnect, connected } = useWallet();
+    const { wallets, select, publicKey, disconnect, connected } = useWallet();
     const router = useRouter();
     const [balance, setBalance] = useState<number | null>(null);
     const [sakuraBalance, setSakuraBalance] = useState<number | null>(null);
@@ -102,16 +103,42 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
         };
     }, [fetchBalances]);
 
-    const connectAfterStore = async () => {
-        if (!wallets || wallets.length === 0) return;
+    const finishEmbeddedWalletConnect = async (publicKeyBase58: string) => {
+        if (!wallets || wallets.length === 0) {
+            throw new Error("No wallet adapter available");
+        }
         const adapter = wallets[0].adapter;
+
+        // The wallet-adapter-react WalletProvider wires its 'connect' listener
+        // to the adapter inside a useEffect that runs AFTER `select()` has
+        // propagated through React state. Calling adapter.connect() before
+        // that effect runs means the listener never sees the event and the
+        // UI stays on the "Create Wallet" screen even though the keypair is
+        // safely stored. The robust way to drive it is:
+        //   1. unselect (resets autoConnect tracking + listener attachment),
+        //   2. yield to React,
+        //   3. re-select — the provider's autoConnect effect then calls
+        //      adapter.connect() AFTER its listener is attached, so the
+        //      'connect' event lands in `setPublicKey` and the UI updates
+        //      immediately.
+        try {
+            select(null);
+        } catch {
+            /* ignore */
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
         select(adapter.name);
-        await new Promise(r => setTimeout(r, 150));
-        // Call adapter.connect() directly — the hook's connect() can have stale
-        // internal state from a failed auto-connect on first load (no key yet).
-        // The adapter emits 'connect', which the WalletProvider listens to and
-        // updates React state, so `connected` / `publicKey` will update properly.
-        await adapter.connect();
+
+        // Belt-and-suspenders: if we somehow miss the event window, push the
+        // pubkey into the adapter directly so the next render picks it up via
+        // adapter.publicKey.
+        if (adapter instanceof SakuraNativeWalletAdapter) {
+            setTimeout(() => {
+                if (!adapter.publicKey) {
+                    adapter.applyPersistedPublicKey(publicKeyBase58);
+                }
+            }, 250);
+        }
     };
 
     const handleCreateWallet = async () => {
@@ -121,7 +148,7 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
 
             const newKeypair = generateWallet();
             await storeWalletSecurely(newKeypair);
-            await connectAfterStore();
+            await finishEmbeddedWalletConnect(newKeypair.publicKey.toBase58());
         } catch (err: any) {
             console.error("Wallet generation error:", err);
             setError(err?.message || "Failed to create wallet");
@@ -143,11 +170,14 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                 throw new Error("Invalid Secret Key format (must be Base58)");
             }
 
+            setIsImporting(true);
             await storeWalletSecurely(keypair);
-            await connectAfterStore();
+            await finishEmbeddedWalletConnect(keypair.publicKey.toBase58());
         } catch (err: any) {
             console.error("Wallet import error:", err);
             setError(err?.message || "Failed to import wallet");
+        } finally {
+            setIsImporting(false);
         }
     };
 
@@ -161,9 +191,22 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
         }
     }, [disconnect, onClose]);
 
-    const handleCopy = useCallback(() => {
+    const handleCopy = useCallback(async () => {
         if (!publicKey) return;
-        navigator.clipboard.writeText(publicKey.toBase58());
+        try {
+            await navigator.clipboard.writeText(publicKey.toBase58());
+        } catch {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = publicKey.toBase58();
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            } catch {}
+        }
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     }, [publicKey]);
@@ -189,7 +232,7 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                 {connected && publicKey ? (
                     <div className="swm-connected">
                         <div className="swm-avatar">
-                            <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={40} colorFilter="brightness(0) saturate(100%) invert(52%) sepia(74%) saturate(1057%) hue-rotate(308deg) brightness(101%) contrast(98%)" replayIntervalMs={3000} autoplay />
+                            <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={40} colorFilter="invert(52%) sepia(74%) saturate(1057%) hue-rotate(308deg)" replayIntervalMs={3000} autoplay />
                         </div>
                         <h2 className="swm-title">接続済み — Connected</h2>
                         <p className="swm-subtitle">Sakura Native Wallet</p>
@@ -278,7 +321,7 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                 ) : (
                     <div className="swm-select">
                         <div className="swm-header-icon">
-                            <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={48} colorFilter="brightness(0) saturate(100%) invert(52%) sepia(74%) saturate(1057%) hue-rotate(308deg) brightness(101%) contrast(98%)" replayIntervalMs={3000} autoplay />
+                            <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={48} colorFilter="invert(52%) sepia(74%) saturate(1057%) hue-rotate(308deg)" replayIntervalMs={3000} autoplay />
                         </div>
                         <h2 className="swm-title">Sign Up / Login</h2>
                         <p className="swm-subtitle">Create or import a Sakura wallet.</p>
@@ -325,14 +368,14 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                         ) : (
                             <div className="swm-section" style={{ marginTop: '20px' }}>
                                 <button className="swm-wallet-btn swm-wallet-btn-hero" onClick={handleCreateWallet} disabled={isGenerating}>
-                                    <span className="swm-wallet-emoji">✨</span>
+                                    <LottieIcon src="/icons/wired-outline-291-coin-dollar-hover-pinch.json" size={28} autoplay replayIntervalMs={3000} />
                                     <div className="swm-wallet-info">
                                         <span className="swm-wallet-name">Create New Wallet</span>
                                         <span className="swm-wallet-tag">Instant Solana wallet</span>
                                     </div>
                                 </button>
                                 <button className="swm-wallet-btn" onClick={() => setIsImporting(true)}>
-                                    <span className="swm-wallet-emoji">🔑</span>
+                                    <LottieIcon src="/icons/wired-outline-423-key-hover-roll.json" size={28} autoplay replayIntervalMs={3000} />
                                     <div className="swm-wallet-info">
                                         <span className="swm-wallet-name">Import Existing</span>
                                         <span className="swm-wallet-tag">Paste a secret key</span>

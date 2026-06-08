@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import Header from "@/components/Header";
 import Link from "next/link";
 import {
     getLibraryCategories,
@@ -79,7 +78,6 @@ export default function LibraryPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
@@ -161,7 +159,7 @@ export default function LibraryPage() {
                                         ? (item.source === "external"
                                             ? `/novel/details?source=external&path=${encodeURIComponent(item.id)}`
                                             : `/novel/details?id=${encodeURIComponent(item.id)}`)
-                                        : `/title?id=${encodeURIComponent(item.id)}&source=mangadex`;
+                                        : `/title?id=${encodeURIComponent(item.id)}&source=atsumaru`;
 
                                     return (
                                         <div key={`${item.type}-${item.id}`} style={{ position: "relative" }}>
@@ -234,14 +232,6 @@ export default function LibraryPage() {
                     </div>
                 </section>
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                    <div className="footer-solana">
-                        <span className="sol-dot" />
-                        Built on Solana
-                    </div>
-                </footer>
             </main>
 
             {/* Confirm Remove Item */}

@@ -1,6 +1,5 @@
 "use client";
 
-import Header from "@/components/Header";
 import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
@@ -9,6 +8,7 @@ import { payForMonthlyPass, calculateSplit } from "@/lib/payment-split";
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from "@/lib/pass-check";
 import { MONTHLY_PASS_PRICE, INSURANCE_SPLIT, BURN_SPLIT, getConnection } from "@/lib/solana";
 import LottieIcon from "@/components/LottieIcon";
+import BackButton from "@/components/BackButton";
 
 type PurchaseState = "idle" | "paying" | "success" | "error";
 
@@ -224,8 +224,8 @@ export default function MonthlyPassPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
+                <BackButton />
                 <section className="weekly-pass">
                     <div className="section-header">
                         <h2 className="section-title">Sakura Premium</h2>
@@ -390,22 +390,6 @@ export default function MonthlyPassPage() {
                     </div>
                 </section>
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                    <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
-                        <Link href="/privacy" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
-                            Privacy Policy
-                        </Link>
-                        <Link href="/terms" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
-                            Terms of Service
-                        </Link>
-                    </div>
-                    <div className="footer-solana">
-                        <span className="sol-dot" />
-                        Built on Solana
-                    </div>
-                </footer>
             </main>
         </>
     );

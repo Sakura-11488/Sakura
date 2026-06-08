@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import Header from "@/components/Header";
 import { truncateAddress } from "@/lib/solana";
 import { getPublicProfile, type UserProfile, type ProfileStats } from "@/lib/comments";
 import Link from "next/link";
+import BackButton from "@/components/BackButton";
 
 /* ─── SVG Icons (24x24, filled, currentColor) ─── */
 const IconBook = () => <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" /></svg>;
@@ -104,7 +104,6 @@ function ProfileContent() {
     if (!walletAddress) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
                         <p>No wallet specified.</p>
@@ -125,8 +124,8 @@ function ProfileContent() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
+                <BackButton />
                 <section className="section" style={{ paddingTop: 40, maxWidth: 800, margin: "0 auto" }}>
                     {loading ? (
                         <div className="profile-loading">
@@ -233,14 +232,6 @@ function ProfileContent() {
                     )}
                 </section>
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                    <div className="footer-solana">
-                        <span className="sol-dot" />
-                        Built on Solana
-                    </div>
-                </footer>
             </main>
         </>
     );

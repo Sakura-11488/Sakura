@@ -25,20 +25,41 @@ export interface JikanAnime {
 
 const memCache = new Map<string, { data: any; exp: number }>();
 
+let _lastJikanCall = 0;
+const JIKAN_MIN_INTERVAL = 350;
+
 async function requestJikan(url: string) {
     const now = Date.now();
     const hit = memCache.get(url);
     if (hit && now < hit.exp) return hit.data;
 
+    // Respect Jikan rate limit (~3 req/s)
+    const wait = JIKAN_MIN_INTERVAL - (now - _lastJikanCall);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _lastJikanCall = Date.now();
+
     let data: any;
     if (Capacitor.isNativePlatform()) {
         const response = await CapacitorHttp.get({ url });
+        if (response.status === 429) {
+            await new Promise(r => setTimeout(r, 1500));
+            return requestJikan(url);
+        }
         if (response.status >= 400) throw new Error(`HTTP Error: ${response.status}`);
         data = response.data;
     } else {
         const res = await fetch(url);
+        if (res.status === 429) {
+            await new Promise(r => setTimeout(r, 1500));
+            return requestJikan(url);
+        }
         if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
         data = await res.json();
+    }
+
+    // Jikan sometimes returns HTTP 200 with a JSON error body
+    if (data && typeof data.status === "number" && data.status >= 400) {
+        throw new Error(`Jikan API Error: ${data.message || data.status}`);
     }
 
     memCache.set(url, { data, exp: now + 10 * 60 * 1000 });
@@ -61,6 +82,16 @@ export async function fetchJikanTrending(): Promise<JikanAnime[]> {
         return data.data || [];
     } catch (e) {
         console.error("Jikan Trending Error", e);
+        return [];
+    }
+}
+
+export async function fetchJikanPopular(): Promise<JikanAnime[]> {
+    try {
+        const data = await requestJikan(`${JIKAN_API}/top/anime?filter=bypopularity&limit=15`);
+        return data.data || [];
+    } catch (e) {
+        console.error("Jikan Popular Error", e);
         return [];
     }
 }

@@ -374,7 +374,7 @@ function ReaderContent() {
     const router = useRouter();
     const chapterId = searchParams.get("id");
     const mangaId = searchParams.get("manga");
-    const sourceStr = searchParams.get("source") || "weebcentral";
+    const sourceStr = searchParams.get("source") || "atsumaru";
 
     const { publicKey } = useWallet();
     const { setVisible } = useSakuraWalletModal();
@@ -415,6 +415,15 @@ function ReaderContent() {
     const [orientation, setOrientation] = useState<'portrait' | 'landscape'>(() =>
         (getLocal<string>('sakura_reading_orientation', 'portrait') as 'portrait' | 'landscape') || 'portrait'
     );
+
+    // Escape key to go back
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === "Escape") { e.preventDefault(); router.back(); }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [router]);
 
     // Double-tap for scroll mode
     const lastScrollTap = useRef(0);

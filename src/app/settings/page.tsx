@@ -1,6 +1,5 @@
 "use client";
 
-import Header from "@/components/Header";
 import { useState, useEffect } from "react";
 import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -11,6 +10,7 @@ import { checkPassStatus } from "@/lib/pass-check";
 import { getCreatorProfile, searchCreators, type CreatorProfile } from "@/lib/creator";
 import Link from "next/link";
 import LottieIcon from "@/components/LottieIcon";
+import BackButton from "@/components/BackButton";
 import { schedulePushSettings } from "@/lib/cloud-sync";
 import { APP_VERSION } from "@/lib/app-version";
 
@@ -154,8 +154,8 @@ export default function SettingsPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
+                <BackButton />
                 <section className="section" style={{ paddingTop: 40, maxWidth: 800, margin: "0 auto" }}>
                     <div className="section-header">
                         <h2 className="section-title">Settings 設定</h2>

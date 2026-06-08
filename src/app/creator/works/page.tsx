@@ -7,7 +7,6 @@ import novelIcon from "../../../../wired-flat-3140-book-open-hover-pinch.json";
 import mangaIcon from "../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
 import animeIcon from "../../../../wired-flat-2440-goku-hover-pinch.json";
 
-import Header from "@/components/Header";
 import LottieIcon from "@/components/LottieIcon";
 import { getCreatorWorksByCreator, getWorkReleases } from "@/lib/creator-works";
 import type { CreatorWork, WorkRelease } from "@/lib/publishing";
@@ -69,7 +68,6 @@ export default function CreatorWorksPage() {
     if (!connected || !wallet) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <p style={{ fontSize: 48, margin: "0 0 16px" }}>🎬</p>
@@ -87,7 +85,6 @@ export default function CreatorWorksPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40, paddingBottom: 100 }}>
                     <div className="section-header" style={{ marginBottom: 14 }}>

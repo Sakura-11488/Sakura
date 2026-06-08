@@ -9,7 +9,6 @@ import novelIcon from "../../../../../wired-flat-3140-book-open-hover-pinch.json
 import mangaIcon from "../../../../../wired-flat-771-artist-painting-color-palette-hover-pinch.json";
 import animeIcon from "../../../../../wired-flat-2440-goku-hover-pinch.json";
 
-import Header from "@/components/Header";
 import LottieIcon from "@/components/LottieIcon";
 import { createCompressedMintSetupOnChain } from "@/lib/compressed-mint-setup";
 import { getWorkMintRecords } from "@/lib/creator-mints";
@@ -686,7 +685,6 @@ export default function CreatorWorkManagePage() {
     if (!connected || !wallet) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <h2 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", margin: "0 0 8px" }}>
@@ -704,7 +702,6 @@ export default function CreatorWorkManagePage() {
     if (loading) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80 }}>
                         <div className="loading-skeleton" style={{ height: 220, borderRadius: 20 }} />
@@ -717,7 +714,6 @@ export default function CreatorWorkManagePage() {
     if (!work) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <h2 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", margin: "0 0 8px" }}>
@@ -733,7 +729,6 @@ export default function CreatorWorkManagePage() {
     if (!isOwner) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <h2 style={{ fontSize: 22, fontWeight: 800, color: "var(--text-primary)", margin: "0 0 8px" }}>
@@ -753,7 +748,6 @@ export default function CreatorWorkManagePage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40, paddingBottom: 100 }}>
                     <div className="title-header" style={{ marginBottom: 20 }}>

@@ -12,6 +12,29 @@ import type {
     WorkRelease,
     WorkVisibility,
 } from "@/lib/publishing";
+import { TWO_HE_ANIME_ID, TWO_HE_ANIME_INFO, TWO_HE_CREATOR_WALLET } from "@/lib/2heAnime";
+
+const TWO_HE_STATIC_WORK_ID = "2heanime-static-work";
+const TWO_HE_STATIC_DATE = "2026-05-25T00:00:00.000Z";
+
+const TWO_HE_STATIC_WORK: CreatorWork = {
+    id: TWO_HE_STATIC_WORK_ID,
+    creator_wallet: TWO_HE_CREATOR_WALLET,
+    kind: "anime",
+    title: TWO_HE_ANIME_INFO.title,
+    slug: TWO_HE_ANIME_ID,
+    description: TWO_HE_ANIME_INFO.description || "",
+    genres: TWO_HE_ANIME_INFO.genres || [],
+    language: "en",
+    series_status: "ongoing",
+    publication_status: "published",
+    visibility: "public",
+    minting_enabled: false,
+    published_at: TWO_HE_STATIC_DATE,
+    release_metadata: { animeId: TWO_HE_ANIME_ID, source: "static-sakura-original" },
+    created_at: TWO_HE_STATIC_DATE,
+    updated_at: TWO_HE_STATIC_DATE,
+};
 
 export interface CreatorWorkCreateInput {
     kind: WorkKind;
@@ -40,7 +63,8 @@ export interface CreatorWorkReleaseCreateInput {
 }
 
 export async function getCreatorWorksByCreator(wallet: string): Promise<CreatorWork[]> {
-    if (!wallet || !supabase) return [];
+    const staticWorks = wallet === TWO_HE_CREATOR_WALLET ? [TWO_HE_STATIC_WORK] : [];
+    if (!wallet || !supabase) return staticWorks;
 
     const { data, error } = await supabase
         .from("creator_works")
@@ -50,13 +74,17 @@ export async function getCreatorWorksByCreator(wallet: string): Promise<CreatorW
 
     if (error) {
         console.error("getCreatorWorksByCreator:", error);
-        return [];
+        return staticWorks;
     }
 
-    return (data as CreatorWork[]) || [];
+    const works = (data as CreatorWork[]) || [];
+    return staticWorks.length && !works.some(work => work.id === TWO_HE_STATIC_WORK_ID)
+        ? [...staticWorks, ...works]
+        : works;
 }
 
 export async function getCreatorWork(workId: string): Promise<CreatorWork | null> {
+    if (workId === TWO_HE_STATIC_WORK_ID || workId === TWO_HE_ANIME_ID) return TWO_HE_STATIC_WORK;
     if (!workId || !supabase) return null;
 
     const { data, error } = await supabase

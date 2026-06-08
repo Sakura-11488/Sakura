@@ -1,14 +1,17 @@
 {
   "name": "sakura",
-  "version": "1.5.1",
+  "version": "1.8.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "node scripts/fix-biometric-gradle.js"
+    "postinstall": "node scripts/fix-biometric-gradle.js",
+    "electron": "electron .",
+    "electron:build": "cross-env NEXT_PUBLIC_CONSUMET_URL=http://127.0.0.1:4789 next build && electron-builder --win"
   },
+  "main": "electron/main.js",
   "dependencies": {
     "@capacitor-community/text-to-speech": "^8.0.0",
     "@capacitor/android": "^8.1.0",
@@ -19,6 +22,7 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/ios": "^8.1.0",
     "@capacitor/preferences": "^8.0.1",
+    "@mayanfinance/swap-sdk": "^13.3.0",
     "@metaplex-foundation/mpl-bubblegum": "^5.0.2",
     "@metaplex-foundation/umi": "^1.5.1",
     "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
@@ -40,7 +44,9 @@
     "capacitor-native-biometric": "^4.2.2",
     "cheerio": "^1.2.0",
     "crypto-js": "^4.2.0",
-    "hls.js": "^1.6.15",
+    "ethers": "^6.16.0",
+    "express": "^4.21.0",
+    "hls.js": "^1.5.20",
     "htmlparser2": "^12.0.0",
     "jszip": "^3.10.1",
     "lightweight-charts": "^5.1.0",
@@ -57,6 +63,9 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "cross-env": "^10.1.0",
+    "electron": "^41.2.1",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "patch-package": "^8.0.1",

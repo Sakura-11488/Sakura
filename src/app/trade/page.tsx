@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import Header from "@/components/Header";
+import BackButton from "@/components/BackButton";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
 import { payTradingFee } from "@/lib/percolator/fee-router";
@@ -26,6 +26,7 @@ import {
 } from "@/lib/perps-api";
 import PerpChart from "@/components/PerpChart";
 import DepositWithdrawModal from "@/components/DepositWithdrawModal";
+import { canOpenPhoenixTrade, openPhoenixTrade } from "@/lib/phoenix";
 import bs58 from "bs58";
 
 // ============ Types ============
@@ -97,6 +98,31 @@ export default function TradePage() {
     const [balance, setBalance] = useState<UserBalance | null>(null);
 
     const [showDepositModal, setShowDepositModal] = useState(false);
+    const [phoenixOpening, setPhoenixOpening] = useState(false);
+    const [phoenixError, setPhoenixError] = useState("");
+
+    const handleOpenPhoenix = useCallback(async () => {
+        if (!canOpenPhoenixTrade()) {
+            setPhoenixError("Phoenix trading opens inside the Sakura desktop app.");
+            return;
+        }
+        if (!connected || !publicKey) {
+            setVisible(true);
+            return;
+        }
+        setPhoenixError("");
+        setPhoenixOpening(true);
+        try {
+            const result = await openPhoenixTrade(publicKey.toBase58());
+            if (!result.ok) {
+                setPhoenixError(result.error || "Could not open Phoenix.");
+            }
+        } catch (err: unknown) {
+            setPhoenixError(err instanceof Error ? err.message : "Could not open Phoenix.");
+        } finally {
+            setPhoenixOpening(false);
+        }
+    }, [connected, publicKey, setVisible]);
 
     // ============ Live Market Data from Backend ============
 
@@ -347,8 +373,8 @@ export default function TradePage() {
 
     return (
         <>
-            <Header />
             <main className="main-content perp-page">
+                <BackButton />
                 {/* ===== Top Market Info Bar ===== */}
                 <div className="perp-market-bar">
                     <div className="perp-pair">
@@ -397,7 +423,22 @@ export default function TradePage() {
                             </span>
                         </div>
                     </div>
+
+                    <div className="perp-market-actions">
+                        <button
+                            type="button"
+                            className="perp-phoenix-btn"
+                            onClick={handleOpenPhoenix}
+                            disabled={phoenixOpening}
+                            title="Open Phoenix perpetuals in Sakura with your embedded wallet"
+                        >
+                            {phoenixOpening ? "Opening Phoenix…" : "Trade on Phoenix"}
+                        </button>
+                    </div>
                 </div>
+                {phoenixError && (
+                    <div className="perp-phoenix-note">{phoenixError}</div>
+                )}
 
                 {/* ===== Main Trading Grid ===== */}
                 <div className="perp-grid">

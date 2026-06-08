@@ -3,7 +3,7 @@ import { registerPlugin, PluginListenerHandle } from '@capacitor/core';
 export interface DownloadProgressEvent {
     episodeId: string;
     progress: number;
-    state: 'extracting' | 'downloading' | 'completed' | 'error';
+    state: 'extracting' | 'downloading' | 'completed' | 'error' | 'cancelled';
     filePath?: string;
 }
 
@@ -20,6 +20,9 @@ interface AnimePlugin {
         episodeId?: string;
         hasNext?: boolean;
         nextEpisodeTitle?: string;
+        /** Intro window in seconds (from stream metadata). Native player only. */
+        introStart?: number;
+        introEnd?: number;
     }): Promise<{ success: boolean; completed: boolean }>;
 
     playLocalEpisode(options: {
@@ -28,14 +31,22 @@ interface AnimePlugin {
         episodeId?: string;
         hasNext?: boolean;
         nextEpisodeTitle?: string;
+        introStart?: number;
+        introEnd?: number;
     }): Promise<{ success: boolean; completed: boolean }>;
 
     downloadEpisode(options: {
         episodeId: string;
         m3u8Url: string;
+        referer?: string;
+        isM3U8?: boolean;
         title?: string;
         animeTitle?: string;
     }): Promise<{ success: boolean; filePath?: string }>;
+
+    cancelDownload(options: {
+        episodeId: string;
+    }): Promise<{ cancelled: boolean }>;
 
     clearCache(): Promise<{ cleared: boolean }>;
     addListener(eventName: 'downloadProgress', handler: (event: DownloadProgressEvent) => void): Promise<PluginListenerHandle>;

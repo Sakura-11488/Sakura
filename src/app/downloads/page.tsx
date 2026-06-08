@@ -1,6 +1,5 @@
 "use client";
 
-import Header from "@/components/Header";
 import Link from "next/link";
 import { useDownloads, downloadManager } from "@/lib/downloads";
 import { useMemo, useState, useEffect, useCallback } from "react";
@@ -149,7 +148,6 @@ export default function DownloadsPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content" style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                     <div>

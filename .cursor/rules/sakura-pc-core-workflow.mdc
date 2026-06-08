@@ -1,0 +1,84 @@
+---
+description: Sakura PC mandatory stack, build, and desktop deploy workflow for agents
+alwaysApply: true
+---
+
+# Sakura PC — core workflow (always follow)
+
+This rule applies to **every** agent turn in this repo. It complements the other `.cursor/rules/*` files (Supabase, Solana, media, etc.); when in conflict on **build or Electron delivery**, this rule wins.
+
+## What this project is
+
+- **Next.js** (App Router, static export where applicable) + **React** client UI.
+- **Electron** desktop shell (`electron/main.js`, `electron/preload.js`); production loads the built web app (`app://` or file protocol per existing setup).
+- **HiAnime backend** bundled as `hianime-node` (port **4789**); the renderer talks to it via `NEXT_PUBLIC_CONSUMET_URL` (typically `http://localhost:4789` at build time for Electron).
+- **Capacitor** types/plugins** appear in shared code; treat **Electron + web** as first-class; do not break Android/iOS paths without an explicit request.
+
+## Agent behavior (non-negotiable)
+
+- **Execute** build and copy steps yourself when the user asks for a desktop build or “send to desktop” — do not only paste instructions.
+- Prefer **PowerShell-safe** commands on Windows: use `;` instead of `&&` when chaining in PowerShell, or run separate invocations.
+- Keep changes **minimal and task-scoped**; do not refactor unrelated modules or add docs the user did not ask for.
+- After substantive app changes that affect the packaged app, assume a **full desktop build + copy to Desktop** is expected unless the user explicitly opts out.
+
+## Build — when to run
+
+Run a full pipeline when:
+
+- The user asks to **build**, **package**, **electron build**, **release**, or **copy to desktop**; or
+- You changed **Electron** (`electron/**`), **`hianime-node/**`**, **Next config**, **env vars baked into the client**, or anything that affects the **packaged** `.exe` / `win-unpacked` output.
+
+## Build — standard sequence (Windows)
+
+From the repo root (path contains `sakura-pc`):
+
+1. **Optional clean** (recommended after dependency or Next config changes):
+
+   `if (Test-Path .next) { Remove-Item -Recurse -Force .next }`
+
+2. **Next.js production build** (required before Electron pack):
+
+   `npx next build`
+
+3. **Electron / Windows artifact** (uses `electron-builder` per `package.json`):
+
+   `npx electron-builder --win`
+
+   Use the same **`NEXT_PUBLIC_CONSUMET_URL`** strategy as in `package.json` (`electron:build` uses `http://localhost:4789`) so the packaged app matches production expectations.
+
+4. **Verify output** under `dist-electron\` (e.g. `win-unpacked\`, installer if configured).
+
+If a step fails, **fix or report** the error; do not declare success without a clean exit code.
+
+## Copy to Desktop — standard sequence
+
+After a successful `electron-builder` run:
+
+1. **Stop a running Sakura instance** so files are not locked:
+
+   `Stop-Process -Name "Sakura" -ErrorAction SilentlyContinue`
+
+   Then short sleep (e.g. 2 seconds) before copying.
+
+2. **Deploy folder copy** — replace the previous Desktop copy with the new `win-unpacked`:
+
+   - Remove old folder if present:
+     `if (Test-Path "$env:USERPROFILE\Desktop\Sakura") { Remove-Item -Recurse -Force "$env:USERPROFILE\Desktop\Sakura" }`
+   - Copy fresh build:
+     `Copy-Item -Recurse -Force "dist-electron\win-unpacked" "$env:USERPROFILE\Desktop\Sakura"`
+
+Use **`$env:USERPROFILE\Desktop\Sakura`** so the rule works for any Windows user; only use a hard-coded path if the user explicitly requires it.
+
+## Do not
+
+- Skip the **Next** build before **electron-builder** when producing a new desktop bundle.
+- Copy **only** `out/` without running **electron-builder** when the user asked for the **desktop app**.
+- Introduce secrets into committed files; keep tokens in env or user-level config.
+
+## Quick reference
+
+| Goal | Commands |
+|------|----------|
+| Web-only production | `npx next build` |
+| Desktop bundle | clean `.next` (optional) → `npx next build` → `npx electron-builder --win` |
+| Desktop folder for testing | copy `dist-electron\win-unpacked` → `%USERPROFILE%\Desktop\Sakura` |

@@ -592,6 +592,16 @@ function NovelReaderContent() {
         }
     };
 
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === "Escape") { e.preventDefault(); router.back(); }
+            if (e.key === "ArrowRight" && chapterNum < totalChapters) { e.preventDefault(); goChapter(chapterNum + 1); }
+            if (e.key === "ArrowLeft" && chapterNum > 1) { e.preventDefault(); goChapter(chapterNum - 1); }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [router, chapterNum, totalChapters]);
+
     const goPage = (delta: number) => {
         if (!pageContainerRef.current) return;
         const next = Math.max(0, Math.min(totalPages - 1, currentPage + delta));

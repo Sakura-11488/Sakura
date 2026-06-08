@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
+import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
 
 interface MangaCardProps {
     slug: string;
@@ -23,11 +26,24 @@ const MangaCard = memo(function MangaCard({
     rating,
     source
 }: MangaCardProps) {
+    const [imgSrc, setImgSrc] = useState(() => imageOrPlaceholder(cover));
+
+    useEffect(() => {
+        setImgSrc(imageOrPlaceholder(cover));
+    }, [cover]);
+
     return (
-        <Link href={`/title?id=${slug}&source=${source || 'weebcentral'}`} className="manga-card">
+        <Link href={`/title?id=${slug}&source=${source || 'atsumaru'}`} className="manga-card">
             <div className="manga-card-cover">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={cover} alt={title} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+                <img
+                    src={imgSrc}
+                    alt={title}
+                    loading="lazy"
+                    decoding="async"
+                    referrerPolicy="no-referrer"
+                    onError={() => setImgSrc(SAKURA_PLACEHOLDER_IMAGE)}
+                />
                 <div className="manga-card-badge">
                     {/* Removed source badge based on user request to make it cleaner */}
                     {follows ? (

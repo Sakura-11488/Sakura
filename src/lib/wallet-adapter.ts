@@ -35,7 +35,11 @@ export class SakuraNativeWalletAdapter extends BaseMessageSignerWalletAdapter {
 
     async connect(): Promise<void> {
         try {
-            if (this.connected || this.connecting) return;
+            if (this.connected) return;
+            // Prior connect may have aborted without clearing the lock (Electron / React races).
+            if (this._connecting) {
+                this._connecting = false;
+            }
             if (this._readyState !== WalletReadyState.Installed) throw new WalletNotReadyError();
 
             this._connecting = true;
@@ -60,11 +64,21 @@ export class SakuraNativeWalletAdapter extends BaseMessageSignerWalletAdapter {
         }
     }
 
+    /**
+     * After create/import we already know the pubkey; avoids a second Preferences round-trip
+     * and fixes Solana adapter "return early" if _connecting was stuck.
+     */
+    applyPersistedPublicKey(base58PublicKey: string): void {
+        this._connecting = false;
+        const pk = new PublicKey(base58PublicKey);
+        this._publicKey = pk;
+        this.emit('connect', pk);
+    }
+
     async disconnect(): Promise<void> {
-        if (this._publicKey) {
-            this._publicKey = null;
-            this.emit('disconnect');
-        }
+        this._publicKey = null;
+        this._connecting = false;
+        this.emit('disconnect');
     }
 
     async signTransaction<T extends Transaction | VersionedTransaction>(transaction: T): Promise<T> {

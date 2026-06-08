@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp"
+    },
+    "solanaMcp": {
+      "type": "http",
+      "url": "https://mcp.solana.com/mcp"
+    }
+  }
+}

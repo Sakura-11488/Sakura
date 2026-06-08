@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import Header from "@/components/Header";
 import Link from "next/link";
 import bs58 from "bs58";
 import {
@@ -292,7 +291,6 @@ export default function NovelPublishPage() {
     if (!connected || !wallet) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <p style={{ fontSize: 48, margin: "0 0 16px" }}>✍️</p>
@@ -306,7 +304,6 @@ export default function NovelPublishPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
@@ -715,10 +712,6 @@ export default function NovelPublishPage() {
                     )}
                 </section>
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — 創作の場</p>
-                    <p className="footer-text">© 2026 Sakura.</p>
-                </footer>
             </main>
         </>
     );

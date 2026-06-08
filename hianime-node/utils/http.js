@@ -9,9 +9,10 @@ async function fetchText(url, opts = {}) {
   };
 
   const controller = new AbortController();
+  const timeoutMs = opts.timeout || REQUEST_TIMEOUT_MS;
   const timeout = setTimeout(
-    () => controller.abort(),
-    opts.timeout || REQUEST_TIMEOUT_MS
+    () => controller.abort(new Error(`HTTP timeout after ${timeoutMs}ms for ${url}`)),
+    timeoutMs
   );
 
   try {
@@ -22,6 +23,11 @@ async function fetchText(url, opts = {}) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`HTTP timeout after ${timeoutMs}ms for ${url}`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -46,9 +52,10 @@ async function fetchBuffer(url, opts = {}) {
   };
 
   const controller = new AbortController();
+  const timeoutMs = opts.timeout || REQUEST_TIMEOUT_MS;
   const timeout = setTimeout(
-    () => controller.abort(),
-    opts.timeout || REQUEST_TIMEOUT_MS
+    () => controller.abort(new Error(`HTTP timeout after ${timeoutMs}ms for ${url}`)),
+    timeoutMs
   );
 
   try {
@@ -59,6 +66,11 @@ async function fetchBuffer(url, opts = {}) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.arrayBuffer();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`HTTP timeout after ${timeoutMs}ms for ${url}`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

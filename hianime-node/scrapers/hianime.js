@@ -27,16 +27,20 @@ async function search(keyword) {
   var $ = cheerio.load(html);
   var results = [];
   $(".flw-item").each(function(_, element) {
-    var link = $(element).find("a.d-title, a.film-poster-ahref").first();
-    var href = link.attr("href") || $(element).find("a[href*='/watch/']").first().attr("href") || "";
+    var $el = $(element);
+    var link = $el.find("a.d-title, a.film-poster-ahref").first();
+    var href = link.attr("href") || $el.find("a[href*='/watch/']").first().attr("href") || "";
     var slugMatch = href.match(/\/watch\/([^/?#]+?)(?:\/ep-\d+)?$/);
-    var title = $(element).find("a.d-title").first().text().trim() || $(element).find(".film-name a").first().text().trim();
-    var poster = $(element).find(".film-poster-img").first().attr("src") || "";
+    var title = $el.find("a.d-title").first().text().trim() || $el.find(".film-name a").first().text().trim();
+    var poster = $el.find(".film-poster-img").first().attr("src") || "";
+    var tip = $el.find(".film-poster").first().attr("data-tip");
+    var animeIdFromSearch = tip && /^\d+$/.test(String(tip).trim()) ? String(tip).trim() : "";
     if (slugMatch && title) {
       results.push({
         slug: slugMatch[1],
         name: decodeHtml(title),
         poster: poster,
+        animeId: animeIdFromSearch,
       });
     }
   });
@@ -85,6 +89,28 @@ async function getEpisodes(animeId) {
       hasDub: dubMatch ? dubMatch[1] === "1" : false,
       title: titleMatch ? decodeHtml(titleMatch[1].trim()) : "Episode " + num[1],
     });
+  }
+
+  // Fallback: site markup may change; scan for episode numbers in ep-item / ssl-item blocks
+  if (episodes.length === 0 && html && html.length > 10) {
+    var seen = Object.create(null);
+    var numRe = /data-number="(\d+)"|data-num="(\d+)"/g;
+    var nm;
+    while ((nm = numRe.exec(html)) !== null) {
+      var n = parseInt(nm[1] || nm[2], 10);
+      if (n > 0 && !seen[n]) {
+        seen[n] = true;
+        episodes.push({
+          number: n,
+          slug: String(n),
+          mal: "",
+          ids: "",
+          hasSub: true,
+          hasDub: false,
+          title: "Episode " + n,
+        });
+      }
+    }
   }
 
   return episodes.sort(function(left, right) {
@@ -296,10 +322,143 @@ async function resolveEmbedForEpisode(slug, epNum, category) {
   });
 }
 
+async function resolveEmbedsForEpisode(slug, epNum, category) {
+  category = category || "sub";
+
+  var info = await getInfo(slug);
+  if (!info.animeId) {
+    throw makeStageError("info", "ANIME_ID_NOT_FOUND", "Could not resolve animeId for " + slug, { slug: slug });
+  }
+
+  var episodes = await getEpisodes(info.animeId);
+  var episode = episodes.find(function(entry) {
+    return entry.number === epNum;
+  });
+  if (!episode) {
+    throw makeStageError("episodes", "EPISODE_NOT_FOUND", "Episode " + epNum + " not found", {
+      slug: slug,
+      animeId: info.animeId,
+      requestedEpisode: epNum,
+      episodeCount: episodes.length,
+      firstEpisode: episodes[0] ? episodes[0].number : null,
+      lastEpisode: episodes.length ? episodes[episodes.length - 1].number : null,
+    });
+  }
+
+  var availableCategories = [];
+  if (episode.hasSub) availableCategories.push("sub");
+  if (episode.hasDub) availableCategories.push("dub");
+
+  var allServers = [];
+  if (episode.ids) {
+    allServers = allServers.concat(await getServersFromList(episode.ids));
+  }
+  if (episode.mal) {
+    allServers = allServers.concat(await getServersFromMal(episode.mal, episode.slug));
+  }
+
+  if (!allServers.length) {
+    throw makeStageError("servers", "NO_SERVERS", "No playback servers found for episode " + epNum, {
+      slug: slug,
+      animeId: info.animeId,
+      requestedEpisode: epNum,
+      availableCategories: availableCategories,
+      episodeMeta: {
+        ids: episode.ids || "",
+        mal: episode.mal || "",
+      },
+    });
+  }
+
+  var filtered = allServers.filter(function(server) {
+    return server.type === category;
+  });
+  if (filtered.length === 0) {
+    filtered = allServers;
+  }
+
+  var tryList = sortServersForPlayback(filtered);
+  var embeds = [];
+  var serverErrors = [];
+
+  for (var index = 0; index < tryList.length; index += 1) {
+    var server = tryList[index];
+    try {
+      var embed = await getEmbedFromServer(server.linkId);
+      if (embed && embed.url) {
+        embeds.push({
+          embedUrl: embed.url,
+          serverName: server.name,
+          type: server.type,
+          skipData: embed.skipData,
+          availableCategories: availableCategories,
+          triedServers: tryList.map(function(item) {
+            return { name: item.name, type: item.type, source: item.source };
+          }),
+        });
+      } else {
+        serverErrors.push({ server: server.name, error: "empty embed response" });
+      }
+    } catch (error) {
+      serverErrors.push({ server: server.name, error: error.message });
+      console.warn("[hianime] " + server.name + " failed while collecting embeds: " + error.message);
+    }
+  }
+
+  if (embeds.length) {
+    return { embeds: embeds, serverErrors: serverErrors };
+  }
+
+  throw makeStageError("embed", "EMBED_RESOLUTION_FAILED", "No embed URL found for category=" + category, {
+    slug: slug,
+    animeId: info.animeId,
+    requestedEpisode: epNum,
+    requestedCategory: category,
+    availableCategories: availableCategories,
+    triedServers: tryList.map(function(item) {
+      return { name: item.name, type: item.type, source: item.source };
+    }),
+    serverErrors: serverErrors,
+  });
+}
+
+async function getHomePage() {
+  var html = await http.fetchText(config.HIANIME_BASE + "/home");
+  var $ = cheerio.load(html);
+  var trending = [];
+  $("#trending-home .swiper-slide, .deslide-item, .trending-list .flw-item").each(function(_, el) {
+    var link = $(el).find("a[href*='/watch/'], a.d-title, a.film-poster-ahref").first();
+    var href = link.attr("href") || "";
+    var slugMatch = href.match(/\/watch\/([^/?#]+?)(?:\/ep-\d+)?$/);
+    var title = $(el).find(".d-title, .film-name a, .desi-head-title a").first().text().trim();
+    var poster = $(el).find(".film-poster-img, .desi-head-poster img, img").first().attr("data-src") ||
+                 $(el).find(".film-poster-img, .desi-head-poster img, img").first().attr("src") || "";
+    if (slugMatch && title) {
+      trending.push({ slug: slugMatch[1], name: decodeHtml(title), poster: poster });
+    }
+  });
+  if (trending.length === 0) {
+    $(".flw-item").each(function(_, el) {
+      var link = $(el).find("a[href*='/watch/'], a.d-title").first();
+      var href = link.attr("href") || "";
+      var slugMatch = href.match(/\/watch\/([^/?#]+?)(?:\/ep-\d+)?$/);
+      var title = $(el).find("a.d-title").first().text().trim() || $(el).find(".film-name a").first().text().trim();
+      var poster = $(el).find(".film-poster-img").first().attr("data-src") ||
+                   $(el).find(".film-poster-img").first().attr("src") || "";
+      if (slugMatch && title && trending.length < 24) {
+        trending.push({ slug: slugMatch[1], name: decodeHtml(title), poster: poster });
+      }
+    });
+  }
+  return trending;
+}
+
 module.exports = {
   search: search,
   getInfo: getInfo,
   getEpisodes: getEpisodes,
   resolveEmbedForEpisode: resolveEmbedForEpisode,
+  resolveEmbedsForEpisode: resolveEmbedsForEpisode,
+  getHomePage: getHomePage,
   __getServersFromList: getServersFromList,
 };

@@ -1,6 +1,5 @@
 "use client";
 
-import Header from "@/components/Header";
 import MangaCard from "@/components/MangaCard";
 import { useState, useEffect } from "react";
 import Link from "next/link";
@@ -54,7 +53,6 @@ export default function HistoryPage() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
@@ -96,7 +94,7 @@ export default function HistoryPage() {
                                             genres={[]}
                                             follows={0}
                                             rating={0}
-                                            source="mangadex"
+                                            source="atsumaru"
                                         />
                                     ))}
                                 </div>
@@ -161,14 +159,6 @@ export default function HistoryPage() {
                     )}
                 </section>
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                    <div className="footer-solana">
-                        <span className="sol-dot" />
-                        Built on Solana
-                    </div>
-                </footer>
             </main>
         </>
     );

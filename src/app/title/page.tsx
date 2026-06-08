@@ -1,10 +1,9 @@
 "use client";
 
-import Header from "@/components/Header";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState, useEffect, Suspense, useMemo } from "react";
-import { getSource } from "@/lib/sources";
+import { getSource, getDetailsSource } from "@/lib/sources";
 import { type Manga, type Chapter } from "@/lib/sources/types";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useSakuraWalletModal } from "@/components/SakuraWalletModal";
@@ -12,6 +11,7 @@ import dynamic from "next/dynamic";
 
 const TipModal = dynamic(() => import("@/components/TipModal"), { ssr: false });
 import LottieIcon from "@/components/LottieIcon";
+import BackButton from "@/components/BackButton";
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
 import { getCreatorProfile } from "@/lib/creator";
 import { getFavorites, addFavorite, removeFavorite } from "@/lib/supabase";
@@ -78,7 +78,7 @@ function SummaryModal({ description, onClose }: { description: string; onClose: 
 function SeriesContent() {
     const searchParams = useSearchParams();
     const id = searchParams.get("id"); // Series ID
-    const sourceStr = searchParams.get("source") || "weebcentral";
+    const sourceStr = searchParams.get("source") || "atsumaru";
 
     const [series, setSeries] = useState<Manga | null>(null);
     const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -107,7 +107,37 @@ function SeriesContent() {
                     source.getMangaDetails(id!),
                     source.getChapters(id!)
                 ]);
-                setSeries(mangaData);
+
+                let enrichedData = mangaData;
+                if (mangaData && sourceStr !== "mangadex") {
+                    try {
+                        const detailsSource = getDetailsSource();
+                        const mdResults = await detailsSource.searchManga(mangaData.title, 5);
+                        const match = mdResults.find(
+                            m => m.title.toLowerCase().trim() === mangaData.title.toLowerCase().trim()
+                        ) || mdResults[0];
+                        if (match) {
+                            const mdDetails = await detailsSource.getMangaDetails(match.id);
+                            if (mdDetails) {
+                                enrichedData = {
+                                    ...mangaData,
+                                    description: mdDetails.description || mangaData.description,
+                                    author: mdDetails.author || mangaData.author,
+                                    authorId: mdDetails.authorId || mangaData.authorId,
+                                    rating: mdDetails.rating || mangaData.rating,
+                                    follows: mdDetails.follows || mangaData.follows,
+                                    status: mdDetails.status || mangaData.status,
+                                    year: mdDetails.year || mangaData.year,
+                                    tags: mdDetails.tags?.length ? mdDetails.tags : mangaData.tags,
+                                };
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("MangaDex details enrichment failed, using primary source data:", e);
+                    }
+                }
+
+                setSeries(enrichedData);
                 setChapters(chaptersData);
             } catch (error: any) {
                 console.error("Failed to load series:", error);
@@ -117,7 +147,7 @@ function SeriesContent() {
         }
 
         loadData();
-    }, [id, sourceStr]);
+    }, [id, sourceStr, source]);
 
     useEffect(() => {
         if (!series?.authorId || sourceStr !== "mangadex") return;
@@ -221,6 +251,7 @@ function SeriesContent() {
 
     return (
         <main className="main-content">
+            <BackButton />
             {/* Tip Modal */}
             {showTipModal && (
                 <TipModal
@@ -495,14 +526,6 @@ function SeriesContent() {
                 })}
             </div>
 
-            <footer className="footer">
-                <p className="footer-jp">桜 — マンガの新しい形</p>
-                <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
-                <div className="footer-solana">
-                    <span className="sol-dot" />
-                    Built on Solana
-                </div>
-            </footer>
         </main>
     );
 }
@@ -510,7 +533,6 @@ function SeriesContent() {
 export default function SeriesPage() {
     return (
         <>
-            <Header />
             <Suspense fallback={<div className="loading-container"><div className="spinner" /></div>}>
                 <SeriesContent />
             </Suspense>

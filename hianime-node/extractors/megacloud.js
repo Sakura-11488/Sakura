@@ -217,6 +217,15 @@ async function extractEncryptedSources(sources, embedUrl, baseUrl) {
   return parsed;
 }
 
+/** CDNs often return HLS master URLs without ".m3u8" in the path; the old check left isM3U8 false and the Electron player used <video src> instead of HLS.js (black screen). */
+function isHlsSource(url, source) {
+  if (!url) return false;
+  if (/\.mp4(\?|$)/i.test(url) || source.type === "mp4") return false;
+  if (url.indexOf(".m3u8") >= 0 || source.type === "hls" || source.type === "hls_master") return true;
+  if (/uwucdn|vault-\d|rapid-cloud|rabbitstream|biananset/i.test(url)) return true;
+  return true;
+}
+
 async function extractM3u8(embedUrl) {
   var baseUrl = getBaseUrl(embedUrl);
   var videoId = getVideoId(embedUrl);
@@ -247,7 +256,7 @@ async function extractM3u8(embedUrl) {
       var url = source.file || source.url || "";
       return {
         url: url,
-        isM3U8: url.indexOf(".m3u8") >= 0 || source.type === "hls",
+        isM3U8: isHlsSource(url, source),
         quality: source.label || source.quality || "auto",
       };
     }).filter(function(source) {

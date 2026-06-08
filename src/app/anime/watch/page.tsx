@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchEpisodeSources, type StreamingSource, fetchAnimeInfo, refreshAnimeInfo, type AnimeInfo } from "@/lib/anime";
+import { PSYOP_ID, isPsyopEpisode } from "@/lib/psyopAnime";
+import { TWO_HE_ANIME_ID, isTwoHeAnimeEpisode } from "@/lib/2heAnime";
 import Link from "next/link";
 import { Capacitor } from "@capacitor/core";
 import { getLocal, STORAGE_KEYS, saveAnimeWatchEntry } from "@/lib/storage";
@@ -78,6 +80,8 @@ function AnimeWatchInner() {
     const [categoryLoading, setCategoryLoading] = useState(false);
     const [reloadToken, setReloadToken] = useState(0);
     const [rematching, setRematching] = useState(false);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const hlsRef = useRef<any>(null);
 
     const currentEpisodeIndex = anime?.episodes.findIndex((episode) => episode.id === episodeId) ?? -1;
     const currentEpisode = currentEpisodeIndex >= 0 ? anime?.episodes[currentEpisodeIndex] : null;
@@ -85,7 +89,7 @@ function AnimeWatchInner() {
         ? anime?.episodes[currentEpisodeIndex + 1]
         : null;
     const errorGuidance = error ? getErrorGuidance(error) : null;
-    const canRematch = !!error && (
+    const canRematch = !!error && !isPsyopEpisode(episodeId) && !isTwoHeAnimeEpisode(episodeId) && (
         error.stage === "mapping"
         || error.stage === "episodes"
         || error.code === "MISSING_SLUG"
@@ -121,7 +125,9 @@ function AnimeWatchInner() {
 
                 if (animeData) {
                     setAnime(animeData);
-                    if (!animeData.episodes.some((episode) => episode.id === episodeId)) {
+                    const isPsyop = id === PSYOP_ID;
+                    const isTwoHeAnime = id === TWO_HE_ANIME_ID;
+                    if (!isPsyop && !isTwoHeAnime && !animeData.episodes.some((episode) => episode.id === episodeId)) {
                         const currentNumber = parseEpisodeNumber(episodeId);
                         throw {
                             message: "The current episode is missing from the matched provider list.",
@@ -296,6 +302,12 @@ function AnimeWatchInner() {
                     episodeId,
                     hasNext: !!nextEp,
                     nextEpisodeTitle: nextEp?.title || (nextEp ? `Episode ${nextEp.number}` : ""),
+                    ...(source.intro != null
+                    && typeof source.intro.start === "number"
+                    && typeof source.intro.end === "number"
+                    && source.intro.end > source.intro.start
+                        ? { introStart: source.intro.start, introEnd: source.intro.end }
+                        : {}),
                 });
             }
 
@@ -310,7 +322,11 @@ function AnimeWatchInner() {
                     image: anime.image,
                     timestamp: Date.now(),
                 });
-                router.push(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
+                // Auto-advance: replace the current entry instead of pushing
+                // a new one. Otherwise a binge of N episodes leaves N entries
+                // in the back stack and the user has to tap Back N times to
+                // get back to the details page they came from.
+                router.replace(`/anime/watch?id=${encodeURIComponent(id)}&ep=${encodeURIComponent(nextEp.id)}`);
             }
         } catch (playError) {
             console.error("[Anime] Native playback error:", playError);
@@ -326,6 +342,102 @@ function AnimeWatchInner() {
             playNative();
         }
     }, [isNative, anime, source, error, nativePlaying, playTriggered, playNative]);
+
+    useEffect(() => {
+        if (isNative || !source?.url) return;
+        const video = videoRef.current;
+        if (!video) return;
+
+        let hls: any = null;
+        let disposed = false;
+
+        const startWebPlayback = async () => {
+            if ((window as any).electronAPI?.setStreamReferer) {
+                await (window as any).electronAPI.setStreamReferer(source.referer || "");
+            }
+            if (disposed) return;
+
+            if (!source.isM3U8) {
+                video.src = source.url;
+                video.play().catch(() => {});
+                return;
+            }
+
+            const Hls = (await import("hls.js")).default;
+            if (Hls.isSupported()) {
+                hls = new Hls({
+                    enableWorker: false,
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 60,
+                });
+                hlsRef.current = hls;
+                hls.loadSource(source.url);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    video.play().catch(() => {});
+                });
+                hls.on(Hls.Events.ERROR, (_: any, data: any) => {
+                    if (!data?.fatal) return;
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+                    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+                    else {
+                        setError({
+                            message: "Fatal playback error.",
+                            code: "HLS_FATAL",
+                            stage: "extractor",
+                            details: {
+                                hlsDetails: data?.details,
+                                hlsError: String(data?.error?.message || data?.error || ""),
+                            },
+                        });
+                    }
+                });
+                return;
+            }
+
+            if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                video.src = source.url;
+                video.play().catch(() => {});
+                return;
+            }
+
+            setError({
+                message: "This device cannot play the current HLS stream.",
+                code: "HLS_NOT_SUPPORTED",
+                stage: "extractor",
+            });
+        };
+
+        startWebPlayback();
+
+        return () => {
+            disposed = true;
+            if (hls) hls.destroy();
+            hlsRef.current = null;
+        };
+    }, [isNative, source]);
+
+    // Suppress duplicate Space-bar pause/play on web. The embedded iframe
+    // player already handles Space; if focus passes to the parent document,
+    // the page would also fire its own scroll/play handler, so we swallow
+    // the keystroke and forward it to the iframe.
+    useEffect(() => {
+        if (isNative) return;
+        if (typeof window === "undefined") return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.code !== "Space" && e.key !== " ") return;
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName?.toLowerCase();
+            if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+            e.preventDefault();
+            const iframe = document.querySelector("iframe") as HTMLIFrameElement | null;
+            if (iframe) {
+                try { iframe.focus(); } catch { /* ignore */ }
+            }
+        };
+        window.addEventListener("keydown", onKeyDown, { capture: true });
+        return () => window.removeEventListener("keydown", onKeyDown, { capture: true } as any);
+    }, [isNative]);
 
     if (loading) {
         return (
@@ -441,7 +553,7 @@ function AnimeWatchInner() {
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {availableCategories.length > 1 && (
+                    {!isPsyopEpisode(episodeId) && availableCategories.length > 1 && (
                         <button
                             onClick={toggleCategory}
                             disabled={categoryLoading}
@@ -501,15 +613,17 @@ function AnimeWatchInner() {
                         </button>
                     </div>
                 ) : (
-                    <iframe
-                        src={source?.url}
-                        allowFullScreen
+                    <video
+                        ref={videoRef}
+                        controls
+                        playsInline
                         style={{
                             width: "100%",
                             height: "100%",
                             minHeight: "400px",
                             border: "none",
                             background: "black",
+                            objectFit: "contain",
                         }}
                     />
                 )}
@@ -528,6 +642,8 @@ function AnimeWatchInner() {
                     <h3 style={{ margin: "0 0 4px 0", fontSize: 18 }}>{currentEpisode?.title || `Episode ${currentEpisode?.number}`}</h3>
                     <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 14 }}>
                         {(() => {
+                            if (isPsyopEpisode(episodeId)) return "PsyopAnime \u00d7 Sakura";
+                            if (isTwoHeAnimeEpisode(episodeId)) return "2heAnime x Sakura";
                             const allDownloads = typeof window !== "undefined" ? getLocal<Record<string, any>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}) : {};
                             return allDownloads[episodeId]?.state === "completed" ? "Playing offline" : "Streaming via Sakura Engine";
                         })()}

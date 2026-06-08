@@ -17,10 +17,13 @@ export const metadata: Metadata = {
 };
 
 import MobileNavHandler from "@/components/MobileNavHandler";
-import BottomNav from "@/components/BottomNav";
 import FloatingTradeWidget from "@/components/FloatingTradeWidget";
 import CloudSyncProvider from "@/components/CloudSyncProvider";
 import TermsGate from "@/components/TermsGate";
+import Sidebar from "@/components/Sidebar";
+import HttpImageShim from "@/components/HttpImageShim";
+import ComradeModeTransition from "@/components/ComradeModeTransition";
+import { I18nProvider } from "@/lib/i18n/I18nProvider";
 
 export default function RootLayout({
   children,
@@ -61,15 +64,21 @@ export default function RootLayout({
           ))}
         </div>
 
-        <SolanaProvider>
-          <TermsGate>
-            <CloudSyncProvider />
-            <MobileNavHandler />
-            {children}
-            <FloatingTradeWidget />
-            <BottomNav />
-          </TermsGate>
-        </SolanaProvider>
+        <HttpImageShim />
+        <I18nProvider>
+          <SolanaProvider>
+            <ComradeModeTransition />
+            <TermsGate>
+              <CloudSyncProvider />
+              <MobileNavHandler />
+              <Sidebar />
+              <div className="app-main">
+                {children}
+              </div>
+              <FloatingTradeWidget />
+            </TermsGate>
+          </SolanaProvider>
+        </I18nProvider>
       </body>
     </html>
   );

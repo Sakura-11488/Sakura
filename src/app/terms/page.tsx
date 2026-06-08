@@ -1,7 +1,7 @@
 "use client";
 
-import Header from "@/components/Header";
 import Link from "next/link";
+import BackButton from "@/components/BackButton";
 
 const lastUpdated = "March 26, 2026";
 const supportEmail = "sakuramanga162@gmail.com";
@@ -9,8 +9,8 @@ const supportEmail = "sakuramanga162@gmail.com";
 export default function TermsPage() {
     return (
         <>
-            <Header />
             <main className="main-content">
+                <BackButton />
                 <section className="section" style={{ paddingTop: 40, maxWidth: 860, margin: "0 auto", paddingBottom: 120 }}>
                     <div className="section-header" style={{ marginBottom: 24 }}>
                         <h2 className="section-title">Terms of Service</h2>

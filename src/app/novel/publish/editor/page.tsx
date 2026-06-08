@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
-import Header from "@/components/Header";
 import {
     getNovel, getChapterContent, createChapter, updateChapter,
     publishChapter, deleteChapter, type Novel,
@@ -86,7 +85,6 @@ function ChapterEditorContent() {
     if (!wallet) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <p style={{ color: "var(--text-muted)" }}>Connect wallet to edit</p>
@@ -98,7 +96,6 @@ function ChapterEditorContent() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 32 }}>
                     {/* Top bar */}

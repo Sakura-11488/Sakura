@@ -1,0 +1,12 @@
+---
+description: HiAnime bridge and HLS streaming — avoid regressions
+globs: electron/**,hianime-node/**,src/lib/anime.ts,src/app/anime/**,package.json
+alwaysApply: false
+---
+
+# HiAnime Streaming Stability
+
+- Do not change the `hls.js` version, HLS player config, or `isM3U8` / HLS URL detection without an explicit user request and a regression check in the packaged Electron player.
+- Do not alter Electron `webRequest` handling for media streams (including `Referer`, `Origin`, or which URLs count as streaming) in `electron/main.js` without a strong, stated reason.
+- Do not refactor `hianime-node` extractors or the bridge process (`spawn`, `cwd`, `app.asar.unpacked`, port `4789`) without verifying search, episode lists, and playback after the change.
+- Prefer small, additive fixes; avoid bundling unrelated refactors with streaming or bridge changes.

@@ -50,6 +50,10 @@ scripts/test-*
 
 # build artifacts
 build.log
+/dist-electron/
+/dist-electron-fresh/
+/release-build/
+*.zip
 
 # Anchor / Solana build artifacts & keypairs
 /target/
@@ -60,14 +64,6 @@ Cargo.lock
 *.keystore
 *.jks
 android/gradle.properties
-
-# Docs & Supabase SQL — keep local only (not in repo)
-*.md
-!TERMS.md
-!PRIVACY.md
-!COPYRIGHT.md
-supabase*.sql
-comments_schema.sql
 
 # reference repos
 aniyomi-main/
@@ -100,3 +96,10 @@ android/app/src/main/java/com/millw14/sakura/anime/CloudflareBypass.kt
 # local tool artifacts
 supabase/.temp/
 hianime-node/node_modules/
+mcp.txt
+droplet-resp.json
+
+# Shared Cursor project config/rules are intentionally trackable for PC dev handoff.
+
+# Local-only AI provider key (loaded by electron main process; never bundled into renderer)
+electron/sakura-ai.config.json

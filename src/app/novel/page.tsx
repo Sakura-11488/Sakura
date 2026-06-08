@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import Header from "@/components/Header";
 import Link from "next/link";
 import { getNovels, NOVEL_GENRES, type Novel } from "@/lib/novel";
 import {
@@ -111,6 +110,91 @@ const COMBINED_GENRES = [
     ...ALLNOVEL_GENRES.map(g => ({ ...g, source: "external" as const })),
 ];
 const uniqueGenres = Array.from(new Map(COMBINED_GENRES.map(g => [g.label, g])).values());
+
+function NovelSpotlightCarousel({ items }: { items: UnifiedNovel[] }) {
+    const [current, setCurrent] = useState(0);
+    const timerRef = useRef<any>(null);
+    const slides = items.slice(0, 5);
+
+    useEffect(() => {
+        if (slides.length <= 1) return;
+        timerRef.current = setInterval(() => setCurrent(p => (p + 1) % slides.length), 5000);
+        return () => clearInterval(timerRef.current);
+    }, [slides.length]);
+
+    if (slides.length === 0) return null;
+    const n = slides[current];
+
+    return (
+        <div className="spotlight-carousel">
+            <div className="spotlight-bg" style={{ backgroundImage: `url(${n.cover || ""})` }} />
+            <div className="spotlight-content">
+                <div className="spotlight-cover">
+                    {n.cover ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={n.cover} alt={n.title} referrerPolicy="no-referrer" />
+                    ) : (
+                        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #1a0a2e, #0a0812)" }}>
+                            <BookIcon size={48} />
+                        </div>
+                    )}
+                </div>
+                <div className="spotlight-info">
+                    <h2 className="spotlight-title">{n.title}</h2>
+                    <div className="spotlight-tags">
+                        {n.genres.slice(0, 3).map(t => (
+                            <span key={t} className="spotlight-tag">{t}</span>
+                        ))}
+                        {n.status && <span className="spotlight-tag" style={{ textTransform: "capitalize" }}>{n.status}</span>}
+                    </div>
+                    <Link href={n.href} className="spotlight-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                        Info
+                    </Link>
+                </div>
+            </div>
+            {slides.length > 1 && (
+                <>
+                    <button className="spotlight-arrow spotlight-arrow-left" onClick={() => { setCurrent(p => (p - 1 + slides.length) % slides.length); clearInterval(timerRef.current); }} aria-label="Previous">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <button className="spotlight-arrow spotlight-arrow-right" onClick={() => { setCurrent(p => (p + 1) % slides.length); clearInterval(timerRef.current); }} aria-label="Next">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                    <div className="spotlight-dots">
+                        {slides.map((_, i) => (
+                            <button key={i} className={`spotlight-dot ${i === current ? "active" : ""}`} onClick={() => { setCurrent(i); clearInterval(timerRef.current); }} />
+                        ))}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
+function HorizontalScroll({ title, linkText, linkHref, children }: {
+    title: string; linkText?: string; linkHref?: string; children: React.ReactNode;
+}) {
+    const ref = useRef<HTMLDivElement>(null);
+    const scroll = (dir: number) => ref.current?.scrollBy({ left: dir * 320, behavior: "smooth" });
+    return (
+        <section className="hscroll-section">
+            <div className="hscroll-header">
+                <h2 className="hscroll-title">{title}</h2>
+                <div className="hscroll-controls">
+                    {linkText && linkHref && <Link href={linkHref} className="hscroll-link">{linkText}</Link>}
+                    <button className="hscroll-arrow" onClick={() => scroll(-1)} aria-label="Scroll left">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <button className="hscroll-arrow" onClick={() => scroll(1)} aria-label="Scroll right">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div className="hscroll-track" ref={ref}>{children}</div>
+        </section>
+    );
+}
 
 export default function NovelBrowsePage() {
     const [sakuraNovels, setSakuraNovels] = useState<Novel[]>([]);
@@ -239,168 +323,189 @@ export default function NovelBrowsePage() {
         ...sakuraNovels.map(toUnified),
         ...externalNovels.map(externalToUnified),
     ];
-    const featured = sakuraNovels.slice(0, 3);
+    const isDefaultBrowse = !isSearching && selectedGenre === null && !loading;
+
+    const spotlightNovels: UnifiedNovel[] = externalNovels.length > 0
+        ? externalNovels.slice(0, 5).map(externalToUnified)
+        : sakuraNovels.slice(0, 5).map(toUnified);
 
     return (
-        <>
-            <Header />
-            <main className="main-content">
-                <section className="section" style={{ paddingTop: 40 }}>
-                    <div className="section-header">
-                        <h2 className="section-title">小説</h2>
-                        <p className="section-subtitle">Browse & Discover Novels</p>
+        <main className="main-content">
+            {/* Spotlight Carousel */}
+            {isDefaultBrowse && spotlightNovels.length > 0 && (
+                <NovelSpotlightCarousel items={spotlightNovels} />
+            )}
+
+            <section className="section" style={{ paddingTop: isDefaultBrowse && spotlightNovels.length > 0 ? 16 : 40 }}>
+                <div className="section-header">
+                    <h2 className="section-title">Novels</h2>
+                    <p className="section-subtitle">Browse & Discover</p>
+                </div>
+
+                {/* Search */}
+                <div className="search-bar-wrapper" ref={searchRef}>
+                    <div className="search-bar">
+                        <span className="search-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /></svg>
+                        </span>
+                        <input type="text" placeholder="Search novels..." value={search} onChange={(e) => setSearch(e.target.value)} onFocus={() => setShowRecent(true)} />
+                        {search && (<button className="search-clear" onClick={() => { setSearch(""); setShowRecent(true); }} aria-label="Clear">✕</button>)}
                     </div>
-
-                    {!isSearching && selectedGenre === null && featured.length > 0 && (
-                        <div style={{ marginBottom: 24 }}>
-                            <Link href={`/novel/details?id=${featured[0].id}`} style={{ textDecoration: "none" }}>
-                                <div style={{ position: "relative", borderRadius: 20, overflow: "hidden", height: 200, background: "#0a0a1a", border: "1px solid rgba(233,30,123,0.2)", boxShadow: "0 0 40px rgba(233,30,123,0.15), 0 8px 32px rgba(0,0,0,0.4)" }}>
-                                    {featured[0].cover_url && (
-                                        // eslint-disable-next-line @next/next/no-img-element
-                                        <img src={featured[0].cover_url} alt={featured[0].title} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: 0.45, filter: "saturate(1.2)" }} />
-                                    )}
-                                    <div style={{ position: "absolute", inset: 0, background: "linear-gradient(160deg, rgba(147,51,234,0.5) 0%, rgba(233,30,123,0.3) 30%, rgba(10,10,26,0.92) 70%)", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "24px" }}>
-                                        <span style={{ display: "inline-block", width: "fit-content", background: "linear-gradient(135deg, #E91E7B, #9333ea)", color: "#fff", fontSize: 9, fontWeight: 800, padding: "4px 12px", borderRadius: 20, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>
-                                            Featured Novel
-                                        </span>
-                                        <h3 style={{ margin: 0, color: "#fff", fontSize: 22, fontWeight: 900, lineHeight: 1.15, textShadow: "0 2px 20px rgba(233,30,123,0.4)" }}>
-                                            {featured[0].title}
-                                        </h3>
-                                        <p style={{ margin: "6px 0 0", color: "rgba(255,255,255,0.5)", fontSize: 12 }}>
-                                            {featured[0].genres.slice(0, 3).join(" · ")}
-                                        </p>
-                                    </div>
-                                </div>
-                            </Link>
-                        </div>
-                    )}
-
-                    <div className="search-bar-wrapper" ref={searchRef}>
-                        <div className="search-bar" style={{ borderColor: "rgba(255, 107, 157, 0.4)" }}>
-                            <span className="search-icon">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--sakura-pink)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" /></svg>
-                            </span>
-                            <input type="text" placeholder="Search novels..." value={search} onChange={(e) => setSearch(e.target.value)} onFocus={() => setShowRecent(true)} />
-                            {search && (<button className="search-clear" onClick={() => { setSearch(""); setShowRecent(true); }} aria-label="Clear">✕</button>)}
-                        </div>
-                        {showRecent && recentSearches.length > 0 && !search && (
-                            <div className="recent-searches">
-                                <div className="recent-searches-header">
-                                    <span className="recent-searches-title">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-                                        Recent
-                                    </span>
-                                    <button className="recent-searches-clear" onClick={clearRecentSearches}>Clear All</button>
-                                </div>
-                                {recentSearches.map((q) => (
-                                    <div key={q} className="recent-search-item">
-                                        <button className="recent-search-text" onClick={() => handleRecentClick(q)}>{q}</button>
-                                        <button className="recent-search-remove" onClick={(e) => { e.stopPropagation(); removeRecentSearch(q); }}>✕</button>
-                                    </div>
-                                ))}
+                    {showRecent && recentSearches.length > 0 && !search && (
+                        <div className="recent-searches">
+                            <div className="recent-searches-header">
+                                <span className="recent-searches-title">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+                                    Recent
+                                </span>
+                                <button className="recent-searches-clear" onClick={clearRecentSearches}>Clear All</button>
                             </div>
-                        )}
-                    </div>
-
-                    {!isSearching && (
-                        <div className="genre-filters" style={{ maxWidth: 700, margin: "0 auto 24px" }}>
-                            <button className={`genre-chip ${selectedGenre === null ? "active" : ""}`} onClick={() => handleGenreSelect(null)}>All</button>
-                            {uniqueGenres.map(g => (
-                                <button key={g.label} className={`genre-chip ${selectedGenre === g.label ? "active" : ""}`} onClick={() => handleGenreSelect(g.label)}>{g.label}</button>
+                            {recentSearches.map((q) => (
+                                <div key={q} className="recent-search-item">
+                                    <button className="recent-search-text" onClick={() => handleRecentClick(q)}>{q}</button>
+                                    <button className="recent-search-remove" onClick={(e) => { e.stopPropagation(); removeRecentSearch(q); }}>✕</button>
+                                </div>
                             ))}
                         </div>
                     )}
+                </div>
 
-                    {isSearching && (
-                        searchLoading ? (
-                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                {Array.from({ length: 6 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
-                            </div>
-                        ) : searchResults.length > 0 ? (
-                            <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                {searchResults.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
-                            </div>
+                {/* Genre chips */}
+                {!isSearching && (
+                    <div className="genre-filters" style={{ maxWidth: 700, margin: "0 auto 24px" }}>
+                        <button className={`genre-chip ${selectedGenre === null ? "active" : ""}`} onClick={() => handleGenreSelect(null)}>All</button>
+                        {uniqueGenres.map(g => (
+                            <button key={g.label} className={`genre-chip ${selectedGenre === g.label ? "active" : ""}`} onClick={() => handleGenreSelect(g.label)}>{g.label}</button>
+                        ))}
+                    </div>
+                )}
+            </section>
+
+            {/* Search Results */}
+            {isSearching && (
+                <section className="section" style={{ paddingTop: 0 }}>
+                    {searchLoading ? (
+                        <div className="manga-grid">
+                            {Array.from({ length: 6 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
+                        </div>
+                    ) : searchResults.length > 0 ? (
+                        <div className="manga-grid">
+                            {searchResults.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
+                        </div>
+                    ) : (
+                        <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
+                            <p style={{ fontSize: 14 }}>No results found.</p>
+                        </div>
+                    )}
+                </section>
+            )}
+
+            {/* Genre Results */}
+            {!isSearching && selectedGenre !== null && (
+                <section className="section" style={{ paddingTop: 0 }}>
+                    <div className="section-header" style={{ marginTop: 8 }}>
+                        <h2 className="section-title" style={{ fontSize: 20 }}>{selectedGenre}</h2>
+                    </div>
+                    {genreLoading ? (
+                        <div className="manga-grid">
+                            {Array.from({ length: 6 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
+                        </div>
+                    ) : genreResults.length > 0 ? (
+                        <div className="manga-grid">
+                            {genreResults.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
+                        </div>
+                    ) : (
+                        <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
+                            <p style={{ fontSize: 14 }}>No novels found for this genre.</p>
+                        </div>
+                    )}
+                </section>
+            )}
+
+            {/* Default Browse: Horizontal sections + grid */}
+            {isDefaultBrowse && (
+                <>
+                    {/* Popular Novels — horizontal scroll */}
+                    {externalNovels.length > 0 && (
+                        <HorizontalScroll title="Popular Novels">
+                            {externalNovels.slice(0, 20).map(n => {
+                                const u = externalToUnified(n);
+                                return (
+                                    <Link key={u.id} href={u.href} className="novel-sm-card">
+                                        <div className="novel-sm-cover">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                            <img src={u.cover || "/placeholder.png"} alt={u.title} />
+                                        </div>
+                                        <p className="novel-sm-title">{u.title}</p>
+                                    </Link>
+                                );
+                            })}
+                        </HorizontalScroll>
+                    )}
+
+                    {/* Sakura Originals — horizontal scroll (if any) */}
+                    {sakuraNovels.length > 0 && (
+                        <HorizontalScroll title="Sakura Originals" linkText="Publish yours ›" linkHref="/novel/publish">
+                            {sakuraNovels.map(n => {
+                                const u = toUnified(n);
+                                return (
+                                    <Link key={u.id} href={u.href} className="novel-sm-card">
+                                        <div className="novel-sm-cover">
+                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                            <img src={u.cover || "/placeholder.png"} alt={u.title} />
+                                        </div>
+                                        <p className="novel-sm-title">{u.title}</p>
+                                        {u.genres.length > 0 && <p className="novel-sm-genre">{u.genres.slice(0, 2).join(" · ")}</p>}
+                                    </Link>
+                                );
+                            })}
+                        </HorizontalScroll>
+                    )}
+
+                    {/* Full Grid */}
+                    <section className="section" style={{ paddingTop: 8 }}>
+                        <div className="section-header">
+                            <h2 className="section-title" style={{ fontSize: 20 }}>All Novels</h2>
+                        </div>
+                        {allNovels.length > 0 ? (
+                            <>
+                                <div className="manga-grid">
+                                    {allNovels.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
+                                </div>
+                                <div style={{ textAlign: "center", marginTop: 24 }}>
+                                    <button onClick={loadMore} disabled={loadingMore}
+                                        style={{ padding: "12px 32px", borderRadius: 14, border: "1px solid rgba(255,107,157,0.3)", background: "rgba(255,107,157,0.1)", color: "var(--sakura-pink)", fontWeight: 700, fontSize: 14, cursor: loadingMore ? "wait" : "pointer" }}>
+                                        {loadingMore ? "Loading..." : "Load More"}
+                                    </button>
+                                </div>
+                            </>
                         ) : (
                             <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                <p style={{ fontSize: 14 }}>No results found.</p>
+                                <BookIcon size={64} />
+                                <p style={{ fontSize: 14, marginTop: 8 }}>No novels yet.</p>
+                                <Link href="/novel/publish" style={{ display: "inline-block", marginTop: 16, background: "var(--sakura-pink)", color: "#fff", padding: "10px 24px", borderRadius: 12, fontSize: 14, fontWeight: 600, textDecoration: "none" }}>
+                                    Start Writing
+                                </Link>
                             </div>
-                        )
-                    )}
+                        )}
+                    </section>
+                </>
+            )}
 
-                    {!isSearching && selectedGenre !== null && (
-                        <>
-                            <div className="section-header" style={{ marginTop: 8 }}>
-                                <h2 className="section-title" style={{ fontSize: 20 }}>{selectedGenre}</h2>
-                            </div>
-                            {genreLoading ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {Array.from({ length: 6 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
-                                </div>
-                            ) : genreResults.length > 0 ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {genreResults.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
-                                </div>
-                            ) : (
-                                <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                    <p style={{ fontSize: 14 }}>No novels found for this genre.</p>
-                                </div>
-                            )}
-                        </>
-                    )}
-
-                    {!isSearching && selectedGenre === null && (
-                        <>
-                            <div className="section-header" style={{ marginTop: 8 }}>
-                                <h2 className="section-title" style={{ fontSize: 20 }}>Novels</h2>
-                            </div>
-                            {loading ? (
-                                <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                    {Array.from({ length: 8 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
-                                </div>
-                            ) : allNovels.length > 0 ? (
-                                <>
-                                    <div className="manga-grid" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                                        {allNovels.map((novel) => <NovelCard key={novel.id} novel={novel} />)}
-                                    </div>
-                                    <div style={{ textAlign: "center", marginTop: 24 }}>
-                                        <button
-                                            onClick={loadMore}
-                                            disabled={loadingMore}
-                                            style={{
-                                                padding: "12px 32px", borderRadius: 14, border: "1px solid rgba(255,107,157,0.3)",
-                                                background: "rgba(255,107,157,0.1)", color: "var(--sakura-pink)",
-                                                fontWeight: 700, fontSize: 14, cursor: loadingMore ? "wait" : "pointer",
-                                            }}
-                                        >
-                                            {loadingMore ? "Loading..." : "Load More"}
-                                        </button>
-                                    </div>
-                                </>
-                            ) : (
-                                <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>
-                                    <BookIcon size={64} />
-                                    <p style={{ fontSize: 14, marginTop: 8, color: "var(--text-secondary)" }}>No novels yet. Be the first to publish!</p>
-                                    <Link href="/novel/publish" style={{ display: "inline-block", marginTop: 16, background: "var(--sakura-pink)", color: "#fff", padding: "10px 24px", borderRadius: 12, fontSize: 14, fontWeight: 600, textDecoration: "none" }}>
-                                        Start Writing
-                                    </Link>
-                                </div>
-                            )}
-                        </>
-                    )}
-
-                    <div style={{ textAlign: "center", marginTop: 40, paddingBottom: 24 }}>
-                        <Link href="/novel/publish" style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "linear-gradient(135deg, var(--sakura-pink), var(--purple-accent))", color: "#fff", padding: "12px 28px", borderRadius: 16, fontSize: 14, fontWeight: 700, textDecoration: "none", boxShadow: "0 4px 20px rgba(255,107,157,0.3)" }}>
-                            Publish Your Novel
-                        </Link>
+            {/* Loading */}
+            {!isSearching && selectedGenre === null && loading && (
+                <section className="section" style={{ paddingTop: 0 }}>
+                    <div className="manga-grid">
+                        {Array.from({ length: 8 }).map((_, i) => (<div key={i} className="loading-skeleton" style={{ aspectRatio: "2/3", borderRadius: "var(--radius-md)" }} />))}
                     </div>
                 </section>
+            )}
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — 物語の新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read novels on the blockchain.</p>
-                    <div className="footer-solana"><span className="sol-dot" />Built on Solana</div>
-                </footer>
-            </main>
-        </>
+            <div style={{ textAlign: "center", marginTop: 40, paddingBottom: 24 }}>
+                <Link href="/novel/publish" style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "linear-gradient(135deg, var(--sakura-pink), var(--purple-accent))", color: "#fff", padding: "12px 28px", borderRadius: 16, fontSize: 14, fontWeight: 700, textDecoration: "none", boxShadow: "0 4px 20px rgba(255,107,157,0.3)" }}>
+                    Publish Your Novel
+                </Link>
+            </div>
+        </main>
     );
 }

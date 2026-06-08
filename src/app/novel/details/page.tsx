@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import dynamic from "next/dynamic";
-import Header from "@/components/Header";
 import Link from "next/link";
+import BackButton from "@/components/BackButton";
 import {
     getNovel, getChapters, getProgress, getUserUnlocks, canReadChapter,
     getMilestones, type Novel, type NovelChapter, type NovelMilestone,
@@ -93,7 +93,6 @@ function ExternalDetailsContent() {
     if (loading) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 60, textAlign: "center" }}>
                         <div className="loading-skeleton" style={{ width: "100%", maxWidth: 400, height: 300, borderRadius: 20, margin: "0 auto" }} />
@@ -107,7 +106,6 @@ function ExternalDetailsContent() {
     if (!detail) {
         return (
             <>
-                <Header />
                 <main className="main-content">
                     <section className="section" style={{ paddingTop: 80, textAlign: "center" }}>
                         <p style={{ color: "var(--text-muted)", fontSize: 16 }}>Novel not found.</p>
@@ -120,8 +118,8 @@ function ExternalDetailsContent() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
+                <BackButton />
                 <div style={{ position: "relative", width: "100%", height: 280, overflow: "hidden" }}>
                     {detail.cover && (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -233,10 +231,6 @@ function ExternalDetailsContent() {
                     />
                 )}
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — 物語の新しい形</p>
-                    <p className="footer-text">© 2026 Sakura.</p>
-                </footer>
             </main>
         </>
     );
@@ -318,11 +312,11 @@ function SakuraDetailsContent() {
     };
 
     if (loading) {
-        return (<><Header /><main className="main-content"><section className="section" style={{ paddingTop: 60, textAlign: "center" }}><div className="loading-skeleton" style={{ width: "100%", maxWidth: 400, height: 300, borderRadius: 20, margin: "0 auto" }} /><div className="loading-skeleton" style={{ width: 200, height: 24, borderRadius: 8, margin: "16px auto" }} /></section></main></>);
+        return (<><main className="main-content"><section className="section" style={{ paddingTop: 60, textAlign: "center" }}><div className="loading-skeleton" style={{ width: "100%", maxWidth: 400, height: 300, borderRadius: 20, margin: "0 auto" }} /><div className="loading-skeleton" style={{ width: 200, height: 24, borderRadius: 8, margin: "16px auto" }} /></section></main></>);
     }
 
     if (!novel) {
-        return (<><Header /><main className="main-content"><section className="section" style={{ paddingTop: 80, textAlign: "center" }}><p style={{ color: "var(--text-muted)", fontSize: 16 }}>Novel not found.</p><Link href="/novel" style={{ color: "var(--sakura-pink)", fontSize: 14, marginTop: 16, display: "inline-block" }}>Back to Browse</Link></section></main></>);
+        return (<><main className="main-content"><section className="section" style={{ paddingTop: 80, textAlign: "center" }}><p style={{ color: "var(--text-muted)", fontSize: 16 }}>Novel not found.</p><Link href="/novel" style={{ color: "var(--sakura-pink)", fontSize: 14, marginTop: 16, display: "inline-block" }}>Back to Browse</Link></section></main></>);
     }
 
     const totalWords = chapters.reduce((sum, c) => sum + (c.word_count || 0), 0);
@@ -330,7 +324,6 @@ function SakuraDetailsContent() {
 
     return (
         <>
-            <Header />
             <main className="main-content">
                 <div style={{ position: "relative", width: "100%", height: 280, overflow: "hidden" }}>
                     {novel.cover_url && (
@@ -479,10 +472,6 @@ function SakuraDetailsContent() {
                     />
                 )}
 
-                <footer className="footer">
-                    <p className="footer-jp">桜 — 物語の新しい形</p>
-                    <p className="footer-text">© 2026 Sakura.</p>
-                </footer>
             </main>
         </>
     );
