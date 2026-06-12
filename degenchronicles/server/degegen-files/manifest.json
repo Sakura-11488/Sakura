@@ -1,0 +1,34 @@
+﻿{
+  "id": "degegen-files",
+  "title": "Degegen Files",
+  "description": "A weekly Sakura Original series following crypto culture, hype cycles, and inverse vibes from the trenches.",
+  "status": "Ongoing",
+  "genres": ["Sakura Original", "Crypto Satire", "Weekly Episodes"],
+  "score": 9.7,
+  "image": "cover.png",
+  "cover": "cover.png",
+  "episodes": [
+    {
+      "id": "degegen-inverse-vibe",
+      "number": 1,
+      "title": "Inverse Vibe",
+      "thumbnail": "episodes/inverse-vibe.png",
+      "videoUrl": "episodes/inverse-vibe.mp4"
+    },
+    {
+      "id": "degegen-sellor",
+      "number": 2,
+      "title": "Sellor",
+      "thumbnail": "episodes/sellor.png",
+      "videoUrl": "episodes/sellor.mov"
+    },
+    {
+      "id": "degegen-z-crash",
+      "number": 3,
+      "title": "Z-Crash",
+      "thumbnail": "episodes/z-crash.png",
+      "videoUrl": "episodes/z-crash.mov"
+    }
+  ]
+}
+

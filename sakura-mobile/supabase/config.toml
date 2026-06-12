@@ -1,0 +1,49 @@
+# https://supabase.com/docs/guides/cli/config
+
+[functions.send-expo-push]
+verify_jwt = false
+
+[functions.push-pass-reminders]
+verify_jwt = false
+
+[functions.push-manga-updates]
+verify_jwt = false
+
+[functions.push-re-engagement]
+verify_jwt = false
+
+[functions.upsert-push-token]
+verify_jwt = false
+
+[functions.notify-sakura-transfer]
+verify_jwt = false
+
+[functions.follow-creator]
+verify_jwt = false
+
+[functions.publish-creator-work]
+verify_jwt = false
+
+[functions.notify-creator-followers]
+verify_jwt = false
+
+[functions.request-creator-verification]
+verify_jwt = false
+
+[functions.creator-feed]
+verify_jwt = false
+
+[functions.creator-post]
+verify_jwt = false
+
+[functions.creator-chat]
+verify_jwt = false
+
+[functions.creator-coin-launch]
+verify_jwt = false
+
+[functions.creator-coin-verify]
+verify_jwt = false
+
+[functions.sakura-buyback-verify]
+verify_jwt = false
