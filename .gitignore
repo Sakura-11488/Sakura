@@ -26,8 +26,8 @@ degenchronicles/*.MOV
 degenchronicles/*.mp4
 degenchronicles/*.zip
 degenchronicles/icons/
-degenchronicles/server/degegen-files/episodes/
-degenchronicles/server/degegen-files/cover.png
+degenchronicles/server/2heanime/incoming/
+degenchronicles/server/2heanime/videos/
 
 .vercel
 *.tsbuildinfo

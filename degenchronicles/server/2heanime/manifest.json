@@ -1,0 +1,66 @@
+{
+  "id": "2heanime",
+  "title": "2heAnime",
+  "description": "A Sakura Original anthology of AI-powered anime shorts from 2heAnime, a 16-year-old creator building the future of anime streaming with AI.",
+  "status": "Ongoing",
+  "genres": ["AI Anime", "Sakura Original", "Anthology"],
+  "score": 9.8,
+  "image": "cover.jpg",
+  "cover": "cover.jpg",
+  "episodes": [
+    {
+      "id": "2he-were-still-here",
+      "number": 1,
+      "title": "We're Still Here",
+      "videoUrl": "videos/werestillhere.mov"
+    },
+    {
+      "id": "2he-two-titans-collide",
+      "number": 2,
+      "title": "Two Titans Collide",
+      "videoUrl": "videos/openaixai.mov"
+    },
+    {
+      "id": "2he-deal-of-the-cosmos",
+      "number": 3,
+      "title": "Deal of the Cosmos",
+      "videoUrl": "videos/dealofthecosmos.mov"
+    },
+    {
+      "id": "2he-tung-tung-sahur-taxes",
+      "number": 4,
+      "title": "Tung Tung Sahur: Taxes",
+      "videoUrl": "videos/TTT.mov"
+    },
+    {
+      "id": "2he-iceman",
+      "number": 5,
+      "title": "Iceman",
+      "videoUrl": "videos/iceman.mov"
+    },
+    {
+      "id": "2he-hantavirus",
+      "number": 6,
+      "title": "Hantavirus",
+      "videoUrl": "videos/hanta.mov"
+    },
+    {
+      "id": "2he-sienna-star",
+      "number": 7,
+      "title": "Sienna Star",
+      "videoUrl": "videos/STAR.mov"
+    },
+    {
+      "id": "2he-neet",
+      "number": 8,
+      "title": "NEET",
+      "videoUrl": "videos/neet.mov"
+    },
+    {
+      "id": "2he-trillionaire",
+      "number": 9,
+      "title": "Trillionaire",
+      "videoUrl": "videos/trillionaire.mov"
+    }
+  ]
+}

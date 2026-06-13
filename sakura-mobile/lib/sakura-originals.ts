@@ -125,6 +125,8 @@ const TWO_HE_EP_RAW: Array<[string, string, string]> = [
   ['iceman', 'iceman.mov', 'Iceman'],
   ['hantavirus', 'hanta.mov', 'Hantavirus'],
   ['sienna-star', 'STAR.mov', 'Sienna Star'],
+  ['neet', 'neet.mov', 'NEET'],
+  ['trillionaire', 'trillionaire.mov', 'Trillionaire'],
 ];
 
 const twoHeEpisodes: AnimeInfo['episodes'] = TWO_HE_EP_RAW.map(([slug, , title], idx) => ({
