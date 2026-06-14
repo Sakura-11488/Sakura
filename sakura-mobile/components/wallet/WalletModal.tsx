@@ -22,7 +22,12 @@ import * as Haptics from 'expo-haptics';
 import { useWallet } from '@/lib/wallet/context';
 import { getWalletWithBiometrics } from '@/lib/wallet/storage';
 import { getSakuraSwapQuote, executeSakuraSwap, type SwapQuote } from '@/lib/wallet/swap';
-import { sendSol } from '@/lib/wallet/connection';
+import { sendSol, sendSakura } from '@/lib/wallet/connection';
+import {
+  maxSendableSol,
+  maxSendableSakura,
+  SAKURA_SEND_SOL_RESERVE,
+} from '@/lib/wallet/balances';
 import { buildTransakBuySolUrl } from '@/lib/wallet/transak';
 import { getSolanaNetworkLabel } from '@/lib/wallet/config';
 import QRCode from 'react-native-qrcode-svg';
@@ -155,24 +160,47 @@ function ReceiveSheet({ address, onClose }: { address: string; onClose: () => vo
 }
 
 // ─── Send sheet ───────────────────────────────────────────────────────────────
+type SendAsset = 'sakura' | 'sol';
 type SendStep = 'input' | 'sending' | 'done' | 'error';
 
-function SendSheet({ solBalance, onClose, onComplete }: {
+function SendSheet({
+  solBalance,
+  sakuraBalance,
+  walletAddress,
+  onClose,
+  onComplete,
+}: {
   solBalance: number | null;
+  sakuraBalance: number | null;
+  walletAddress: string | null;
   onClose: () => void;
   onComplete: () => void;
 }) {
   const { colors } = useTheme();
+  const [asset, setAsset] = useState<SendAsset>('sakura');
   const [toAddress, setToAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [step, setStep] = useState<SendStep>('input');
   const [sendError, setSendError] = useState('');
   const [txid, setTxid] = useState('');
+  const [maxSakura, setMaxSakura] = useState(0);
 
   const bs = useMemo(() => StyleSheet.create({
     wrap: { paddingBottom: 8, gap: 10 },
     title: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, color: colors.text, textAlign: 'center' },
     sub: { fontSize: FontSize.sm, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+    assetRow: { flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 4 },
+    assetChip: {
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceSecondary,
+    },
+    assetChipActive: { borderColor: '#E84545', backgroundColor: '#E8454518' },
+    assetChipText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: colors.textSecondary },
+    assetChipTextActive: { color: '#E84545' },
     inputRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -194,6 +222,7 @@ function SendSheet({ solBalance, onClose, onComplete }: {
     inputLabel: { fontSize: FontSize.md, fontWeight: FontWeight.semibold, color: colors.textSecondary, marginHorizontal: 8 },
     maxBtn: { backgroundColor: '#E8454518', borderRadius: Radius.sm, paddingHorizontal: 10, paddingVertical: 5 },
     maxText: { fontSize: FontSize.xs, fontWeight: FontWeight.bold, color: '#E84545' },
+    hint: { fontSize: FontSize.xs, color: colors.textTertiary, textAlign: 'center', lineHeight: 17 },
     btn: {
       backgroundColor: '#E84545',
       borderRadius: Radius.full,
@@ -214,7 +243,30 @@ function SendSheet({ solBalance, onClose, onComplete }: {
     error: { color: '#FF3B30', fontSize: FontSize.sm, textAlign: 'center' },
   }), [colors]);
 
-  const maxSol = Math.max(0, Math.floor(((solBalance ?? 0) - 0.005) * 100000) / 100000);
+  const maxSol = maxSendableSol(solBalance);
+
+  useEffect(() => {
+    if (asset !== 'sakura' || !walletAddress) {
+      setMaxSakura(asset === 'sakura' ? Math.floor(sakuraBalance ?? 0) : 0);
+      return;
+    }
+    let active = true;
+    maxSendableSakura(new PublicKey(walletAddress), sakuraBalance, solBalance, toAddress)
+      .then((value) => {
+        if (active) setMaxSakura(value);
+      })
+      .catch(() => {
+        if (active) setMaxSakura(Math.floor(sakuraBalance ?? 0));
+      });
+    return () => {
+      active = false;
+    };
+  }, [asset, sakuraBalance, solBalance, toAddress, walletAddress]);
+
+  const availableLabel =
+    asset === 'sol'
+      ? `${(solBalance ?? 0).toFixed(4)} SOL`
+      : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} SAKURA`;
 
   const isValidAddress = (addr: string) => {
     try {
@@ -224,17 +276,44 @@ function SendSheet({ solBalance, onClose, onComplete }: {
     }
   };
 
+  const handleMax = () => {
+    if (asset === 'sol') {
+      setAmount(maxSol > 0 ? maxSol.toString() : '');
+      return;
+    }
+    setAmount(maxSakura > 0 ? maxSakura.toString() : '');
+  };
+
   const handleSend = async () => {
     const val = parseFloat(amount);
     if (!isValidAddress(toAddress)) { setSendError('Invalid Solana address'); return; }
     if (!val || val <= 0) { setSendError('Enter an amount'); return; }
-    if (val > maxSol) { setSendError(`Max: ${maxSol} SOL (keeping 0.005 for fees)`); return; }
+
+    if (asset === 'sol') {
+      if (val > maxSol) {
+        setSendError(`Max: ${maxSol} SOL (keeping fee reserve)`);
+        return;
+      }
+    } else {
+      if (val > maxSakura) {
+        const lowSol = (solBalance ?? 0) < SAKURA_SEND_SOL_RESERVE;
+        setSendError(
+          lowSol
+            ? `Keep at least ${SAKURA_SEND_SOL_RESERVE} SOL for network fees when sending SAKURA.`
+            : `Max sendable right now: ${maxSakura.toLocaleString()} SAKURA`,
+        );
+        return;
+      }
+    }
+
     setStep('sending');
     setSendError('');
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) throw new Error('Could not unlock wallet');
-      const id = await sendSol(keypair, toAddress, val);
+      const id = asset === 'sol'
+        ? await sendSol(keypair, toAddress, val)
+        : await sendSakura(keypair, toAddress, val);
       setTxid(id);
       setStep('done');
       onComplete();
@@ -247,10 +326,11 @@ function SendSheet({ solBalance, onClose, onComplete }: {
   };
 
   if (step === 'done') {
+    const unit = asset === 'sol' ? 'SOL' : 'SAKURA';
     return (
       <View style={bs.wrap}>
         <Text style={bs.title}>✓ Sent!</Text>
-        <Text style={bs.sub}>{amount} SOL sent successfully</Text>
+        <Text style={bs.sub}>{amount} {unit} sent successfully</Text>
         {txid ? (
           <TouchableOpacity onPress={() => Linking.openURL(`https://solscan.io/tx/${txid}`)} activeOpacity={0.7}>
             <Text style={bs.link}>View on Solscan ↗</Text>
@@ -265,8 +345,30 @@ function SendSheet({ solBalance, onClose, onComplete }: {
 
   return (
     <View style={bs.wrap}>
-      <Text style={bs.title}>Send SOL</Text>
-      <Text style={bs.sub}>Available: {solBalance?.toFixed(4) ?? '0'} SOL</Text>
+      <Text style={bs.title}>Send</Text>
+      <Text style={bs.sub}>Available: {availableLabel}</Text>
+      <Text style={bs.hint}>
+        SOL: {(solBalance ?? 0).toFixed(4)} · SAKURA: {(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+      </Text>
+
+      <View style={bs.assetRow}>
+        {(['sakura', 'sol'] as const).map((option) => (
+          <TouchableOpacity
+            key={option}
+            style={[bs.assetChip, asset === option && bs.assetChipActive]}
+            onPress={() => {
+              setAsset(option);
+              setAmount('');
+              setSendError('');
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={[bs.assetChipText, asset === option && bs.assetChipTextActive]}>
+              {option === 'sakura' ? 'SAKURA' : 'SOL'}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
       <View style={[bs.inputRow, { marginTop: 12 }]}>
         <TextInput
@@ -286,16 +388,22 @@ function SendSheet({ solBalance, onClose, onComplete }: {
           style={bs.input}
           value={amount}
           onChangeText={setAmount}
-          placeholder="0.00"
+          placeholder="0"
           placeholderTextColor={colors.textTertiary}
           keyboardType="decimal-pad"
           editable={step === 'input' || step === 'error'}
         />
-        <Text style={bs.inputLabel}>SOL</Text>
-        <TouchableOpacity onPress={() => setAmount(maxSol.toString())} style={bs.maxBtn} activeOpacity={0.7}>
+        <Text style={bs.inputLabel}>{asset === 'sol' ? 'SOL' : 'SAKURA'}</Text>
+        <TouchableOpacity onPress={handleMax} style={bs.maxBtn} activeOpacity={0.7}>
           <Text style={bs.maxText}>MAX</Text>
         </TouchableOpacity>
       </View>
+
+      {asset === 'sakura' && (solBalance ?? 0) < SAKURA_SEND_SOL_RESERVE ? (
+        <Text style={bs.hint}>
+          You need at least {SAKURA_SEND_SOL_RESERVE} SOL in this wallet to pay network fees when sending SAKURA.
+        </Text>
+      ) : null}
 
       {(sendError || step === 'error') && (
         <Text style={bs.error}>{sendError || 'Transaction failed. Try again.'}</Text>
@@ -959,7 +1067,7 @@ export default function WalletModal({ visible, onClose }: Props) {
     : route === 'receive'
       ? 'RECEIVE'
       : route === 'send'
-        ? 'SEND SOL'
+        ? 'SEND'
         : 'BUY SAKURA';
 
   if (!visible) return null;
@@ -1022,6 +1130,8 @@ export default function WalletModal({ visible, onClose }: Props) {
               <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
                 <SendSheet
                   solBalance={wallet.solBalance}
+                  sakuraBalance={wallet.sakuraBalance}
+                  walletAddress={wallet.address}
                   onClose={onTap(() => setRoute('main'))}
                   onComplete={() => { playTap(); setRoute('main'); wallet.refreshBalances(); }}
                 />

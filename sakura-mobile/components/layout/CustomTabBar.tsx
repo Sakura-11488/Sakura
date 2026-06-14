@@ -23,6 +23,7 @@ import * as Haptics from 'expo-haptics';
 import { Colors, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { playSwitch } from '@/lib/sound';
+import { useChatUnreadCount } from '@/lib/hooks/useChatUnreadCount';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const W = Dimensions.get('window').width;
@@ -40,17 +41,20 @@ const AnimeIcon   = ({ active }: { active: boolean }) =>
   <Entypo      name="folder-video" size={22} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const SearchIcon  = ({ active }: { active: boolean }) =>
   <Octicons    name="search"       size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
+const MessagesIcon = ({ active }: { active: boolean }) =>
+  <Octicons    name="comment-discussion" size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const NovelIcon   = ({ active }: { active: boolean }) =>
   <FontAwesome6 name="book"        size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const ProfileIcon = ({ active }: { active: boolean }) =>
   <FontAwesome6 name="user-large"  size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 
 const TABS = [
-  { name: 'index',   label: 'Home',   Icon: HomeIcon    },
-  { name: 'anime',   label: 'Watch',  Icon: AnimeIcon   },
-  { name: 'search',  label: 'Search', Icon: SearchIcon  },
-  { name: 'novel',   label: 'Novel',  Icon: NovelIcon   },
-  { name: 'profile', label: 'My',     Icon: ProfileIcon },
+  { name: 'index',    label: 'Home',     Icon: HomeIcon     },
+  { name: 'anime',    label: 'Watch',    Icon: AnimeIcon    },
+  { name: 'search',   label: 'Search',   Icon: SearchIcon   },
+  { name: 'messages', label: 'Chats', Icon: MessagesIcon },
+  { name: 'novel',    label: 'Novel',    Icon: NovelIcon    },
+  { name: 'profile',  label: 'My',       Icon: ProfileIcon  },
 ];
 
 // ─── Glass pill — separate component so GlassView renders cleanly ─────────────
@@ -72,6 +76,7 @@ function GlassPill({ active }: { active: boolean }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const { colors } = useTheme();
+  const { unreadCount } = useChatUnreadCount({ allowUnlock: true });
 
   if (['settings', 'library'].includes(state.routes[state.index]?.name)) return null;
 
@@ -83,21 +88,24 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const w2 = useSharedValue(idx === 2 ? ACTIVE_SLOT : ICON_SLOT);
   const w3 = useSharedValue(idx === 3 ? ACTIVE_SLOT : ICON_SLOT);
   const w4 = useSharedValue(idx === 4 ? ACTIVE_SLOT : ICON_SLOT);
-  const widths = [w0, w1, w2, w3, w4];
+  const w5 = useSharedValue(idx === 5 ? ACTIVE_SLOT : ICON_SLOT);
+  const widths = [w0, w1, w2, w3, w4, w5];
 
   const lo0 = useSharedValue(idx === 0 ? 1 : 0);
   const lo1 = useSharedValue(idx === 1 ? 1 : 0);
   const lo2 = useSharedValue(idx === 2 ? 1 : 0);
   const lo3 = useSharedValue(idx === 3 ? 1 : 0);
   const lo4 = useSharedValue(idx === 4 ? 1 : 0);
-  const labelOps = [lo0, lo1, lo2, lo3, lo4];
+  const lo5 = useSharedValue(idx === 5 ? 1 : 0);
+  const labelOps = [lo0, lo1, lo2, lo3, lo4, lo5];
 
   const ps0 = useSharedValue(1);
   const ps1 = useSharedValue(1);
   const ps2 = useSharedValue(1);
   const ps3 = useSharedValue(1);
   const ps4 = useSharedValue(1);
-  const pressScales = [ps0, ps1, ps2, ps3, ps4];
+  const ps5 = useSharedValue(1);
+  const pressScales = [ps0, ps1, ps2, ps3, ps4, ps5];
 
   useEffect(() => {
     const prev = prevIdx.current;
@@ -119,41 +127,48 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const ws2 = useAnimatedStyle(() => ({ width: w2.value }));
   const ws3 = useAnimatedStyle(() => ({ width: w3.value }));
   const ws4 = useAnimatedStyle(() => ({ width: w4.value }));
-  const wStyles = [ws0, ws1, ws2, ws3, ws4];
+  const ws5 = useAnimatedStyle(() => ({ width: w5.value }));
+  const wStyles = [ws0, ws1, ws2, ws3, ws4, ws5];
 
   const ls0 = useAnimatedStyle(() => ({
     opacity: lo0.value,
-    maxWidth: interpolate(lo0.value, [0, 1], [0, 56]),
+    maxWidth: interpolate(lo0.value, [0, 1], [0, 72]),
     transform: [{ translateX: interpolate(lo0.value, [0, 1], [10, 0]) }],
   }));
   const ls1 = useAnimatedStyle(() => ({
     opacity: lo1.value,
-    maxWidth: interpolate(lo1.value, [0, 1], [0, 56]),
+    maxWidth: interpolate(lo1.value, [0, 1], [0, 72]),
     transform: [{ translateX: interpolate(lo1.value, [0, 1], [10, 0]) }],
   }));
   const ls2 = useAnimatedStyle(() => ({
     opacity: lo2.value,
-    maxWidth: interpolate(lo2.value, [0, 1], [0, 56]),
+    maxWidth: interpolate(lo2.value, [0, 1], [0, 72]),
     transform: [{ translateX: interpolate(lo2.value, [0, 1], [10, 0]) }],
   }));
   const ls3 = useAnimatedStyle(() => ({
     opacity: lo3.value,
-    maxWidth: interpolate(lo3.value, [0, 1], [0, 56]),
+    maxWidth: interpolate(lo3.value, [0, 1], [0, 72]),
     transform: [{ translateX: interpolate(lo3.value, [0, 1], [10, 0]) }],
   }));
   const ls4 = useAnimatedStyle(() => ({
     opacity: lo4.value,
-    maxWidth: interpolate(lo4.value, [0, 1], [0, 56]),
+    maxWidth: interpolate(lo4.value, [0, 1], [0, 72]),
     transform: [{ translateX: interpolate(lo4.value, [0, 1], [10, 0]) }],
   }));
-  const lStyles = [ls0, ls1, ls2, ls3, ls4];
+  const ls5 = useAnimatedStyle(() => ({
+    opacity: lo5.value,
+    maxWidth: interpolate(lo5.value, [0, 1], [0, 72]),
+    transform: [{ translateX: interpolate(lo5.value, [0, 1], [10, 0]) }],
+  }));
+  const lStyles = [ls0, ls1, ls2, ls3, ls4, ls5];
 
   const pss0 = useAnimatedStyle(() => ({ transform: [{ scale: ps0.value }] }));
   const pss1 = useAnimatedStyle(() => ({ transform: [{ scale: ps1.value }] }));
   const pss2 = useAnimatedStyle(() => ({ transform: [{ scale: ps2.value }] }));
   const pss3 = useAnimatedStyle(() => ({ transform: [{ scale: ps3.value }] }));
   const pss4 = useAnimatedStyle(() => ({ transform: [{ scale: ps4.value }] }));
-  const psStyles = [pss0, pss1, pss2, pss3, pss4];
+  const pss5 = useAnimatedStyle(() => ({ transform: [{ scale: ps5.value }] }));
+  const psStyles = [pss0, pss1, pss2, pss3, pss4, pss5];
 
   const handlePress = (i: number) => {
     pressScales[i].value = withTiming(0.93, { duration: 70 }, () => {
@@ -167,6 +182,8 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const barContent = TABS.map((tab, i) => {
     const active = idx === i;
     const { Icon } = tab;
+    const showBadge = tab.name === 'messages' && unreadCount > 0;
+    const badgeLabel = unreadCount > 9 ? '9+' : String(unreadCount);
     return (
       <Animated.View key={tab.name} style={[ts.tabSlot, wStyles[i]]}>
         <Animated.View style={[ts.pill, psStyles[i]]}>
@@ -180,7 +197,14 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
             activeOpacity={1}
             style={ts.tabBtn}
           >
-            <Icon active={active} />
+            <View style={ts.iconWrap}>
+              <Icon active={active} />
+              {showBadge ? (
+                <View style={ts.badge}>
+                  <Text style={ts.badgeText}>{badgeLabel}</Text>
+                </View>
+              ) : null}
+            </View>
             <Animated.View style={[ts.labelWrap, lStyles[i]]}>
               <Text style={ts.label}>{tab.label}</Text>
             </Animated.View>
@@ -295,6 +319,29 @@ const ts = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 8,
     gap: 5,
+  },
+  iconWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -5,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontFamily: Fonts.bodyBold,
+    fontWeight: FontWeight.bold,
   },
   labelWrap: {
     overflow: 'hidden',

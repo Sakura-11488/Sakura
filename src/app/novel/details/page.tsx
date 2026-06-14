@@ -8,9 +8,9 @@ import Header from "@/components/Header";
 import Link from "next/link";
 import {
     getNovel, getChapters, getProgress, getUserUnlocks, canReadChapter,
-    getMilestones, type Novel, type NovelChapter, type NovelMilestone,
+    getMilestones, getPublishedNovelsByCreator, type Novel, type NovelChapter, type NovelMilestone,
 } from "@/lib/novel";
-import { parseNovelDetail, getHDCover, type AllNovelDetail, type AllNovelChapter } from "@/lib/allnovel";
+import { parseNovelDetail, getHDCover, searchRelatedNovelsByAuthor, type AllNovelDetail, type AllNovelChapter, type AllNovelItem } from "@/lib/allnovel";
 import { checkPassStatus } from "@/lib/pass-check";
 import { truncateAddress } from "@/lib/solana";
 import {
@@ -20,6 +20,7 @@ import {
 import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
 import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
 import LottieIcon from "@/components/LottieIcon";
+import NovelCreatorDonation from "@/components/NovelCreatorDonation";
 
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
 const NovelComments = dynamic(() => import("@/components/NovelComments"), { ssr: false });
@@ -47,6 +48,7 @@ function ExternalDetailsContent() {
     const [downloadedSet, setDownloadedSet] = useState<Set<string>>(new Set());
     const [downloading, setDownloading] = useState<Set<string>>(new Set());
     const [shareToast, setShareToast] = useState<string | null>(null);
+    const [sameAuthorExternal, setSameAuthorExternal] = useState<AllNovelItem[]>([]);
 
     useEffect(() => {
         if (path) setInLibrary(isInLibrary(path, 'novel'));
@@ -64,6 +66,20 @@ function ExternalDetailsContent() {
             }
         }).catch(() => setLoading(false));
     }, [path]);
+
+    useEffect(() => {
+        if (!detail?.author || !path) {
+            setSameAuthorExternal([]);
+            return;
+        }
+        let cancelled = false;
+        void searchRelatedNovelsByAuthor(detail.author, path, 12).then((rows) => {
+            if (!cancelled) setSameAuthorExternal(rows);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [detail?.author, path]);
 
     useEffect(() => {
         const index = getNovelDownloadsIndex();
@@ -217,6 +233,59 @@ function ExternalDetailsContent() {
                         </div>
                     )}
 
+                    {sameAuthorExternal.length > 0 && (
+                        <div style={{ marginBottom: 20 }}>
+                            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: "var(--text-primary)" }}>More by {detail.author}</h3>
+                            <div
+                                style={{
+                                    display: "flex",
+                                    gap: 12,
+                                    overflowX: "auto",
+                                    paddingBottom: 6,
+                                    WebkitOverflowScrolling: "touch",
+                                    scrollbarWidth: "thin",
+                                }}
+                            >
+                                {sameAuthorExternal.map((item) => (
+                                    <Link
+                                        key={item.path}
+                                        href={`/novel/details?source=external&path=${encodeURIComponent(item.path)}`}
+                                        style={{
+                                            flex: "0 0 auto",
+                                            width: 112,
+                                            textDecoration: "none",
+                                            color: "inherit",
+                                        }}
+                                    >
+                                        <div style={{ borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                                            {item.cover ? (
+                                                // eslint-disable-next-line @next/next/no-img-element
+                                                <img
+                                                    src={imageOrPlaceholder(item.cover)}
+                                                    alt=""
+                                                    onError={(e) => {
+                                                        (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE;
+                                                    }}
+                                                    style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", display: "block" }}
+                                                />
+                                            ) : (
+                                                <div style={{ width: "100%", aspectRatio: "2/3", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-surface)" }}>
+                                                    <BookIcon size={32} />
+                                                </div>
+                                            )}
+                                            <p style={{ margin: 0, padding: "8px 8px 10px", fontSize: 11, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.3, maxHeight: 44, overflow: "hidden" }}>
+                                                {item.name}
+                                            </p>
+                                            <p style={{ margin: "0 8px 10px", fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                {detail.author}
+                                            </p>
+                                        </div>
+                                    </Link>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: "var(--text-primary)" }}>Chapters</h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 100 }}>
                         {detail.chapters.map(ch => {
@@ -288,6 +357,7 @@ function SakuraDetailsContent() {
     const [downloadedSet, setDownloadedSet] = useState<Set<string>>(new Set());
     const [downloading, setDownloading] = useState<Set<string>>(new Set());
     const [shareToast, setShareToast] = useState<string | null>(null);
+    const [moreByAuthor, setMoreByAuthor] = useState<Novel[]>([]);
 
     useEffect(() => {
         if (novelId) setInLibrary(isInLibrary(novelId, 'novel'));
@@ -299,6 +369,12 @@ function SakuraDetailsContent() {
         const [n, ch] = await Promise.all([getNovel(novelId), getChapters(novelId)]);
         setNovel(n);
         setChapters(ch.filter(c => c.published));
+        if (n?.creator_wallet) {
+            const more = await getPublishedNovelsByCreator(n.creator_wallet, n.id, 12);
+            setMoreByAuthor(more);
+        } else {
+            setMoreByAuthor([]);
+        }
         if (wallet) {
             const [prog, unlocks, pass, mils] = await Promise.all([
                 getProgress(wallet, novelId), getUserUnlocks(wallet, novelId),
@@ -443,6 +519,61 @@ function SakuraDetailsContent() {
                         <div style={{ marginBottom: 20, padding: "16px", borderRadius: 14, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
                             <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>Synopsis</h3>
                             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{novel.description}</p>
+                        </div>
+                    )}
+
+                    <NovelCreatorDonation creatorWallet={novel.creator_wallet} novelTitle={novel.title} />
+
+                    {moreByAuthor.length > 0 && (
+                        <div style={{ marginBottom: 20 }}>
+                            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: "var(--text-primary)" }}>More by this author</h3>
+                            <div
+                                style={{
+                                    display: "flex",
+                                    gap: 12,
+                                    overflowX: "auto",
+                                    paddingBottom: 6,
+                                    WebkitOverflowScrolling: "touch",
+                                    scrollbarWidth: "thin",
+                                }}
+                            >
+                                {moreByAuthor.map((n) => (
+                                    <Link
+                                        key={n.id}
+                                        href={`/novel/details?id=${encodeURIComponent(n.id)}`}
+                                        style={{
+                                            flex: "0 0 auto",
+                                            width: 112,
+                                            textDecoration: "none",
+                                            color: "inherit",
+                                        }}
+                                    >
+                                        <div style={{ borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                                            {n.cover_url ? (
+                                                // eslint-disable-next-line @next/next/no-img-element
+                                                <img
+                                                    src={imageOrPlaceholder(n.cover_url)}
+                                                    alt=""
+                                                    onError={(e) => {
+                                                        (e.currentTarget as HTMLImageElement).src = SAKURA_PLACEHOLDER_IMAGE;
+                                                    }}
+                                                    style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover", display: "block" }}
+                                                />
+                                            ) : (
+                                                <div style={{ width: "100%", aspectRatio: "2/3", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-surface)" }}>
+                                                    <BookIcon size={32} />
+                                                </div>
+                                            )}
+                                            <p style={{ margin: 0, padding: "8px 8px 10px", fontSize: 11, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.3, maxHeight: 44, overflow: "hidden" }}>
+                                                {n.title}
+                                            </p>
+                                            <p style={{ margin: "0 8px 10px", fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                {truncateAddress(n.creator_wallet)}
+                                            </p>
+                                        </div>
+                                    </Link>
+                                ))}
+                            </div>
                         </div>
                     )}
 

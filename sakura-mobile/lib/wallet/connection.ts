@@ -1,15 +1,13 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, Keypair, TransactionInstruction } from '@solana/web3.js';
-import { SOLANA_RPC, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, lamportsToSol, rawToSakura, sakuraToRaw } from './config';
+import { SOLANA_RPC, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, lamportsToSol, rawToSakura, sakuraToRaw, SAKURA_SEND_SOL_RESERVE } from './config';
+import { fetchSolBalance, fetchSakuraBalance, getSakuraAta } from './balances';
+export { SAKURA_SEND_SOL_RESERVE, SOL_SEND_FEE_RESERVE } from './config';
 
 const ASSOC_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS');
 const SYS_PROGRAM_ID = new PublicKey('11111111111111111111111111111111');
 
 function getAta(owner: PublicKey, mint: PublicKey): PublicKey {
-  const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), SAKURA_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOC_TOKEN_PROGRAM_ID,
-  );
-  return ata;
+  return getSakuraAta(owner);
 }
 
 function u64LeBuffer(value: number): Buffer {
@@ -29,6 +27,17 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
   const toAta = getAta(toPubkey, SAKURA_MINT);
   const rawAmount = sakuraToRaw(amount);
 
+  const solLamports = await conn.getBalance(keypair.publicKey, 'confirmed');
+  const toAtaInfo = await conn.getAccountInfo(toAta, 'confirmed');
+  const minLamports = Math.round(
+    (toAtaInfo ? SAKURA_SEND_SOL_RESERVE * 0.6 : SAKURA_SEND_SOL_RESERVE + 0.001) * LAMPORTS_PER_SOL,
+  );
+  if (solLamports < minLamports) {
+    throw new Error(
+      `Need at least ${(minLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL for network fees${toAtaInfo ? '' : ' and recipient token account rent'}.`,
+    );
+  }
+
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
   const tx = new Transaction();
   tx.recentBlockhash = blockhash;
@@ -36,7 +45,6 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
   tx.feePayer = keypair.publicKey;
 
   // Create receiver ATA if it doesn't exist (idempotent create)
-  const toAtaInfo = await conn.getAccountInfo(toAta);
   if (!toAtaInfo) {
     tx.add(new TransactionInstruction({
       keys: [
@@ -83,8 +91,7 @@ export function getConnection(): Connection {
 
 export async function getSolBalance(publicKey: PublicKey): Promise<number | null> {
   try {
-    const lamports = await getConnection().getBalance(publicKey);
-    return lamportsToSol(lamports);
+    return await fetchSolBalance(publicKey);
   } catch (e) {
     if (__DEV__) console.warn('[wallet] getSolBalance failed', e);
     return null;
@@ -93,16 +100,7 @@ export async function getSolBalance(publicKey: PublicKey): Promise<number | null
 
 export async function getSakuraBalance(publicKey: PublicKey): Promise<number | null> {
   try {
-    const accounts = await getConnection().getParsedTokenAccountsByOwner(publicKey, {
-      mint: SAKURA_MINT,
-    });
-    if (accounts.value.length === 0) return 0;
-    let total = 0;
-    for (const acc of accounts.value) {
-      const raw = Number(acc.account.data.parsed.info.tokenAmount.amount);
-      total += rawToSakura(raw);
-    }
-    return total;
+    return await fetchSakuraBalance(publicKey);
   } catch (e) {
     if (__DEV__) console.warn('[wallet] getSakuraBalance failed', e);
     return null;

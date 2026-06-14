@@ -40,6 +40,8 @@ class AnimePlugin : Plugin() {
         val episodeId = call.getString("episodeId") ?: ""
         val hasNext = call.getBoolean("hasNext", false) ?: false
         val nextEpisodeTitle = call.getString("nextEpisodeTitle") ?: ""
+        val introStartSec = call.getDouble("introStart", -1.0) ?: -1.0
+        val introEndSec = call.getDouble("introEnd", -1.0) ?: -1.0
 
         if (streamUrl.isEmpty()) {
             call.reject("Missing streamUrl parameter")
@@ -56,6 +58,7 @@ class AnimePlugin : Plugin() {
                 putExtra(PlayerActivity.EXTRA_EPISODE_ID, episodeId)
                 putExtra(PlayerActivity.EXTRA_HAS_NEXT, hasNext)
                 putExtra(PlayerActivity.EXTRA_NEXT_TITLE, nextEpisodeTitle)
+                putIntroExtras(this, introStartSec, introEndSec)
             }
             startActivityForResult(call, intent, "handlePlayerResult")
         }
@@ -68,6 +71,8 @@ class AnimePlugin : Plugin() {
         val episodeId = call.getString("episodeId") ?: ""
         val hasNext = call.getBoolean("hasNext", false) ?: false
         val nextEpisodeTitle = call.getString("nextEpisodeTitle") ?: ""
+        val introStartSec = call.getDouble("introStart", -1.0) ?: -1.0
+        val introEndSec = call.getDouble("introEnd", -1.0) ?: -1.0
         if (filePath.isNullOrEmpty()) {
             call.reject("Missing filePath")
             return
@@ -80,9 +85,18 @@ class AnimePlugin : Plugin() {
                 putExtra(PlayerActivity.EXTRA_EPISODE_ID, episodeId)
                 putExtra(PlayerActivity.EXTRA_HAS_NEXT, hasNext)
                 putExtra(PlayerActivity.EXTRA_NEXT_TITLE, nextEpisodeTitle)
+                putIntroExtras(this, introStartSec, introEndSec)
             }
             startActivityForResult(call, intent, "handlePlayerResult")
         }
+    }
+
+    private fun putIntroExtras(intent: Intent, introStartSec: Double, introEndSec: Double) {
+        if (introStartSec < 0 || introEndSec <= introStartSec) return
+        val startMs = (introStartSec * 1000.0).toLong().coerceAtLeast(0L)
+        val endMs = (introEndSec * 1000.0).toLong().coerceAtLeast(startMs + 1L)
+        intent.putExtra(PlayerActivity.EXTRA_INTRO_START_MS, startMs)
+        intent.putExtra(PlayerActivity.EXTRA_INTRO_END_MS, endMs)
     }
 
     @PluginMethod

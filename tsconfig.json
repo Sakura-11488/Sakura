@@ -33,6 +33,7 @@
   "exclude": [
     "node_modules",
     "backend",
+    "supabase/functions",
     "src/lib/sources/hianime.ts",
     "src/lib/sources/megacloud.ts"
   ]

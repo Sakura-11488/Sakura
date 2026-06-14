@@ -18,6 +18,7 @@ export interface CreatorUserProfile {
   display_name: string | null;
   bio: string | null;
   avatar_seed: string;
+  avatar_url?: string | null;
   creator_verification_state?: string | null;
   creator_verified_at?: string | null;
   follower_count?: number | null;

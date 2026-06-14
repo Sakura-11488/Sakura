@@ -1,8 +1,9 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, ActivityIndicator, Alert, TextInput, Modal } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { Image } from 'expo-image';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -17,10 +18,23 @@ import {
   formatSakuraAiRequirement,
 } from '@/lib/wallet/sakura-ai-access';
 import { useFocusEffect } from 'expo-router';
-import { getProfile } from '@/lib/supabase';
+import { resolveProfileDisplayName } from '@/lib/ai-display-name';
+import { getProfile, type UserProfile } from '@/lib/supabase';
 import { getCreatorProfile, getCreatorWorks } from '@/lib/creator';
+import { claimUsername, getUsernameForWallet, validateUsername } from '@/lib/user-username';
 import { Library } from '@/lib/storage';
 import { ShimmerBox } from '@/components/ui/ShimmerLoader';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
+import { buildAvatarAuthHeaders, generateUserAvatar } from '@/lib/user-avatar';
+import { getWalletWithBiometrics } from '@/lib/wallet/storage';
+import {
+  AVATAR_MINT_PRICE_SAKURA,
+  AVATAR_PAYMENT_WALLET,
+  formatAvatarMintPrice,
+  solanaExplorerToken,
+  solanaExplorerTx,
+} from '@/lib/wallet/config';
+import { sendSakura } from '@/lib/wallet/connection';
 import WalletModal from '@/components/wallet/WalletModal';
 import { onTap } from '@/lib/sound';
 
@@ -92,8 +106,14 @@ function AIRow({ colors }: { colors: any }) {
 }
 
 function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
-  const { connected, shortAddress, sakuraBalance } = useWallet();
+  const { connected, shortAddress, sakuraBalance, solBalance, loadingBalances } = useWallet();
   const { t } = useI18n();
+
+  const balanceLine = connected
+    ? loadingBalances && sakuraBalance === null && solBalance === null
+      ? 'Refreshing balances…'
+      : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} SKR · ${(solBalance ?? 0).toFixed(3)} SOL · ${shortAddress}`
+    : '';
 
   return (
     <TouchableOpacity
@@ -117,10 +137,8 @@ function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
             {connected ? 'Sakura Wallet' : t('settings.connectWallet')}
           </Text>
           {connected && (
-            <Text style={[row.sub, { color: colors.primary }]}>
-              {sakuraBalance !== null
-                ? `${sakuraBalance.toLocaleString(undefined, { maximumFractionDigits: 0 })} SKR  ·  ${shortAddress}`
-                : shortAddress ?? ''}
+            <Text style={[row.sub, { color: colors.primary }]} numberOfLines={1}>
+              {balanceLine}
             </Text>
           )}
         </View>
@@ -256,6 +274,150 @@ const ProfileIcon = ({ color }: { color: string }) => (
     <Circle cx="12" cy="7" r="4" stroke={color} strokeWidth={2} />
   </Svg>
 );
+const AtIcon = ({ color }: { color: string }) => (
+  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+    <Circle cx="12" cy="12" r="4" stroke={color} strokeWidth={2} />
+    <Path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+function UsernameClaimRow({ colors, profileDisplayName, onClaimed }: { colors: any; profileDisplayName?: string; onClaimed?: (handle: string) => void }) {
+  const { connected, address } = useWallet();
+  const [handle, setHandle] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [claiming, setClaiming] = useState(false);
+
+  const loadHandle = useCallback(async () => {
+    if (!connected || !address) {
+      setHandle(null);
+      return;
+    }
+    setChecking(true);
+    try {
+      const row = await getUsernameForWallet(address);
+      setHandle(row?.username ?? null);
+    } catch {
+      setHandle(null);
+    } finally {
+      setChecking(false);
+    }
+  }, [address, connected]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadHandle();
+    }, [loadHandle]),
+  );
+
+  const submitClaim = useCallback(async () => {
+    if (!address) return;
+    const err = validateUsername(draft);
+    if (err) {
+      Alert.alert('Invalid username', err);
+      return;
+    }
+    setClaiming(true);
+    try {
+      const row = await claimUsername({
+        walletAddress: address,
+        username: draft.trim(),
+        displayName: profileDisplayName?.trim() || undefined,
+      });
+      setHandle(row.username);
+      onClaimed?.(row.username);
+      setModalVisible(false);
+      setDraft('');
+      Alert.alert('Username claimed', `You're now @${row.username} on Sakura.`);
+    } catch (error) {
+      Alert.alert('Could not claim username', error instanceof Error ? error.message : 'Please try again.');
+    } finally {
+      setClaiming(false);
+    }
+  }, [address, draft, onClaimed, profileDisplayName]);
+
+  if (!connected) return null;
+  if (handle) return null;
+
+  return (
+    <>
+      <TouchableOpacity
+        style={[row.base, { backgroundColor: colors.surface }, row.walletRow]}
+        onPress={onTap(() => {
+          if (handle) return;
+          setModalVisible(true);
+        })}
+        activeOpacity={handle ? 1 : 0.7}
+      >
+        <View style={row.left}>
+          <View style={[row.lottieBadge, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}35` }]}>
+            <AtIcon color={colors.primary} />
+          </View>
+          <View style={row.textCol}>
+            <Text style={[row.label, { color: colors.text }]}>Sakura Username</Text>
+            {checking ? (
+              <ShimmerBox width={120} height={12} borderRadius={4} style={{ marginTop: 4 }} />
+            ) : (
+              <Text style={[row.sub, { color: colors.textSecondary }]} numberOfLines={1}>
+                {handle ? `@${handle}` : 'Claim your @handle for search & DMs'}
+              </Text>
+            )}
+          </View>
+        </View>
+        {!handle && !checking ? <ChevronRight color={colors.textTertiary} /> : null}
+      </TouchableOpacity>
+
+      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
+        <View style={usernameModal.overlay}>
+          <View style={[usernameModal.card, { backgroundColor: colors.surface }]}>
+            <Text style={[usernameModal.title, { color: colors.text }]}>Claim @username</Text>
+            <Text style={[usernameModal.hint, { color: colors.textSecondary }]}>
+              3–20 letters, numbers, or underscores. This is how others find you in Search.
+            </Text>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="yourname"
+              placeholderTextColor={colors.textTertiary}
+              style={[usernameModal.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
+            />
+            <View style={usernameModal.actions}>
+              <TouchableOpacity onPress={() => setModalVisible(false)} style={usernameModal.btnGhost}>
+                <Text style={{ color: colors.textSecondary }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={submitClaim}
+                disabled={claiming}
+                style={[usernameModal.btnPrimary, { backgroundColor: colors.primary }]}
+              >
+                {claiming ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: FontWeight.bold }}>Claim</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+const usernameModal = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
+  card: { width: '100%', borderRadius: Radius.lg, padding: Spacing.lg },
+  title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, marginBottom: 6 },
+  hint: { fontSize: FontSize.sm, lineHeight: 19, marginBottom: Spacing.md },
+  input: { borderWidth: 1, borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: 12, fontSize: FontSize.md, marginBottom: Spacing.md },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, alignItems: 'center' },
+  btnGhost: { paddingHorizontal: 12, paddingVertical: 10 },
+  btnPrimary: { borderRadius: Radius.full, paddingHorizontal: 20, paddingVertical: 10, minWidth: 88, alignItems: 'center' },
+});
+
 const SettingsIcon = ({ color }: { color: string }) => (
   <Svg width={18} height={18} viewBox="0 0 24 24">
     <Path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill={color} />
@@ -265,19 +427,128 @@ const SettingsIcon = ({ color }: { color: string }) => (
 export default function ProfileScreen() {
   const [walletVisible, setWalletVisible] = useState(false);
   const [displayName, setDisplayName] = useState('');
+  const [sakuraHandle, setSakuraHandle] = useState<string | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
   const [stats, setStats] = useState<Stats>({ watching: 0, reading: 0, saved: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const { colors } = useTheme();
-  const { address, connected, shortAddress } = useWallet();
+  const { address, connected, shortAddress, sakuraBalance } = useWallet();
   const scrollRef = useRef<any>(null);
   useScrollToTop(scrollRef);
 
-  useEffect(() => {
-    if (!address) { setDisplayName(''); return; }
-    getProfile(address).then((p) => {
-      setDisplayName(p?.display_name ?? '');
-    }).catch(() => { });
+  const loadProfile = useCallback(async () => {
+    if (!address) {
+      setDisplayName('');
+      setSakuraHandle(null);
+      setProfile(null);
+      return;
+    }
+    try {
+      const [p, usernameRow, resolvedName] = await Promise.all([
+        getProfile(address),
+        getUsernameForWallet(address),
+        resolveProfileDisplayName(address),
+      ]);
+      setProfile(p);
+      setDisplayName(resolvedName || p?.display_name || '');
+      setSakuraHandle(usernameRow?.username ?? null);
+    } catch {
+      setProfile(null);
+      setDisplayName('');
+      setSakuraHandle(null);
+    }
   }, [address]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile();
+    }, [loadProfile]),
+  );
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  const handleGenerateAvatar = useCallback(async (mode: 'tastes' | 'general') => {
+    if (!address || !connected) {
+      Alert.alert('Connect wallet', 'Connect your Sakura wallet to mint an anime portrait NFT.');
+      return;
+    }
+
+    if (sakuraBalance !== null && sakuraBalance < AVATAR_MINT_PRICE_SAKURA) {
+      Alert.alert(
+        'Insufficient SKR',
+        `Minting costs ${formatAvatarMintPrice()}. Your balance is ${Math.floor(sakuraBalance).toLocaleString()} SKR.`,
+      );
+      return;
+    }
+
+    setGeneratingAvatar(true);
+    try {
+      const keypair = await getWalletWithBiometrics();
+      if (!keypair) {
+        Alert.alert('Wallet locked', 'Unlock your wallet to pay and mint your avatar NFT.');
+        return;
+      }
+
+      const paymentTxSignature = await sendSakura(keypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
+
+      const result = await generateUserAvatar({
+        mode,
+        paymentTxSignature,
+        authHeaders: buildAvatarAuthHeaders(keypair),
+      });
+
+      if (result.public_url && result.mint_address) {
+        setProfile((prev) => prev ? {
+          ...prev,
+          avatar_url: result.public_url ?? prev.avatar_url,
+          avatar_mint_address: result.mint_address ?? prev.avatar_mint_address,
+        } : {
+          wallet_address: address,
+          display_name: displayName || null,
+          bio: null,
+          email: null,
+          avatar_url: result.public_url ?? null,
+          avatar_seed: address.slice(0, 8),
+          avatar_mint_address: result.mint_address ?? null,
+          updated_at: new Date().toISOString(),
+        });
+        Alert.alert(
+          'Avatar NFT minted',
+          `Your MAPPA-style portrait is in your wallet.\n\nMint: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
+          [
+            { text: 'View NFT', onPress: () => Linking.openURL(solanaExplorerToken(result.mint_address!)) },
+            { text: 'View payment', onPress: () => Linking.openURL(solanaExplorerTx(paymentTxSignature)) },
+            { text: 'Done', style: 'cancel' },
+          ],
+        );
+      } else {
+        Alert.alert('Mint failed', result.error || 'Could not mint your portrait NFT.');
+      }
+    } catch (error) {
+      Alert.alert('Mint failed', error instanceof Error ? error.message : 'Please try again later.');
+    } finally {
+      setGeneratingAvatar(false);
+    }
+  }, [address, connected, displayName, sakuraBalance]);
+
+  const onAvatarPress = useCallback(() => {
+    if (!connected) {
+      setWalletVisible(true);
+      return;
+    }
+    Alert.alert(
+      'Mint avatar NFT',
+      `Pay ${formatAvatarMintPrice()} to mint a MAPPA-style Jujutsu Kaisen-inspired anime portrait NFT to your wallet. It will appear in Phantom and other Solana wallets.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: `Mint from tastes (${formatAvatarMintPrice()})`, onPress: () => handleGenerateAvatar('tastes') },
+        { text: `Mint general (${formatAvatarMintPrice()})`, onPress: () => handleGenerateAvatar('general') },
+      ],
+    );
+  }, [connected, handleGenerateAvatar]);
 
   const loadStats = useCallback(async (fromRefresh = false) => {
     try {
@@ -295,7 +566,8 @@ export default function ProfileScreen() {
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     loadStats(true);
-  }, [loadStats]);
+    loadProfile().finally(() => {});
+  }, [loadStats, loadProfile]);
 
   useEffect(() => { loadStats(); }, [loadStats]);
 
@@ -311,20 +583,47 @@ export default function ProfileScreen() {
       >
         {/* ── Header ── */}
         <Animated.View entering={FadeInDown.duration(400)} style={s.header}>
-          <View style={[s.avatarWrap, { borderColor: colors.primary, backgroundColor: colors.surfaceSecondary }]}>
-            <Image
-              source={require('@/assets/images/logo.png')}
-              style={s.avatar}
-              contentFit="contain"
-            />
-          </View>
+          <TouchableOpacity onPress={onTap(onAvatarPress)} activeOpacity={0.85} disabled={generatingAvatar}>
+            <View style={[s.avatarWrap, { borderColor: colors.primary, backgroundColor: colors.surfaceSecondary }]}>
+              {connected && address ? (
+                <ProfileAvatar
+                  profile={{
+                    wallet_address: address,
+                    avatar_url: profile?.avatar_url ?? null,
+                    avatar_seed: profile?.avatar_seed ?? address.slice(0, 8),
+                  }}
+                  size={88}
+                  borderColor={colors.primary}
+                />
+              ) : (
+                <Image
+                  source={require('@/assets/images/logo.png')}
+                  style={s.avatar}
+                  contentFit="contain"
+                />
+              )}
+              {generatingAvatar && (
+                <View style={s.avatarLoading}>
+                  <ActivityIndicator color="#fff" />
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
           <Text style={[s.name, { color: colors.text }]}>
             {connected
               ? (displayName || shortAddress || 'Sakura User')
               : 'Guest'}
           </Text>
           <Text style={[s.username, { color: colors.textSecondary }]}>
-            {connected ? (shortAddress ?? '') : 'Connect wallet to get started'}
+            {connected
+              ? (sakuraHandle
+                ? `@${sakuraHandle}`
+                : generatingAvatar
+                  ? `Paying ${formatAvatarMintPrice()} and minting NFT…`
+                  : (profile?.avatar_mint_address
+                    ? 'Tap to mint a new avatar NFT'
+                    : (shortAddress ?? `Tap avatar to mint NFT · ${formatAvatarMintPrice()}`)))
+              : 'Connect wallet to get started'}
           </Text>
         </Animated.View>
 
@@ -359,6 +658,11 @@ export default function ProfileScreen() {
         {/* ── Creator ── */}
         <Animated.View entering={FadeInDown.delay(185).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
           <CreatorRow colors={colors} />
+        </Animated.View>
+
+        {/* ── Username ── */}
+        <Animated.View entering={FadeInDown.delay(192).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
+          <UsernameClaimRow colors={colors} profileDisplayName={displayName} onClaimed={setSakuraHandle} />
         </Animated.View>
 
         {/* ── Quick links ── */}
@@ -410,6 +714,12 @@ const s = StyleSheet.create({
   safe: { flex: 1 },
   header: { alignItems: 'center', paddingTop: Spacing.lg, paddingBottom: Spacing.md },
   avatarWrap: { width: 88, height: 88, borderRadius: 44, borderWidth: 3, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', ...Shadow.md },
+  avatarLoading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
   avatar: { width: 64, height: 64 },
   name: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 26, letterSpacing: 0.2, marginTop: 12 },
   username: { fontSize: FontSize.md, marginTop: 4 },

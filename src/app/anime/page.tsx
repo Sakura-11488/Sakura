@@ -7,7 +7,9 @@ import { searchAnime, fetchAiringAnime, fetchPopularAnime, fetchAnimeByGenre, AN
 import { getLastAniListDebug } from "@/lib/anilist";
 import { getLocal, setLocal, setLocalAndSyncSearches, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
 import { PSYOP_ID, PSYOP_INFO, PSYOP_EPISODES } from "@/lib/psyopAnime";
+import { TWO_HE_ANIME_INFO, TWO_HE_ANIME_SEARCH_RESULT } from "@/lib/2heAnime";
 import Link from "next/link";
+import PersonalizedRecommendationRow from "@/components/PersonalizedRecommendationRow";
 
 function useDebounce(value: string, delay: number) {
     const [debouncedValue, setDebouncedValue] = useState(value);
@@ -220,6 +222,32 @@ export default function AnimeBrowsePage() {
                                     <div className="anime-cw-title">Episode {entry.episodeNumber} · {entry.episodeTitle}</div>
                                 </Link>
                             ))}
+                        </div>
+                    </div>
+                )}
+
+                {!isSearching && <PersonalizedRecommendationRow mode="anime" />}
+
+                {!isSearching && (
+                    <div className="anime-row">
+                        <div className="anime-row-header">
+                            <h2 className="anime-row-title">Sakura Originals</h2>
+                        </div>
+                        <div className="manga-grid">
+                            <AnimeCard
+                                id={PSYOP_ID}
+                                title={PSYOP_INFO.title}
+                                image={PSYOP_INFO.image}
+                                type="PsyopAnime x Sakura"
+                                showMeta
+                            />
+                            <AnimeCard
+                                id={TWO_HE_ANIME_SEARCH_RESULT.id}
+                                title={TWO_HE_ANIME_INFO.title}
+                                image={TWO_HE_ANIME_INFO.image}
+                                type={TWO_HE_ANIME_SEARCH_RESULT.type}
+                                showMeta
+                            />
                         </div>
                     </div>
                 )}

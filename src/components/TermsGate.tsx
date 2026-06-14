@@ -2,12 +2,14 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import { getLocal, setLocal, STORAGE_KEYS } from "@/lib/storage";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 const CURRENT_VERSION = "v1";
 
 const supportEmail = "sakuramanga162@gmail.com";
 
 export default function TermsGate({ children }: { children: ReactNode }) {
+    const { t } = useI18n();
     const [accepted, setAccepted] = useState<boolean | null>(null);
     const [checked, setChecked] = useState(false);
     const [tab, setTab] = useState<"terms" | "privacy">("terms");
@@ -31,8 +33,8 @@ export default function TermsGate({ children }: { children: ReactNode }) {
                 <div className="tg-container">
                     <div className="tg-header">
                         <div className="tg-logo">桜</div>
-                        <h1 className="tg-title">Welcome to Sakura</h1>
-                        <p className="tg-subtitle">Please review and accept our terms before continuing</p>
+                        <h1 className="tg-title">{t("terms.welcome")}</h1>
+                        <p className="tg-subtitle">{t("terms.subtitle")}</p>
                     </div>
 
                     <div className="tg-tabs">
@@ -40,13 +42,13 @@ export default function TermsGate({ children }: { children: ReactNode }) {
                             className={`tg-tab ${tab === "terms" ? "active" : ""}`}
                             onClick={() => setTab("terms")}
                         >
-                            Terms of Service
+                            {t("terms.termsTab")}
                         </button>
                         <button
                             className={`tg-tab ${tab === "privacy" ? "active" : ""}`}
                             onClick={() => setTab("privacy")}
                         >
-                            Privacy Policy
+                            {t("terms.privacyTab")}
                         </button>
                     </div>
 
@@ -62,7 +64,7 @@ export default function TermsGate({ children }: { children: ReactNode }) {
                                 onChange={(e) => setChecked(e.target.checked)}
                                 className="tg-checkbox"
                             />
-                            <span>I have read and agree to the <strong>Terms of Service</strong> and <strong>Privacy Policy</strong></span>
+                            <span>{t("terms.agree")}</span>
                         </label>
 
                         <button
@@ -70,7 +72,7 @@ export default function TermsGate({ children }: { children: ReactNode }) {
                             disabled={!checked}
                             onClick={handleAccept}
                         >
-                            Continue to Sakura
+                            {t("terms.continue")}
                         </button>
                     </div>
                 </div>
@@ -136,7 +138,7 @@ function TermsContent() {
             <h4>6. Third-Party Services</h4>
             <p>
                 Sakura may rely on or integrate third-party services and protocols, including but not
-                limited to Supabase, Solana network infrastructure, third-party content providers, Transak, Jupiter, Drift,
+                limited to Supabase, Solana network infrastructure, third-party content providers, Transak, Jupiter, Phoenix,
                 and similar providers. We do not control those services and are not responsible for their
                 availability, content, policies, security, or performance.
             </p>
@@ -280,7 +282,7 @@ function PrivacyContent() {
                 <li>Solana network infrastructure and RPC providers</li>
                 <li>Third-party content and metadata providers</li>
                 <li>Google Books or similar metadata services</li>
-                <li>Transak, Jupiter, Drift Protocol</li>
+                <li>Transak, Jupiter, Phoenix Perps</li>
             </ul>
             <p>Your use of those services may also be governed by their own privacy policies and terms.</p>
 

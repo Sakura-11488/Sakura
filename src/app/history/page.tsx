@@ -6,6 +6,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { getLocal, removeLocal, STORAGE_KEYS, getAnimeHistory, type AnimeHistoryEntry } from "@/lib/storage";
 import { getDefaultMangaSourceId, normalizeMangaSourceId, type MangaSourceId } from "@/lib/sources/source-ids";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 interface HistoryItem {
     mangaId: string;
@@ -18,6 +19,7 @@ interface HistoryItem {
 }
 
 export default function HistoryPage() {
+    const { t, formatDate } = useI18n();
     const [tab, setTab] = useState<'manga' | 'anime'>('manga');
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [animeHistory, setAnimeHistory] = useState<AnimeHistoryEntry[]>([]);
@@ -31,7 +33,7 @@ export default function HistoryPage() {
     }, []);
 
     const clearHistory = () => {
-        if (!confirm("Clear history?")) return;
+        if (!confirm(t("history.clearConfirm"))) return;
         if (tab === 'manga') {
             removeLocal(STORAGE_KEYS.HISTORY);
             setHistory([]);
@@ -60,13 +62,13 @@ export default function HistoryPage() {
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
-                        <h2 className="section-title">閲覧履歴 History</h2>
-                        <p className="section-subtitle">{tab === 'manga' ? 'Recently Read Manga' : 'Recently Watched Anime'}</p>
+                        <h2 className="section-title">{t("history.title")}</h2>
+                        <p className="section-subtitle">{tab === 'manga' ? t("history.mangaSubtitle") : t("history.animeSubtitle")}</p>
                     </div>
 
                     <div style={{ display: 'flex', gap: 0, marginBottom: 24, borderBottom: '1px solid var(--border-color)' }}>
-                        <button style={tabStyle(tab === 'manga')} onClick={() => setTab('manga')}>Manga</button>
-                        <button style={tabStyle(tab === 'anime')} onClick={() => setTab('anime')}>Anime</button>
+                        <button style={tabStyle(tab === 'manga')} onClick={() => setTab('manga')}>{t("home.manga")}</button>
+                        <button style={tabStyle(tab === 'anime')} onClick={() => setTab('anime')}>{t("nav.anime")}</button>
                     </div>
 
                     {loading ? (
@@ -77,16 +79,16 @@ export default function HistoryPage() {
                         history.length === 0 ? (
                             <div className="empty-state">
                                 <div className="empty-icon">📚</div>
-                                <h3 className="empty-title">履歴がありません</h3>
-                                <p className="empty-text">You haven&apos;t read any manga yet.</p>
+                                <h3 className="empty-title">{t("history.emptyMangaTitle")}</h3>
+                                <p className="empty-text">{t("history.emptyMangaDesc")}</p>
                                 <Link href="/manga" className="btn-primary" style={{ marginTop: 16 }}>
-                                    マンガを探す — Start Reading
+                                    {t("history.startReading")}
                                 </Link>
                             </div>
                         ) : (
                             <>
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 20 }}>
-                                    <button onClick={clearHistory} className="btn-secondary" style={{ fontSize: 12 }}>Clear History</button>
+                                    <button onClick={clearHistory} className="btn-secondary" style={{ fontSize: 12 }}>{t("history.clear")}</button>
                                 </div>
                                 <div className="manga-grid">
                                     {history.map((item) => (
@@ -108,16 +110,16 @@ export default function HistoryPage() {
                         animeHistory.length === 0 ? (
                             <div className="empty-state">
                                 <div className="empty-icon">🍿</div>
-                                <h3 className="empty-title">視聴履歴がありません</h3>
-                                <p className="empty-text">You haven&apos;t watched any anime yet.</p>
+                                <h3 className="empty-title">{t("history.emptyAnimeTitle")}</h3>
+                                <p className="empty-text">{t("history.emptyAnimeDesc")}</p>
                                 <Link href="/anime" className="btn-primary" style={{ marginTop: 16 }}>
-                                    アニメを探す — Start Watching
+                                    {t("history.startWatching")}
                                 </Link>
                             </div>
                         ) : (
                             <>
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 20 }}>
-                                    <button onClick={clearHistory} className="btn-secondary" style={{ fontSize: 12 }}>Clear History</button>
+                                    <button onClick={clearHistory} className="btn-secondary" style={{ fontSize: 12 }}>{t("history.clear")}</button>
                                 </div>
                                 <div className="chapters-list">
                                     {animeHistory.map((entry) => (
@@ -148,7 +150,7 @@ export default function HistoryPage() {
                                                         Ep {entry.episodeNumber} — {entry.episodeTitle}
                                                     </p>
                                                     <p style={{ margin: '2px 0 0', color: 'var(--text-muted)', fontSize: 11 }}>
-                                                        {new Date(entry.timestamp).toLocaleDateString()}
+                                                        {formatDate(entry.timestamp)}
                                                     </p>
                                                 </div>
                                             </div>
@@ -164,11 +166,11 @@ export default function HistoryPage() {
                 </section>
 
                 <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
+                    <p className="footer-jp">{t("footer.jp")}</p>
+                    <p className="footer-text">{t("footer.text")}</p>
                     <div className="footer-solana">
                         <span className="sol-dot" />
-                        Built on Solana
+                        {t("footer.solana")}
                     </div>
                 </footer>
             </main>

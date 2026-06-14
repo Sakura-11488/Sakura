@@ -199,6 +199,31 @@ export async function searchNovels(query: string, page: number = 1): Promise<All
     return parseNovels(html);
 }
 
+/** Best-effort discovery via site search on author name; may include unrelated hits. */
+export async function searchRelatedNovelsByAuthor(
+    author: string,
+    excludePath: string,
+    limit: number = 12,
+): Promise<AllNovelItem[]> {
+    const raw = author.trim();
+    if (raw.length < 2) return [];
+    try {
+        const items = await searchNovels(raw, 1);
+        const seen = new Set<string>();
+        const out: AllNovelItem[] = [];
+        for (const it of items) {
+            if (!it.path || it.path === excludePath) continue;
+            if (seen.has(it.path)) continue;
+            seen.add(it.path);
+            out.push(it);
+            if (out.length >= limit) break;
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}
+
 export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetail> {
     const html = await fetchHtml(SITE + novelPath);
 

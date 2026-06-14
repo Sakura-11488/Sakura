@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { fetchPhoenixMarketState, fetchPhoenixTraderData } from "@/lib/phoenix";
 
 interface Props {
     isOpen: boolean;
@@ -52,6 +54,7 @@ function SparklineSVG({ data, color }: { data: number[]; color: string }) {
 
 export default function TradeCheckModal({ isOpen, onClose }: Props) {
     const router = useRouter();
+    const { publicKey, connected } = useWallet();
     const [sol, setSol] = useState<TokenData | null>(null);
     const [sakura, setSakura] = useState<TokenData | null>(null);
     const [position, setPosition] = useState<MockPosition | null>(null);
@@ -65,16 +68,11 @@ export default function TradeCheckModal({ isOpen, onClose }: Props) {
 
         (async () => {
             try {
-                const res = await fetch(
-                    "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true"
-                );
-                if (!res.ok || !mounted) return;
-                const data = await res.json();
-                const s = data.solana;
-                if (!s || !mounted) return;
+                const market = await fetchPhoenixMarketState();
+                if (!mounted) return;
 
-                const price = s.usd;
-                const pct = s.usd_24h_change ?? (Math.random() - 0.4) * 6;
+                const price = market.markPrice;
+                const pct = market.change24h;
                 const change = price * (pct / 100);
                 const trend = pct >= 0 ? 1 : -1;
 
@@ -85,15 +83,21 @@ export default function TradeCheckModal({ isOpen, onClose }: Props) {
                 const sakChange = sakPrice * (sakPct / 100);
                 setSakura({ price: sakPrice, change24h: sakChange, changePct: sakPct, sparkline: generateSparkline(sakPct >= 0 ? 1 : -1) });
 
-                const side: "LONG" | "SHORT" = Math.random() > 0.5 ? "LONG" : "SHORT";
-                const entry = price - (Math.random() - 0.5) * 4;
-                const leverage = 10;
-                const size = parseFloat((0.5 + Math.random() * 2).toFixed(2));
-                const priceDelta = price - entry;
-                const pnlRaw = side === "LONG" ? priceDelta * size : -priceDelta * size;
-                const pnlPctRaw = ((priceDelta / entry) * 100 * leverage) * (side === "LONG" ? 1 : -1);
-
-                setPosition({ side, entry, mark: price, size, leverage, pnl: pnlRaw * leverage, pnlPct: pnlPctRaw });
+                if (connected && publicKey) {
+                    const trader = await fetchPhoenixTraderData(publicKey.toBase58(), price);
+                    const phoenixPosition = trader.position;
+                    setPosition(phoenixPosition?.hasPosition ? {
+                        side: phoenixPosition.side === "long" ? "LONG" : "SHORT",
+                        entry: phoenixPosition.entryPrice,
+                        mark: phoenixPosition.markPrice,
+                        size: phoenixPosition.size,
+                        leverage: phoenixPosition.leverage,
+                        pnl: phoenixPosition.pnl,
+                        pnlPct: phoenixPosition.pnlPercent,
+                    } : null);
+                } else {
+                    setPosition(null);
+                }
             } catch {
                 setSol({ price: 142.8, change24h: 3.13, changePct: 2.3, sparkline: generateSparkline(1) });
                 setSakura({ price: 0.000046, change24h: -0.0000005, changePct: -1.2, sparkline: generateSparkline(-1) });
@@ -101,7 +105,7 @@ export default function TradeCheckModal({ isOpen, onClose }: Props) {
         })();
 
         return () => { mounted = false; };
-    }, [isOpen]);
+    }, [connected, isOpen, publicKey]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -247,7 +251,7 @@ export default function TradeCheckModal({ isOpen, onClose }: Props) {
                                 {position.side}
                             </span>
                             <span className="tcm-position-leverage">{position.leverage}x</span>
-                            <span className="tcm-position-pair">SOL-PERP</span>
+                        <span className="tcm-position-pair">Phoenix SOL-PERP</span>
                             <span className={`tcm-position-pnl ${position.pnl >= 0 ? "up" : "down"}`}>
                                 {position.pnl >= 0 ? "+" : ""}{position.pnl.toFixed(2)} ({position.pnlPct >= 0 ? "+" : ""}{position.pnlPct.toFixed(1)}%)
                             </span>

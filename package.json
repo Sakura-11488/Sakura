@@ -1,6 +1,6 @@
 {
   "name": "sakura",
-  "version": "1.7.8",
+  "version": "1.8.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -20,6 +20,7 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/ios": "^8.1.0",
     "@capacitor/preferences": "^8.0.1",
+    "@ellipsis-labs/rise": "^0.4.9",
     "@mayanfinance/swap-sdk": "^13.3.0",
     "@metaplex-foundation/mpl-bubblegum": "^5.0.2",
     "@metaplex-foundation/umi": "^1.5.1",

@@ -7,10 +7,12 @@ import { truncateAddress } from "@/lib/solana";
 import { useState, useEffect } from "react";
 import { checkPassStatus } from "@/lib/pass-check";
 import LottieIcon from "@/components/LottieIcon";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 export default function Header() {
     const { publicKey, disconnect, connecting } = useWallet();
     const { setVisible } = useSakuraWalletModal();
+    const { t } = useI18n();
     const [isPremium, setIsPremium] = useState(false);
 
     useEffect(() => {
@@ -34,37 +36,37 @@ export default function Header() {
                 <img src="/sakura.png" alt="Sakura" />
                 <div className="header-logo-text">
                     <span className="jp">桜 Sakura</span>
-                    <span className="en">Manga × Solana</span>
+                    <span className="en">{t("app.tagline")}</span>
                 </div>
             </Link>
 
             <nav className="header-nav">
                 <Link href="/">
-                    Home
+                    {t("nav.home")}
                     <span className="jp-label">ホーム</span>
                 </Link>
                 <Link href="/manga">
-                    Browse
+                    {t("nav.browse")}
                     <span className="jp-label">マンガ</span>
                 </Link>
                 <Link href="/pass">
-                    Pass
+                    {t("nav.pass")}
                     <span className="jp-label">パス</span>
                 </Link>
                 <Link href="/library">
-                    Library
+                    {t("nav.library")}
                     <span className="jp-label">ライブラリ</span>
                 </Link>
                 <Link href="/history">
-                    History
+                    {t("nav.history")}
                     <span className="jp-label">履歴</span>
                 </Link>
                 <Link href="/creator">
-                    Creator
+                    {t("nav.creator")}
                     <span className="jp-label">クリエイター</span>
                 </Link>
                 <Link href="/settings">
-                    Settings
+                    {t("nav.settings")}
                     <span className="jp-label">設定</span>
                 </Link>
 
@@ -81,7 +83,7 @@ export default function Header() {
                         <rect width="20" height="14" x="2" y="5" rx="2" />
                         <line x1="2" x2="22" y1="10" y2="10" />
                     </svg>
-                    <span style={{ color: 'rgba(88, 101, 242, 1)' }}>Store</span>
+                    <span style={{ color: 'rgba(88, 101, 242, 1)' }}>{t("nav.store")}</span>
                 </Link>
 
                 <button
@@ -110,7 +112,7 @@ export default function Header() {
                         />
                     </span>
                     <span style={isPremium ? { color: "var(--gold)", fontWeight: "bold" } : {}}>
-                        {publicKey ? truncateAddress(publicKey.toBase58()) : "Sign Up / Login"}
+                        {publicKey ? truncateAddress(publicKey.toBase58()) : t("wallet.signIn")}
                     </span>
                 </button>
             </nav>

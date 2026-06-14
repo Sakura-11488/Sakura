@@ -16,6 +16,7 @@ import {
   hasStoredWallet,
   importWalletFromKey,
 } from './storage';
+import { clearWalletAuthSession } from '@/lib/wallet-auth-session';
 import { getSolBalance, getSakuraBalance } from './connection';
 import { truncateAddress, getSolanaNetworkLabel } from './config';
 
@@ -83,10 +84,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     if (publicKey) refreshBalances();
   }, [publicKey, refreshBalances]);
 
+  useEffect(() => {
+    if (!publicKey) return;
+    const timer = setInterval(() => {
+      refreshBalances();
+    }, 20_000);
+    return () => clearInterval(timer);
+  }, [publicKey, refreshBalances]);
+
   // Refresh when returning from Transak / background
   useEffect(() => {
     if (!publicKey) return;
     const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        clearWalletAuthSession();
+      }
       if (state === 'active') refreshBalances();
     });
     return () => sub.remove();

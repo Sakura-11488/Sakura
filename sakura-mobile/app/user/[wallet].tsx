@@ -11,14 +11,11 @@ import {
   Achievement, computeAchievements, getLevel, getPublicProfile,
   ProfileFavorite, ProfileStats, PublicProfile, truncateAddress,
 } from '@/lib/profile-stats';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
+import UserSocialActions from '@/components/social/UserSocialActions';
+import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus } from '@/lib/wallet/pass';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
-
-function hashHue(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-  return h;
-}
 
 function Back({ c }: { c: string }) {
   return (
@@ -41,6 +38,7 @@ export default function PublicProfileScreen() {
   const { wallet } = useLocalSearchParams<{ wallet: string }>();
   const router = useRouter();
   const { colors } = useTheme();
+  const { address } = useWallet();
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [favorites, setFavorites] = useState<ProfileFavorite[]>([]);
@@ -68,7 +66,7 @@ export default function PublicProfileScreen() {
   }, [wallet]);
 
   const displayName = profile?.display_name?.trim() || truncateAddress(wallet ?? '');
-  const hue = hashHue(wallet ?? 'sakura');
+  const isVerified = profile?.creator_verification_state === 'verified';
   const level = getLevel(stats?.chaptersRead ?? 0);
   const achievements: Achievement[] = useMemo(
     () => computeAchievements(stats ?? { chaptersRead: 0, commentsPosted: 0, reactionsReceived: 0, favoritesCount: 0, memberSince: null }, hasPass),
@@ -94,15 +92,34 @@ export default function PublicProfileScreen() {
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60 }}>
           {/* Hero */}
           <View style={[styles.hero, { backgroundColor: colors.surface }]}>
-            <View style={[styles.avatar, { backgroundColor: `hsl(${hue}, 65%, 50%)` }]}>
-              <Text style={styles.avatarText}>{displayName[0]?.toUpperCase() ?? 'A'}</Text>
-            </View>
+            <ProfileAvatar
+              profile={{
+                wallet_address: wallet,
+                avatar_url: profile?.avatar_url ?? null,
+                avatar_seed: profile?.avatar_seed ?? wallet.slice(0, 8),
+              }}
+              size={84}
+              borderColor={colors.primary}
+              style={{ marginBottom: 12 }}
+            />
             <View style={styles.nameRow}>
               <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>{displayName}</Text>
               {hasPass ? <Text style={styles.passBadge}>🌸</Text> : null}
+              {isVerified ? <Text style={styles.passBadge}>✓</Text> : null}
             </View>
+            {profile?.username ? (
+              <Text style={[styles.handle, { color: colors.primary }]}>@{profile.username}</Text>
+            ) : null}
             <Text style={[styles.walletText, { color: colors.textTertiary }]}>{truncateAddress(wallet)}</Text>
             {profile?.bio ? <Text style={[styles.bio, { color: colors.textSecondary }]}>{profile.bio}</Text> : null}
+
+            <UserSocialActions targetWallet={wallet} viewerWallet={address} />
+
+            {(profile?.follower_count ?? 0) > 0 ? (
+              <Text style={[styles.followerCount, { color: colors.textTertiary }]}>
+                {(profile?.follower_count ?? 0).toLocaleString()} follower{(profile?.follower_count ?? 0) === 1 ? '' : 's'}
+              </Text>
+            ) : null}
 
             {/* Level */}
             <View style={styles.levelWrap}>
@@ -197,12 +214,12 @@ const styles = StyleSheet.create({
   backBtn:      { width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'center' },
   headerTitle:  { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 18 },
   hero:         { margin: Spacing.md, borderRadius: Radius.lg, padding: Spacing.lg, alignItems: 'center', ...Shadow.sm },
-  avatar:       { width: 84, height: 84, borderRadius: 42, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  avatarText:   { color: '#fff', fontSize: 34, fontWeight: FontWeight.bold },
   nameRow:      { flexDirection: 'row', alignItems: 'center', gap: 6 },
   name:         { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, maxWidth: 240 },
   passBadge:    { fontSize: 18 },
+  handle:       { fontSize: FontSize.md, fontWeight: FontWeight.bold, marginTop: 4 },
   walletText:   { fontSize: FontSize.sm, marginTop: 2 },
+  followerCount:{ fontSize: FontSize.xs, marginTop: 8 },
   bio:          { fontSize: FontSize.sm, textAlign: 'center', marginTop: 8, lineHeight: 19 },
   levelWrap:    { width: '100%', marginTop: 16 },
   levelHeader:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },

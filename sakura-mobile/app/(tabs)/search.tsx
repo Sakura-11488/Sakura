@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   ScrollView,
   FlatList,
+  SectionList,
   Dimensions,
   ActivityIndicator,
 } from 'react-native';
@@ -23,17 +24,29 @@ import { fetchTrendingManga, searchManga, toContentItem } from '@/lib/manga';
 import { searchAnime } from '@/lib/anime';
 import { searchNovels } from '@/lib/allnovel';
 
+import { searchUsers, type UserSearchResult } from '@/lib/user-search';
+import { lookupUsernamePrefix, normalizeUserQuery } from '@/lib/user-resolve';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
+
 const { width: W } = Dimensions.get('window');
-const FILTERS = ['All', 'Manga', 'Anime', 'Novel'] as const;
+const FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
 type Filter = (typeof FILTERS)[number];
+
+const SECTION_ORDER: Array<{ key: SearchResult['type']; title: string }> = [
+  { key: 'user', title: 'People' },
+  { key: 'anime', title: 'Anime' },
+  { key: 'manga', title: 'Manga' },
+  { key: 'novel', title: 'Novels' },
+];
 
 type SearchResult = {
   key: string;
   title: string;
   cover: string;
-  type: 'manga' | 'anime' | 'novel';
+  type: 'manga' | 'anime' | 'novel' | 'user';
   meta: string;
   navTarget: string;
+  user?: UserSearchResult;
 };
 
 function SearchIcon({ color }: { color: string }) {
@@ -49,6 +62,7 @@ export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autocompleteRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<any>(null);
   useScrollToTop(scrollRef);
 
@@ -56,6 +70,8 @@ export default function SearchTabScreen() {
   const [filter, setFilter] = useState<Filter>('All');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
 
   useEffect(() => {
@@ -75,10 +91,11 @@ export default function SearchTabScreen() {
     }
     setLoading(true);
     try {
-      const [mangaRes, animeRes, novelRes] = await Promise.allSettled([
+      const [mangaRes, animeRes, novelRes, usersRes] = await Promise.allSettled([
         searchManga(q, 12),
         searchAnime(q),
         searchNovels(q),
+        searchUsers(q, 12),
       ]);
 
       const merged: SearchResult[] = [];
@@ -119,6 +136,25 @@ export default function SearchTabScreen() {
           });
         });
       }
+      if (usersRes.status === 'fulfilled') {
+        usersRes.value.forEach((user) => {
+          const handle = user.username ? `@${user.username}` : user.display_name || 'Sakura User';
+          const metaParts = [
+            user.username ? user.display_name : null,
+            user.verified ? 'Verified' : null,
+            user.follower_count > 0 ? `${user.follower_count} followers` : null,
+          ].filter(Boolean);
+          merged.push({
+            key: `user-${user.wallet_address}`,
+            title: handle,
+            cover: user.avatar_url || '',
+            type: 'user',
+            meta: metaParts.join(' · ') || 'User',
+            navTarget: `/user/${encodeURIComponent(user.wallet_address)}`,
+            user,
+          });
+        });
+      }
 
       setResults(merged);
     } catch {
@@ -131,6 +167,29 @@ export default function SearchTabScreen() {
   const onChangeQuery = useCallback(
     (text: string) => {
       setQuery(text);
+      if (text.trim().startsWith('@')) {
+        setFilter('Users');
+      }
+
+      if (autocompleteRef.current) clearTimeout(autocompleteRef.current);
+      const prefix = normalizeUserQuery(text);
+      if (prefix.length >= 2 && (text.includes('@') || text.trim().startsWith('@'))) {
+        autocompleteRef.current = setTimeout(() => {
+          lookupUsernamePrefix(prefix, 8)
+            .then((rows) => {
+              setSuggestions(rows);
+              setShowSuggestions(rows.length > 0);
+            })
+            .catch(() => {
+              setSuggestions([]);
+              setShowSuggestions(false);
+            });
+        }, 250);
+      } else {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (text.trim().length < 2) {
         setResults([]);
@@ -143,12 +202,39 @@ export default function SearchTabScreen() {
     [runSearch],
   );
 
-  useEffect(() => () => debounceRef.current && clearTimeout(debounceRef.current), []);
+  const pickSuggestion = useCallback(
+    (username: string) => {
+      const next = `@${username}`;
+      setQuery(next);
+      setFilter('Users');
+      setShowSuggestions(false);
+      setSuggestions([]);
+      setLoading(true);
+      runSearch(next);
+    },
+    [runSearch],
+  );
+
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (autocompleteRef.current) clearTimeout(autocompleteRef.current);
+  }, []);
 
   const filteredResults = useMemo(() => {
     if (filter === 'All') return results;
+    if (filter === 'Users') return results.filter((r) => r.type === 'user');
     return results.filter((r) => r.type === filter.toLowerCase());
   }, [filter, results]);
+
+  const groupedSections = useMemo(() => {
+    if (filter !== 'All') return [];
+    return SECTION_ORDER
+      .map((section) => ({
+        title: section.title,
+        data: filteredResults.filter((item) => item.type === section.key),
+      }))
+      .filter((section) => section.data.length > 0);
+  }, [filter, filteredResults]);
 
   const categoryCards = useMemo(
     () => [
@@ -263,13 +349,74 @@ export default function SearchTabScreen() {
           padding: 10,
         },
         resultCover: { width: 56, height: 76, borderRadius: 8, backgroundColor: colors.surfaceTertiary },
+        userAvatar: { width: 56, height: 56, borderRadius: 28 },
         resultInfo: { flex: 1, justifyContent: 'center', gap: 3 },
         resultTitle: { color: colors.text, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
         resultMeta: { color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.body },
+        sectionHeading: {
+          fontSize: FontSize.md,
+          fontFamily: Fonts.bodyBold,
+          color: colors.textSecondary,
+          marginTop: 4,
+          marginBottom: 6,
+          textTransform: 'uppercase',
+          letterSpacing: 0.6,
+        },
         loader: { paddingTop: 48, alignItems: 'center' },
         empty: { paddingTop: 24 },
+        suggestBox: {
+          marginTop: -12,
+          marginBottom: 12,
+          borderRadius: Radius.md,
+          backgroundColor: colors.surface,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.borderLight,
+          overflow: 'hidden',
+        },
+        suggestRow: {
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.borderLight,
+        },
+        suggestText: { color: colors.primary, fontSize: FontSize.md, fontFamily: Fonts.bodyMedium },
       }),
     [colors],
+  );
+
+  const renderResultRow = useCallback(
+    (item: SearchResult, index: number) => (
+      <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
+        <TouchableOpacity
+          style={s.resultRow}
+          activeOpacity={0.85}
+          onPress={() => router.push(item.navTarget as never)}
+        >
+          {item.type === 'user' && item.user ? (
+            <ProfileAvatar
+              profile={{
+                wallet_address: item.user.wallet_address,
+                avatar_url: item.user.avatar_url,
+                avatar_seed: item.user.avatar_seed ?? item.user.wallet_address.slice(0, 8),
+              }}
+              size={56}
+              style={s.userAvatar}
+            />
+          ) : (
+            <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
+          )}
+          <View style={s.resultInfo}>
+            <Text style={s.resultTitle} numberOfLines={2}>
+              {item.title}
+            </Text>
+            <Text style={s.resultMeta} numberOfLines={1}>
+              {item.meta}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      </Animated.View>
+    ),
+    [router, s],
   );
 
   return (
@@ -284,13 +431,30 @@ export default function SearchTabScreen() {
           <TextInput
             value={query}
             onChangeText={onChangeQuery}
-            placeholder="Series, creators, categories, and more"
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            placeholder="Series, @users, categories…"
             placeholderTextColor={colors.textTertiary}
             style={s.input}
             autoCorrect={false}
             returnKeyType="search"
           />
         </Animated.View>
+
+        {showSuggestions && suggestions.length > 0 ? (
+          <View style={s.suggestBox}>
+            {suggestions.map((username) => (
+              <TouchableOpacity
+                key={username}
+                style={s.suggestRow}
+                onPress={() => pickSuggestion(username)}
+                activeOpacity={0.85}
+              >
+                <Text style={s.suggestText}>@{username}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
 
         {query.trim().length < 2 ? (
           <ScrollView
@@ -346,6 +510,23 @@ export default function SearchTabScreen() {
               <View style={s.loader}>
                 <ActivityIndicator color={colors.primary} size="large" />
               </View>
+            ) : filter === 'All' ? (
+              <SectionList
+                sections={groupedSections}
+                keyExtractor={(item) => item.key}
+                showsVerticalScrollIndicator={false}
+                scrollIndicatorInsets={{ bottom: 90 }}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={groupedSections.length === 0 ? undefined : s.results}
+                stickySectionHeadersEnabled={false}
+                renderSectionHeader={({ section }) => (
+                  <Text style={s.sectionHeading}>{section.title}</Text>
+                )}
+                renderItem={({ item, index }) => renderResultRow(item, index)}
+                ListEmptyComponent={
+                  <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
+                }
+              />
             ) : (
               <FlatList
                 data={filteredResults}
@@ -353,26 +534,8 @@ export default function SearchTabScreen() {
                 showsVerticalScrollIndicator={false}
                 scrollIndicatorInsets={{ bottom: 90 }}
                 keyboardShouldPersistTaps="handled"
-                contentContainerStyle={s.results}
-                renderItem={({ item, index }) => (
-                  <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
-                    <TouchableOpacity
-                      style={s.resultRow}
-                      activeOpacity={0.85}
-                      onPress={() => router.push(item.navTarget as never)}
-                    >
-                      <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
-                      <View style={s.resultInfo}>
-                        <Text style={s.resultTitle} numberOfLines={2}>
-                          {item.title}
-                        </Text>
-                        <Text style={s.resultMeta} numberOfLines={1}>
-                          {item.meta}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  </Animated.View>
-                )}
+                contentContainerStyle={filteredResults.length === 0 ? undefined : s.results}
+                renderItem={({ item, index }) => renderResultRow(item, index)}
                 ListEmptyComponent={
                   <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
                 }

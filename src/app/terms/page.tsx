@@ -88,7 +88,7 @@ export default function TermsPage() {
                         <h3 style={{ color: "var(--text-primary)", marginTop: 28 }}>6. Third-Party Services</h3>
                         <p>
                             Sakura may rely on or integrate third-party services and protocols, including but not
-                            limited to Supabase, Solana network infrastructure, third-party content providers, Transak, Jupiter, Drift,
+                            limited to Supabase, Solana network infrastructure, third-party content providers, Transak, Jupiter, Phoenix,
                             and similar providers.
                         </p>
                         <p>

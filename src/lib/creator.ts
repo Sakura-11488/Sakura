@@ -1,5 +1,11 @@
 import { supabase } from "./supabase";
 import { MANGA_SOURCE_IDS, normalizeMangaSourceId } from "./sources/source-ids";
+import {
+    TWO_HE_ANIME_COVER,
+    TWO_HE_ANIME_ID,
+    TWO_HE_CREATOR_BIO,
+    TWO_HE_CREATOR_WALLET,
+} from "./2heAnime";
 
 export interface CreatorProfile {
     wallet_address: string;
@@ -21,7 +27,32 @@ export interface TipRecord {
     created_at: string;
 }
 
+export const TWO_HE_CREATOR_PROFILE: CreatorProfile = {
+    wallet_address: TWO_HE_CREATOR_WALLET,
+    display_name: "2heAnime",
+    bio: TWO_HE_CREATOR_BIO,
+    avatar_url: TWO_HE_ANIME_COVER,
+    is_verified: true,
+    mangadex_author_id: TWO_HE_ANIME_ID,
+    created_at: "2026-05-25T00:00:00.000Z",
+    updated_at: "2026-05-25T00:00:00.000Z",
+};
+
+function getStaticCreatorProfile(walletAddressOrAuthorId: string): CreatorProfile | null {
+    const value = walletAddressOrAuthorId.toLowerCase();
+    if (
+        value === TWO_HE_CREATOR_WALLET.toLowerCase() ||
+        value === TWO_HE_ANIME_ID ||
+        value === "2he"
+    ) {
+        return TWO_HE_CREATOR_PROFILE;
+    }
+    return null;
+}
+
 export async function getCreatorProfile(walletAddressOrAuthorId: string): Promise<CreatorProfile | null> {
+    const staticProfile = getStaticCreatorProfile(walletAddressOrAuthorId);
+    if (staticProfile) return staticProfile;
     if (!supabase) return null;
 
     // Try to fetch by wallet_address or content author ID
@@ -33,10 +64,10 @@ export async function getCreatorProfile(walletAddressOrAuthorId: string): Promis
 
     if (error && error.code !== "PGRST116") {
         console.error("Error fetching creator profile:", error);
-        return null;
+        return getStaticCreatorProfile(walletAddressOrAuthorId);
     }
 
-    return data || null;
+    return data || getStaticCreatorProfile(walletAddressOrAuthorId);
 }
 
 export async function getCreatorProfileByContentAuthor(sourceId: string, contentAuthorId: string): Promise<CreatorProfile | null> {
@@ -127,7 +158,8 @@ export async function getCreatorTips(walletAddress: string): Promise<TipRecord[]
 }
 
 export async function searchCreators(query: string): Promise<CreatorProfile[]> {
-    if (!supabase || !query.trim()) return [];
+    const staticProfile = getStaticCreatorProfile(query.trim());
+    if (!supabase || !query.trim()) return staticProfile ? [staticProfile] : [];
 
     const { data, error } = await supabase
         .from("creator_profiles")
@@ -139,10 +171,14 @@ export async function searchCreators(query: string): Promise<CreatorProfile[]> {
 
     if (error) {
         console.error("Error searching creators:", error);
-        return [];
+        return staticProfile ? [staticProfile] : [];
     }
 
-    return data || [];
+    const results = data || [];
+    if (staticProfile && !results.some(profile => profile.wallet_address === staticProfile.wallet_address)) {
+        return [staticProfile, ...results];
+    }
+    return results;
 }
 
 // Admin Functions

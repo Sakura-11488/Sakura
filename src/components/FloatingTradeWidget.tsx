@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { getLocal, STORAGE_KEYS } from "@/lib/storage";
-import { fetchPositions, type PositionInfo } from "@/lib/perps-api";
+import { fetchPhoenixMarketState, fetchPhoenixTraderData } from "@/lib/phoenix";
 
 export default function FloatingTradeWidget() {
     const pathname = usePathname();
@@ -24,10 +24,8 @@ export default function FloatingTradeWidget() {
     const [pnl, setPnl] = useState(0);
     const [hasRealPosition, setHasRealPosition] = useState(false);
     const [flash, setFlash] = useState<"up" | "down" | null>(null);
-    const [entryPrice, setEntryPrice] = useState<number | null>(null);
-    const LEVERAGE = 10;
 
-    // Try to load real position PnL from backend
+    // Load live Phoenix position PnL for the floating reader widget.
     useEffect(() => {
         if (!isVisible || !connected || !publicKey) {
             setHasRealPosition(false);
@@ -39,7 +37,8 @@ export default function FloatingTradeWidget() {
 
         const loadPosition = async () => {
             try {
-                const data = await fetchPositions(wallet);
+                const market = await fetchPhoenixMarketState();
+                const data = await fetchPhoenixTraderData(wallet, market.markPrice);
                 if (!isMounted) return;
 
                 if (data.position && data.position.hasPosition) {
@@ -69,51 +68,6 @@ export default function FloatingTradeWidget() {
         };
     }, [isVisible, connected, publicKey]);
 
-    // Fallback: simulated PnL from CoinGecko spot price when no real position
-    useEffect(() => {
-        if (!isVisible || hasRealPosition) return;
-        let isMounted = true;
-
-        const updatePrice = async () => {
-            try {
-                const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd");
-                if (!res.ok) return;
-                const data = await res.json();
-                if (!isMounted || !data.solana) return;
-
-                const currentPrice = data.solana.usd;
-
-                setEntryPrice((prevEntry) => {
-                    const entry = prevEntry || currentPrice;
-                    const jitter = (Math.random() - 0.5) * 0.02;
-                    const displayPrice = currentPrice + jitter;
-                    const priceDelta = displayPrice - entry;
-                    const pnlPercent = (priceDelta / entry) * 100 * LEVERAGE;
-
-                    setPnl((prevPnl) => {
-                        if (prevPnl !== pnlPercent) {
-                            setFlash(pnlPercent > prevPnl ? "up" : "down");
-                            setTimeout(() => setFlash(null), 300);
-                        }
-                        return pnlPercent;
-                    });
-
-                    return entry;
-                });
-            } catch (err) {
-                console.error("Widget price fetch failed", err);
-            }
-        };
-
-        updatePrice();
-        const interval = setInterval(updatePrice, 3500);
-
-        return () => {
-            isMounted = false;
-            clearInterval(interval);
-        };
-    }, [isVisible, hasRealPosition]);
-
     if (!isVisible) return null;
 
     const isProfit = pnl >= 0;
@@ -122,7 +76,7 @@ export default function FloatingTradeWidget() {
         <div
             className={`floating-trade-widget ${isProfit ? "profit" : "loss"} ${flash ? `flash-${flash}` : ""}`}
             onClick={() => router.push("/trade")}
-            title={hasRealPosition ? "Real position PnL" : "Go to Trading"}
+            title={hasRealPosition ? "Phoenix position PnL" : "Go to Phoenix Trading"}
         >
             <div className="ftw-icon">◎</div>
             <div className="ftw-pnl">

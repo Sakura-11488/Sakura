@@ -7,8 +7,13 @@ import { supabase } from './supabase';
 export interface PublicProfile {
   wallet_address: string;
   display_name: string | null;
+  username: string | null;
   bio: string | null;
   avatar_seed: string;
+  avatar_url?: string | null;
+  avatar_mint_address?: string | null;
+  creator_verification_state?: string | null;
+  follower_count?: number;
   created_at: string | null;
 }
 
@@ -90,21 +95,48 @@ export async function getPublicProfile(walletAddress: string): Promise<{
 }> {
   if (!walletAddress) return { profile: null, favorites: [], stats: EMPTY_STATS };
 
-  const { data: profileRow } = await supabase
-    .from('user_profiles')
-    .select('wallet_address, display_name, bio, avatar_seed, created_at')
-    .eq('wallet_address', walletAddress)
-    .maybeSingle();
+  const [{ data: profileRow }, { data: usernameRow }] = await Promise.all([
+    supabase
+      .from('user_profiles')
+      .select(
+        'wallet_address, display_name, bio, avatar_seed, avatar_url, avatar_mint_address, created_at, creator_verification_state, follower_count',
+      )
+      .eq('wallet_address', walletAddress)
+      .maybeSingle(),
+    supabase
+      .from('sakura_usernames')
+      .select('username, display_name')
+      .eq('wallet_address', walletAddress)
+      .maybeSingle(),
+  ]);
 
   const profile: PublicProfile | null = profileRow
     ? {
         wallet_address: profileRow.wallet_address,
-        display_name: profileRow.display_name ?? null,
+        display_name: profileRow.display_name ?? usernameRow?.display_name ?? null,
+        username: usernameRow?.username ?? null,
         bio: profileRow.bio ?? null,
         avatar_seed: profileRow.avatar_seed ?? walletAddress.slice(0, 8),
+        avatar_url: profileRow.avatar_url ?? null,
+        avatar_mint_address: profileRow.avatar_mint_address ?? null,
+        creator_verification_state: profileRow.creator_verification_state ?? null,
+        follower_count: profileRow.follower_count ?? 0,
         created_at: profileRow.created_at ?? null,
       }
-    : null;
+    : usernameRow
+      ? {
+          wallet_address: walletAddress,
+          display_name: usernameRow.display_name ?? null,
+          username: usernameRow.username ?? null,
+          bio: null,
+          avatar_seed: walletAddress.slice(0, 8),
+          avatar_url: null,
+          avatar_mint_address: null,
+          creator_verification_state: null,
+          follower_count: 0,
+          created_at: null,
+        }
+      : null;
 
   const stats: ProfileStats = { ...EMPTY_STATS, memberSince: profile?.created_at ?? null };
   let favorites: ProfileFavorite[] = [];

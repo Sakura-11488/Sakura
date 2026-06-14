@@ -92,8 +92,8 @@ android {
         applicationId 'com.millw14.sakura'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 10903
-        versionName "1.9.3"
+        versionCode 10904
+        versionName "1.9.4"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

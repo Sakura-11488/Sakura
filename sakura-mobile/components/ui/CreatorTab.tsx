@@ -18,8 +18,9 @@ import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { supabase } from '@/lib/supabase';
 import { type CreatorUserProfile } from '@/lib/creator';
-import { getCreatorSocialState, setCreatorFollow, type CreatorSocialState } from '@/lib/creator-social';
-import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
+import { getCreatorSocialState, type CreatorSocialState } from '@/lib/creator-social';
+import UserSocialActions from '@/components/social/UserSocialActions';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { sendSakura } from '@/lib/wallet/connection';
 import { notifySakuraTransfer } from '@/lib/wallet-transfer-notify';
 import { useTransferCelebration } from '@/lib/wallet/transfer-celebration';
@@ -170,11 +171,10 @@ export default function CreatorTab({
 }) {
   const { colors } = useTheme();
   const router = useRouter();
-  const { address, signWithBiometrics } = useWallet();
+  const { address } = useWallet();
   const [profile, setProfile] = useState<CreatorUserProfile | null>(null);
   const [social, setSocial] = useState<CreatorSocialState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [followBusy, setFollowBusy] = useState(false);
   const [tipOpen, setTipOpen] = useState(false);
 
   useEffect(() => {
@@ -187,33 +187,6 @@ export default function CreatorTab({
       setLoading(false);
     });
   }, [creatorWallet, address]);
-
-  const toggleFollow = useCallback(async () => {
-    if (!address) {
-      Alert.alert('Wallet Required', 'Connect your wallet to follow creators.');
-      return;
-    }
-    if (address === creatorWallet) {
-      Alert.alert('This is you', 'You cannot follow your own creator profile.');
-      return;
-    }
-    setFollowBusy(true);
-    try {
-      const kp = await signWithBiometrics();
-      if (!kp) return;
-      const next = await setCreatorFollow({
-        creatorWallet,
-        following: !(social?.following ?? false),
-        authHeaders: buildWalletAuthHeaders(kp, 'creator-follow'),
-      });
-      setSocial(next);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      Alert.alert('Follow failed', error instanceof Error ? error.message : 'Please try again.');
-    } finally {
-      setFollowBusy(false);
-    }
-  }, [address, creatorWallet, signWithBiometrics, social?.following]);
 
   const displayName =
     displayNameOverride ??
@@ -301,9 +274,18 @@ export default function CreatorTab({
     <View style={s.root}>
       <View style={s.card}>
         {/* Avatar */}
-        <View style={[s.avatar, !avatarImage && { backgroundColor: bg }]}>
+        <View style={[s.avatar, !avatarImage && !profile?.avatar_url && { backgroundColor: bg }]}>
           {avatarImage ? (
             <Image source={avatarImage} style={StyleSheet.absoluteFill} contentFit="cover" />
+          ) : profile ? (
+            <ProfileAvatar
+              profile={{
+                wallet_address: creatorWallet,
+                avatar_url: profile.avatar_url ?? null,
+                avatar_seed: profile.avatar_seed ?? creatorWallet.slice(0, 8),
+              }}
+              size={72}
+            />
           ) : (
             <Text style={s.avatarText}>{abbr}</Text>
           )}
@@ -324,22 +306,7 @@ export default function CreatorTab({
         <View style={s.divider} />
 
         {address !== creatorWallet ? (
-          <View style={s.socialActions}>
-            <TouchableOpacity style={s.followBtn} onPress={toggleFollow} disabled={followBusy} activeOpacity={0.88}>
-              {followBusy ? (
-                <ActivityIndicator color={social?.following ? colors.primary : '#fff'} size="small" />
-              ) : (
-                <Text style={s.followTxt}>{social?.following ? 'Following' : 'Follow'}</Text>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={s.messageBtn}
-              onPress={() => router.push({ pathname: '/creator-chat', params: { wallet: creatorWallet } } as any)}
-              activeOpacity={0.88}
-            >
-              <Text style={s.messageTxt}>Message</Text>
-            </TouchableOpacity>
-          </View>
+          <UserSocialActions targetWallet={creatorWallet} viewerWallet={address} compact />
         ) : null}
 
         {/* Action buttons */}

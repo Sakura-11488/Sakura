@@ -20,6 +20,9 @@ interface AnimePlugin {
         episodeId?: string;
         hasNext?: boolean;
         nextEpisodeTitle?: string;
+        /** Intro window in seconds (from stream metadata). Native player only. */
+        introStart?: number;
+        introEnd?: number;
     }): Promise<{ success: boolean; completed: boolean }>;
 
     playLocalEpisode(options: {
@@ -28,6 +31,8 @@ interface AnimePlugin {
         episodeId?: string;
         hasNext?: boolean;
         nextEpisodeTitle?: string;
+        introStart?: number;
+        introEnd?: number;
     }): Promise<{ success: boolean; completed: boolean }>;
 
     downloadEpisode(options: {

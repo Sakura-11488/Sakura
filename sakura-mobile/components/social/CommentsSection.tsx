@@ -13,6 +13,7 @@ import {
   ChapterComment, REACTION_EMOJIS, SERIES_CHAPTER_ID,
   commentDisplayName, deleteComment, getComments, postComment, toggleReaction,
 } from '@/lib/comments';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 function timeAgo(iso: string): string {
@@ -27,12 +28,17 @@ function timeAgo(iso: string): string {
   return `${Math.floor(d / 7)}w`;
 }
 
-function Avatar({ seed, colors }: { seed: string; colors: AppColors }) {
-  const hue = [...seed].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
+function Avatar({ profile, wallet, colors }: { profile?: ChapterComment['profile']; wallet: string; colors: AppColors }) {
   return (
-    <View style={[styles.avatar, { backgroundColor: `hsl(${hue}, 55%, 45%)` }]}>
-      <Text style={styles.avatarText}>{seed.slice(0, 2).toUpperCase()}</Text>
-    </View>
+    <ProfileAvatar
+      profile={{
+        wallet_address: wallet,
+        avatar_seed: profile?.avatar_seed || wallet.slice(0, 8),
+        avatar_url: profile?.avatar_url,
+      }}
+      size={36}
+      borderColor={colors.borderLight}
+    />
   );
 }
 
@@ -52,7 +58,7 @@ function CommentRow({
   return (
     <View style={styles.commentRow}>
       <TouchableOpacity activeOpacity={0.7} onPress={() => onOpenProfile(comment.wallet_address)}>
-        <Avatar seed={comment.profile?.avatar_seed || comment.wallet_address.slice(0, 8)} colors={colors} />
+        <Avatar profile={comment.profile} wallet={comment.wallet_address} colors={colors} />
       </TouchableOpacity>
       <View style={{ flex: 1 }}>
         <View style={styles.commentHeader}>

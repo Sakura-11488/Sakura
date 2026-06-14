@@ -27,6 +27,17 @@ function routeFromNotificationData(
     router.push('/(tabs)/settings');
     return;
   }
+  if (type === 'chat_message') {
+    const threadId = data.threadId ? String(data.threadId) : undefined;
+    const wallet = data.wallet ? String(data.wallet) : undefined;
+    if (threadId) {
+      router.push({
+        pathname: '/creator-chat',
+        params: { thread: threadId, wallet },
+      } as never);
+    }
+    return;
+  }
   if (!type || !id) return;
 
   if (type === 'anime') {

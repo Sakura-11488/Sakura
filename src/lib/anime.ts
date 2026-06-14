@@ -16,6 +16,14 @@ import {
     getLastConsumetErrorDetails,
 } from "./sources/gogoanime";
 import { PSYOP_SEARCH_RESULT, PSYOP_INFO, PSYOP_ID, matchesPsyopQuery, isPsyopEpisode, getPsyopStreamUrl } from "./psyopAnime";
+import {
+    TWO_HE_ANIME_ID,
+    TWO_HE_ANIME_INFO,
+    TWO_HE_ANIME_SEARCH_RESULT,
+    getTwoHeAnimeStreamUrl,
+    isTwoHeAnimeEpisode,
+    matchesTwoHeAnimeQuery,
+} from "./2heAnime";
 
 export interface AnimeResult {
     id: string;
@@ -98,13 +106,18 @@ interface TitleSignals {
     special: boolean;
 }
 
-// Bumped to v8 to also wipe stale `srcmap_v4_*` entries written by the
-// previous scoring algorithm, which couldn't read Roman numerals. Without
+// Bumped to v9 (1.8.3) to also wipe stale slug mappings written before
+// HiAnime started rotating slugs (e.g. "steins-gate-3" → 404, real slug
+// is now "steins-gate-egcq"). Cached srcmaps from v8 keep pointing at
+// the dead URL; bumping the prefix forces every show to re-resolve via
+// /search on first launch of the new build.
+//
+// Previous v8 bump rationale: wipe stale `srcmap_v4_*` entries written by
+// the older scoring algorithm that couldn't read Roman numerals. Without
 // the bump, a returning user would keep seeing "The Outcast 4th Season"
 // pinned to MAL id 59708 because the cached mapping survives the must-
-// have-token fix below. Touching the prefix recomputes every srcmap on
-// first launch of the new build.
-const CACHE_PREFIX = "sakura_anime_v8_";
+// have-token fix below.
+const CACHE_PREFIX = "sakura_anime_v9_";
 const TTL_SEARCH = 30 * 60 * 1000;
 const TTL_TRENDING = 2 * 60 * 60 * 1000;
 const TTL_INFO = 24 * 60 * 60 * 1000;
@@ -692,6 +705,11 @@ async function loadAnimeInfo(id: string, options: AnimeInfoRefreshOptions = {}):
         return PSYOP_INFO;
     }
 
+    if (id === TWO_HE_ANIME_ID) {
+        _lastDiag = `[2heanime] eps=${TWO_HE_ANIME_INFO.episodes.length}`;
+        return TWO_HE_ANIME_INFO;
+    }
+
     const cacheKey = `info_${id}`;
     if (!options.forceSourceRefresh) {
         const cached = cacheGet<AnimeInfo>(cacheKey);
@@ -760,7 +778,7 @@ export async function searchAnime(query: string): Promise<AnimeResult[]> {
 
     if (mapped.length === 0) {
         try {
-            const results = await fetchJikanSearch(query);
+    const results = await fetchJikanSearch(query);
             mapped = results.map((r) => ({
                 id: String(r.mal_id), title: r.title_english || r.title,
                 image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
@@ -773,6 +791,10 @@ export async function searchAnime(query: string): Promise<AnimeResult[]> {
 
     if (matchesPsyopQuery(query)) {
         mapped.unshift(PSYOP_SEARCH_RESULT);
+    }
+
+    if (matchesTwoHeAnimeQuery(query)) {
+        mapped.unshift(TWO_HE_ANIME_SEARCH_RESULT);
     }
 
     if (mapped.length > 0) cacheSet(cacheKey, mapped, TTL_SEARCH);
@@ -801,7 +823,7 @@ export async function fetchAnimeByGenre(genreId: number): Promise<AnimeResult[]>
             const results = await fetchJikanByGenre(genreId);
             mapped = results.map((r) => ({
                 id: String(r.mal_id), title: r.title_english || r.title,
-                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+        image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
                 type: r.type, score: r.score, year: r.year ?? null,
             }));
         } catch (e) {
@@ -829,10 +851,10 @@ export async function fetchAiringAnime(): Promise<AnimeResult[]> {
 
     if (mapped.length === 0) {
         try {
-            const results = await fetchJikanTrending();
+    const results = await fetchJikanTrending();
             mapped = results.map((r) => ({
                 id: String(r.mal_id), title: r.title_english || r.title,
-                image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
+        image: r.images?.webp?.large_image_url || r.images?.webp?.image_url,
                 type: "Trending", score: r.score,
             }));
         } catch (e) {
@@ -897,6 +919,12 @@ export async function fetchEpisodeSources(
 ): Promise<StreamingSource | null> {
     if (isPsyopEpisode(episodeId)) {
         const url = getPsyopStreamUrl(episodeId);
+        if (!url) return null;
+        return { url, isM3U8: false };
+    }
+
+    if (isTwoHeAnimeEpisode(episodeId)) {
+        const url = getTwoHeAnimeStreamUrl(episodeId);
         if (!url) return null;
         return { url, isM3U8: false };
     }

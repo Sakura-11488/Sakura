@@ -14,12 +14,15 @@ import LottieIcon from "@/components/LottieIcon";
 import DismissibleBanner from "@/components/DismissibleBanner";
 import { schedulePushSettings } from "@/lib/cloud-sync";
 import { APP_VERSION } from "@/lib/app-version";
+import { SettingsUpdateActions } from "@/components/AppUpdatePrompt";
+import { SUPPORTED_LOCALES, useI18n, type Locale } from "@/lib/i18n/I18nProvider";
 
 type ReadingMode = 'scroll' | 'page';
 
 export default function SettingsPage() {
     const { publicKey, disconnect } = useWallet();
     const { setVisible } = useSakuraWalletModal();
+    const { locale, setLocale, t } = useI18n();
 
     const [dataSaver, setDataSaver] = useState(false);
     const [pnlTracker, setPnlTracker] = useState(false);
@@ -170,12 +173,53 @@ export default function SettingsPage() {
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40, maxWidth: 800, margin: "0 auto" }}>
                     <div className="section-header">
-                        <h2 className="section-title">Settings 設定</h2>
-                        <p className="section-subtitle">Manage preferences, wallet, and notifications</p>
+                        <h2 className="section-title">{t("settings.title")} 設定</h2>
+                        <p className="section-subtitle">{t("settings.subtitle")}</p>
                     </div>
 
                     <div className="settings-group">
-                        <h3 className="settings-group-title">クリエイター Creator</h3>
+                        <h3 className="settings-group-title">{t("settings.languageGroup")}</h3>
+                        <div className="setting-item">
+                            <div className="setting-info">
+                                <span className="setting-name">{t("settings.languageName")}</span>
+                                <span className="setting-desc">{t("settings.languageDesc")}</span>
+                            </div>
+                            <select
+                                value={locale}
+                                onChange={(event) => setLocale(event.target.value as Locale)}
+                                aria-label={t("settings.languageName")}
+                                style={{
+                                    minWidth: 180,
+                                    padding: "10px 14px",
+                                    borderRadius: 12,
+                                    border: "1px solid var(--border-subtle)",
+                                    background: "var(--bg-card)",
+                                    color: "var(--text-primary)",
+                                    fontSize: 14,
+                                    outline: "none",
+                                }}
+                            >
+                                {SUPPORTED_LOCALES.map(language => (
+                                    <option key={language.code} value={language.code}>
+                                        {language.nativeName} — {language.name}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <p
+                            style={{
+                                margin: "-4px 0 0",
+                                color: locale === "comrade" ? "var(--sakura-pink)" : "var(--text-muted)",
+                                fontSize: 12,
+                                lineHeight: 1.5,
+                            }}
+                        >
+                            {t("settings.comradeHint")}
+                        </p>
+                    </div>
+
+                    <div className="settings-group">
+                        <h3 className="settings-group-title">クリエイター {t("settings.creator")}</h3>
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">
@@ -226,16 +270,16 @@ export default function SettingsPage() {
 
                     {/* Wallet Management */}
                     <div className="settings-group">
-                        <h3 className="settings-group-title">ウォレット Wallet</h3>
+                        <h3 className="settings-group-title">ウォレット {t("settings.wallet")}</h3>
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">
-                                    {publicKey ? "Connected" : "Not Connected"}
+                                    {publicKey ? t("wallet.connected") : t("wallet.notConnected")}
                                 </span>
                                 <span className="setting-desc">
                                     {publicKey
                                         ? truncateAddress(publicKey.toBase58())
-                                        : "Sign up or login to access premium features."}
+                                        : t("wallet.connectDesc")}
                                 </span>
                             </div>
                             {publicKey ? (
@@ -244,7 +288,7 @@ export default function SettingsPage() {
                                     onClick={() => disconnect()}
                                     style={{ fontSize: 13, padding: "8px 16px" }}
                                 >
-                                    Disconnect
+                                    {t("wallet.disconnect")}
                                 </button>
                             ) : (
                                 <button
@@ -252,7 +296,7 @@ export default function SettingsPage() {
                                     onClick={() => setVisible(true)}
                                     style={{ fontSize: 13, padding: "8px 16px" }}
                                 >
-                                    Sign Up / Login
+                                    {t("wallet.signIn")}
                                 </button>
                             )}
                         </div>
@@ -306,7 +350,7 @@ export default function SettingsPage() {
 
                     {/* Quick Links */}
                     <div className="settings-group">
-                        <h3 className="settings-group-title">クイックリンク Quick Links</h3>
+                        <h3 className="settings-group-title">クイックリンク {t("settings.quickLinks")}</h3>
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">Creator Dashboard</span>
@@ -337,10 +381,10 @@ export default function SettingsPage() {
 
                     {/* Creator Search */}
                     <div className="settings-group">
-                        <h3 className="settings-group-title">クリエイター Creators</h3>
+                        <h3 className="settings-group-title">クリエイター {t("settings.creator")}</h3>
                         <div className="setting-item" style={{ flexDirection: "column", alignItems: "stretch", gap: 12 }}>
                             <div className="setting-info">
-                                <span className="setting-name">Search Creators</span>
+                                <span className="setting-name">{t("settings.searchCreators")}</span>
                                 <span className="setting-desc">Find verified creators by name.</span>
                             </div>
                             <div style={{ position: "relative" }}>
@@ -348,7 +392,7 @@ export default function SettingsPage() {
                                     type="text"
                                     value={creatorQuery}
                                     onChange={(e) => handleCreatorSearch(e.target.value)}
-                                    placeholder="Search by name..."
+                                    placeholder={t("settings.searchByName")}
                                     style={{
                                         width: "100%",
                                         padding: "10px 14px",
@@ -361,10 +405,10 @@ export default function SettingsPage() {
                                 />
                             </div>
                             {creatorSearching && (
-                                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Searching...</p>
+                                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>{t("settings.searching")}</p>
                             )}
                             {!creatorSearching && creatorQuery.trim() && creatorResults.length === 0 && (
-                                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>No creators found.</p>
+                                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>{t("settings.noCreators")}</p>
                             )}
                             {creatorResults.length > 0 && (
                                 <div style={{
@@ -520,11 +564,11 @@ export default function SettingsPage() {
 
                     {/* Reader Preferences */}
                     <div className="settings-group">
-                        <h3 className="settings-group-title">読み方 Reader</h3>
+                        <h3 className="settings-group-title">読み方 {t("settings.reader")}</h3>
                         <div className="setting-item">
                             <div className="setting-info">
-                                <span className="setting-name">Default Reading Mode</span>
-                                <span className="setting-desc">Choose between infinite scroll or page-by-page.</span>
+                                <span className="setting-name">{t("settings.defaultReadingMode")}</span>
+                                <span className="setting-desc">{t("settings.defaultReadingDesc")}</span>
                             </div>
                             <div style={{ display: "flex", gap: 4, borderRadius: "var(--radius-md)", overflow: "hidden", border: "1px solid var(--border-subtle)" }}>
                                 <button
@@ -544,7 +588,7 @@ export default function SettingsPage() {
                                     }}
                                 >
                                     <LottieIcon src="/icons/wired-outline-3411-chevron-down-circle-hover-scale.json" size={18} colorFilter={readingMode === 'scroll' ? "brightness(0) invert(1)" : "brightness(0) invert(1) opacity(0.4)"} playOnMount={readingMode === 'scroll'} />
-                                    Scroll
+                                    {t("settings.scroll")}
                                 </button>
                                 <button
                                     onClick={() => handleReadingModeChange('page')}
@@ -563,15 +607,15 @@ export default function SettingsPage() {
                                     }}
                                 >
                                     <LottieIcon src="/icons/wired-outline-1384-page-view-array-hover-pinch.json" size={18} colorFilter={readingMode === 'page' ? "brightness(0) invert(1)" : "brightness(0) invert(1) opacity(0.4)"} playOnMount={readingMode === 'page'} />
-                                    Page
+                                    {t("settings.page")}
                                 </button>
                             </div>
                         </div>
 
                         <div className="setting-item">
                             <div className="setting-info">
-                                <span className="setting-name">Data Saver Mode</span>
-                                <span className="setting-desc">Use compressed images (lower quality).</span>
+                                <span className="setting-name">{t("settings.dataSaver")}</span>
+                                <span className="setting-desc">{t("settings.dataSaverDesc")}</span>
                             </div>
                             <label className="switch">
                                 <input
@@ -715,6 +759,7 @@ export default function SettingsPage() {
                     {/* About */}
                     <div className="settings-group">
                         <h3 className="settings-group-title">About</h3>
+                        <SettingsUpdateActions />
                         <div className="setting-item">
                             <div className="setting-info">
                                 <span className="setting-name">Version</span>

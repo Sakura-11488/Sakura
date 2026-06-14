@@ -1,0 +1,9 @@
+{
+  "version": "1.8.3",
+  "versionCode": 34,
+  "apkUrl": "https://github.com/millw14/sakura-android/releases/download/v1.8.3/sakura-1.8.3.apk",
+  "releaseNotes": "Wallet sign-in fix, anime playback fix (Megaplay/HiAnime rotation), .mov hint, source-map cache reset.",
+  "publishedAt": "2026-05-27",
+  "forceUpdate": false,
+  "minVersionCode": 0
+}

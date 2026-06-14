@@ -1,110 +1,61 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-
-interface CandleData {
-    time: number;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-}
+import { fetchPhoenixCandles } from "@/lib/phoenix";
 
 interface PerpChartProps {
     markPrice: number;
     change24h: number;
+    symbol?: string;
 }
 
 type Timeframe = "1m" | "5m" | "15m" | "1H" | "4H" | "1D";
 
-const TF_MAP: Record<Timeframe, { cgDays: string; cgInterval: string }> = {
-    "1m":  { cgDays: "1",  cgInterval: "" },
-    "5m":  { cgDays: "1",  cgInterval: "" },
-    "15m": { cgDays: "1",  cgInterval: "" },
-    "1H":  { cgDays: "7",  cgInterval: "" },
-    "4H":  { cgDays: "30", cgInterval: "hourly" },
-    "1D":  { cgDays: "90", cgInterval: "daily" },
+const TF_MAP: Record<Timeframe, string> = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "1H": "1h",
+    "4H": "4h",
+    "1D": "1d",
 };
 
-/**
- * Build OHLC candles from CoinGecko price array.
- * CG returns [timestamp, price] pairs; we group into candle intervals.
- */
-function buildCandles(prices: [number, number][], tf: Timeframe): CandleData[] {
-    if (!prices || prices.length === 0) return [];
-
-    const intervalMs: Record<Timeframe, number> = {
-        "1m": 60_000,
-        "5m": 300_000,
-        "15m": 900_000,
-        "1H": 3_600_000,
-        "4H": 14_400_000,
-        "1D": 86_400_000,
-    };
-
-    const interval = intervalMs[tf];
-    const candles: CandleData[] = [];
-    let currentBucket = Math.floor(prices[0][0] / interval) * interval;
-    let open = prices[0][1];
-    let high = prices[0][1];
-    let low = prices[0][1];
-    let close = prices[0][1];
-
-    for (let i = 1; i < prices.length; i++) {
-        const [ts, price] = prices[i];
-        const bucket = Math.floor(ts / interval) * interval;
-
-        if (bucket !== currentBucket) {
-            candles.push({
-                time: Math.floor(currentBucket / 1000),
-                open, high, low, close,
-            });
-            currentBucket = bucket;
-            open = price;
-            high = price;
-            low = price;
-            close = price;
-        } else {
-            if (price > high) high = price;
-            if (price < low) low = price;
-            close = price;
-        }
-    }
-
-    candles.push({ time: Math.floor(currentBucket / 1000), open, high, low, close });
-    return candles;
-}
-
-export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
+export default function PerpChart({ markPrice, change24h, symbol = "SOL" }: PerpChartProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<any>(null);
     const seriesRef = useRef<any>(null);
+    const resizeObserverRef = useRef<ResizeObserver | null>(null);
+    const lastCandleTimeRef = useRef(0);
     const [activeTimeframe, setActiveTimeframe] = useState<Timeframe>("15m");
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState("");
 
     const fetchAndRender = useCallback(async (tf: Timeframe) => {
         setLoading(true);
+        setError("");
         try {
-            const { cgDays } = TF_MAP[tf];
-            const url = `https://api.coingecko.com/api/v3/coins/solana/market_chart?vs_currency=usd&days=${cgDays}&precision=2`;
-            const res = await fetch(url);
-            if (!res.ok) return;
-            const data = await res.json();
-            const candles = buildCandles(data.prices, tf);
+            const candles = await fetchPhoenixCandles(symbol, TF_MAP[tf], 180);
+            if (!candles.length) {
+                throw new Error("Phoenix returned no candle data for this market.");
+            }
 
             if (!containerRef.current) return;
 
             const { createChart, ColorType, CrosshairMode, CandlestickSeries } = await import("lightweight-charts");
 
+            resizeObserverRef.current?.disconnect();
+            resizeObserverRef.current = null;
             if (chartRef.current) {
                 chartRef.current.remove();
                 chartRef.current = null;
                 seriesRef.current = null;
             }
 
+            const width = Math.max(containerRef.current.clientWidth, 320);
+            const height = Math.max(containerRef.current.clientHeight, 360);
             const chart = createChart(containerRef.current, {
-                width: containerRef.current.clientWidth,
-                height: containerRef.current.clientHeight,
+                width,
+                height,
                 layout: {
                     background: { type: ColorType.Solid, color: "transparent" },
                     textColor: "rgba(255,255,255,0.5)",
@@ -136,6 +87,7 @@ export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
 
             series.setData(candles as any);
             chart.timeScale().fitContent();
+            lastCandleTimeRef.current = candles[candles.length - 1]?.time || 0;
 
             chartRef.current = chart;
             seriesRef.current = series;
@@ -144,22 +96,26 @@ export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
             const resizeObs = new ResizeObserver((entries) => {
                 for (const entry of entries) {
                     chart.applyOptions({
-                        width: entry.contentRect.width,
-                        height: entry.contentRect.height,
+                        width: Math.max(entry.contentRect.width, 320),
+                        height: Math.max(entry.contentRect.height, 360),
                     });
                 }
             });
             resizeObs.observe(containerRef.current);
+            resizeObserverRef.current = resizeObs;
         } catch (err) {
             console.error("[PerpChart] Error:", err);
+            setError(err instanceof Error ? err.message : "Chart failed to load.");
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [symbol]);
 
     useEffect(() => {
         fetchAndRender(activeTimeframe);
         return () => {
+            resizeObserverRef.current?.disconnect();
+            resizeObserverRef.current = null;
             if (chartRef.current) {
                 chartRef.current.remove();
                 chartRef.current = null;
@@ -170,7 +126,7 @@ export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
     // Update last candle with live price
     useEffect(() => {
         if (!seriesRef.current || markPrice <= 0) return;
-        const now = Math.floor(Date.now() / 1000);
+        const now = Math.max(Math.floor(Date.now() / 1000), lastCandleTimeRef.current);
         seriesRef.current.update({
             time: now,
             open: markPrice,
@@ -178,6 +134,7 @@ export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
             low: markPrice,
             close: markPrice,
         });
+        lastCandleTimeRef.current = now;
     }, [markPrice]);
 
     return (
@@ -195,13 +152,19 @@ export default function PerpChart({ markPrice, change24h }: PerpChartProps) {
                     ))}
                 </div>
                 <div className="perp-chart-indicators">
-                    <span style={{ fontSize: 10, opacity: 0.5 }}>Drift SOL-PERP</span>
+                    <span style={{ fontSize: 10, opacity: 0.5 }}>Phoenix {symbol}-PERP</span>
                 </div>
             </div>
             <div className="perp-chart-body" style={{ position: "relative" }}>
                 {loading && (
                     <div className="perp-chart-price-overlay">
                         <span className="perp-chart-big">Loading chart...</span>
+                    </div>
+                )}
+                {!loading && error && (
+                    <div className="perp-chart-price-overlay">
+                        <span className="perp-chart-big">Chart unavailable</span>
+                        <span className="perp-chart-error">{error}</span>
                     </div>
                 )}
                 <div

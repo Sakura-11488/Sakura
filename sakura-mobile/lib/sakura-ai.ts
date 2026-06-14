@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { supabase } from './supabase';
 import { buildMemoryContext, addMemory, forgetMemory, listMemories } from './ai-memories';
+import { extractDisplayNameFromMemory, syncAiDisplayName } from './ai-display-name';
 import {
   findSimilarAnime,
   findSimilarManga,
@@ -17,7 +18,7 @@ import {
   sendSakura,
 } from './wallet/connection';
 import { getWalletWithBiometrics } from './wallet/storage';
-import { SAKURA_MINT, sakuraToRaw } from './wallet/config';
+import { resolveUserWallet } from './user-resolve';
 import { recordSupportOnChain } from './wallet/ino';
 import {
   lookupTokenPrice,
@@ -339,6 +340,7 @@ WALLET & MONEY TOOLS:
 
 MEMORY & ALERTS:
 - remember / forget / recall_memories for preferences.
+- When the user shares their name (e.g. "call me Milla"), save it with remember using tag "name" so it appears on their profile.
 - set_price_alert / list_price_alerts / cancel_price_alert for price notifications.
 - Apply memories quietly; don't recite them unprompted.
 
@@ -366,24 +368,7 @@ async function invokeOnce(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function resolveRecipient(input: string): Promise<string | null> {
-  const trimmed = (input || '').trim().replace(/^@/, '');
-  if (!trimmed) return null;
-  // Already a valid base58 address?
-  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed)) {
-    try {
-      // eslint-disable-next-line no-new
-      new PublicKey(trimmed);
-      return trimmed;
-    } catch {
-      // fall through to username lookup
-    }
-  }
-  const { data } = await supabase
-    .from('sakura_usernames')
-    .select('wallet_address')
-    .ilike('username', trimmed)
-    .maybeSingle();
-  return (data as { wallet_address?: string } | null)?.wallet_address ?? null;
+  return resolveUserWallet(input);
 }
 
 function historyToCards(items: Awaited<ReturnType<typeof getReadingHistory>>): DiscoveryCard[] {
@@ -442,9 +427,17 @@ async function dispatchTool(
     }
 
     // Memory
-    case 'remember':
+    case 'remember': {
       if (!walletAddress) return { ok: false, error: 'No wallet — memory not saved.' };
-      return addMemory(walletAddress, args.note, args.tag);
+      const result = await addMemory(walletAddress, args.note, args.tag);
+      if (result.ok) {
+        const displayName = extractDisplayNameFromMemory(String(args.note ?? ''), args.tag);
+        if (displayName) {
+          await syncAiDisplayName(walletAddress, displayName).catch(() => {});
+        }
+      }
+      return result;
+    }
     case 'forget':
       if (!walletAddress) return { ok: false, error: 'No wallet — cannot delete memory.' };
       return forgetMemory(walletAddress, { contains: args.contains });
@@ -523,6 +516,14 @@ async function dispatchTool(
       if (!to) return { ok: false, error: `Couldn't resolve recipient "${args.to}".` };
       const amount = Number(args.amount);
       if (!(amount > 0)) return { ok: false, error: 'Amount must be positive.' };
+      const pk = new PublicKey(walletAddress);
+      const [sol, sakura] = await Promise.all([getSolBalance(pk), getSakuraBalance(pk)]);
+      if ((sakura ?? 0) < amount) {
+        return { ok: false, error: `Insufficient SAKURA. Available: ${Math.floor(sakura ?? 0).toLocaleString()}.` };
+      }
+      if ((sol ?? 0) < 0.003) {
+        return { ok: false, error: 'You need a small amount of SOL (~0.003) for network fees when sending SAKURA.' };
+      }
       const approved = requireConfirm
         ? await requireConfirm({ kind: 'send_sakura', title: `Send ${amount.toLocaleString()} SAKURA`, detail: `To ${to.slice(0, 8)}…${to.slice(-4)}` })
         : false;

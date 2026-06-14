@@ -48,7 +48,7 @@ Deno.serve(async (req) => {
       wallets.length
         ? supabase
             .from('user_profiles')
-            .select('wallet_address, display_name, avatar_seed, creator_verification_state')
+            .select('wallet_address, display_name, avatar_seed, avatar_url, creator_verification_state')
             .in('wallet_address', wallets)
         : Promise.resolve({ data: [] }),
     ]);

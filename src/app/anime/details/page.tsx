@@ -9,10 +9,12 @@ import { Capacitor } from "@capacitor/core";
 import { getLocal, setLocal, STORAGE_KEYS, getAnimeHistory, isInLibrary } from "@/lib/storage";
 import type { DownloadProgressEvent } from "@/plugins/anime";
 import { PSYOP_ID, PSYOP_INFO, PSYOP_STUDIO, PSYOP_CHARACTERS } from "@/lib/psyopAnime";
+import { TWO_HE_ANIME_ID, TWO_HE_ANIME_INFO, TWO_HE_CREATOR_BIO, TWO_HE_CREATOR_EMAIL, TWO_HE_CREATOR_WALLET, TWO_HE_EPISODE_DETAILS } from "@/lib/2heAnime";
 import { imageOrPlaceholder, SAKURA_PLACEHOLDER_IMAGE } from "@/lib/media-fallback";
 import { buildSakuraShareUrl, shareOrCopyLink } from "@/lib/share";
 import dynamic from "next/dynamic";
 import LottieIcon from "@/components/LottieIcon";
+import { truncateAddress } from "@/lib/solana";
 const SaveToLibraryModal = dynamic(() => import("@/components/SaveToLibraryModal"), { ssr: false });
 
 interface AnimeDownloadEntry {
@@ -42,9 +44,10 @@ function AnimeDetailsInner() {
     const id = searchParams.get("id") || "";
     const isNative = Capacitor.isNativePlatform();
     const isPsyop = id === PSYOP_ID;
+    const isTwoHeAnime = id === TWO_HE_ANIME_ID;
 
-    const [anime, setAnime] = useState<AnimeInfo | null>(isPsyop ? PSYOP_INFO : null);
-    const [loading, setLoading] = useState(!isPsyop);
+    const [anime, setAnime] = useState<AnimeInfo | null>(isPsyop ? PSYOP_INFO : isTwoHeAnime ? TWO_HE_ANIME_INFO : null);
+    const [loading, setLoading] = useState(!isPsyop && !isTwoHeAnime);
     const [error, setError] = useState<string | null>(null);
     const [dlMap, setDlMap] = useState<Record<string, AnimeDownloadEntry>>({});
     const listenerRef = useRef<{ remove: () => void } | null>(null);
@@ -177,7 +180,7 @@ function AnimeDetailsInner() {
     }, [anime, id, dlMap, showToast]);
 
     useEffect(() => {
-        if (!id || isPsyop) return;
+        if (!id || isPsyop || isTwoHeAnime) return;
         const cached = getCachedAnimeInfo(id);
         if (cached && cached.episodes?.length > 0) {
             setAnime(cached);
@@ -192,7 +195,7 @@ function AnimeDetailsInner() {
         }).catch((e: any) => {
             setError(e.message || "Failed to load Anime details.");
         }).finally(() => setLoading(false));
-    }, [id, isPsyop]);
+    }, [id, isPsyop, isTwoHeAnime]);
 
     const episodes = anime?.episodes || [];
     const totalEps = episodes.length;
@@ -267,7 +270,7 @@ function AnimeDetailsInner() {
                     {anime.status && (
                         <span className="rating-badge">{anime.status}</span>
                     )}
-                    {isPsyop && <span className="rating-badge" style={{ background: "rgba(233,30,123,0.2)", color: "#E91E7B" }}>Sakura Original</span>}
+                    {(isPsyop || isTwoHeAnime) && <span className="rating-badge" style={{ background: "rgba(233,30,123,0.2)", color: "#E91E7B" }}>Sakura Original</span>}
                     {anime.score && (
                         <span className="star-rating">★ {anime.score}</span>
                     )}
@@ -341,7 +344,7 @@ function AnimeDetailsInner() {
                 <div className="anime-tabs">
                     <button className={`anime-tab ${activeTab === "episodes" ? "active" : ""}`} onClick={() => setActiveTab("episodes")}>Episodes</button>
                     <button className={`anime-tab ${activeTab === "info" ? "active" : ""}`} onClick={() => setActiveTab("info")}>
-                        {isPsyop ? "Characters" : "More Info"}
+                        {isPsyop ? "Characters" : isTwoHeAnime ? "Creator" : "More Info"}
                     </button>
                 </div>
 
@@ -492,6 +495,42 @@ function AnimeDetailsInner() {
                                     ))}
                                 </div>
                             </>
+                        ) : isTwoHeAnime ? (
+                            <div style={{ padding: "20px 0" }}>
+                                <div style={{ marginBottom: 16 }}>
+                                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 600 }}>Creator</span>
+                                    <p style={{ margin: "4px 0 0", color: "#fff", fontSize: 14 }}>2heAnime</p>
+                                </div>
+                                <div style={{ marginBottom: 16 }}>
+                                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 600 }}>Bio</span>
+                                    <p style={{ margin: "4px 0 0", color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-line" }}>{TWO_HE_CREATOR_BIO}</p>
+                                </div>
+                                <div style={{ marginBottom: 16 }}>
+                                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 600 }}>Contact</span>
+                                    <p style={{ margin: "4px 0 0", color: "#fff", fontSize: 14 }}>{TWO_HE_CREATOR_EMAIL}</p>
+                                </div>
+                                <div style={{ marginBottom: 16 }}>
+                                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontWeight: 600 }}>Creator Wallet</span>
+                                    <p style={{ margin: "4px 0 0", color: "#fff", fontSize: 14, fontFamily: "monospace" }}>{truncateAddress(TWO_HE_CREATOR_WALLET)}</p>
+                                </div>
+                                <h3 style={{ color: "#fff", fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Episode Notes</h3>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                                    {TWO_HE_EPISODE_DETAILS.map(episode => (
+                                        <div key={episode.id} style={{
+                                            background: "rgba(255,255,255,0.03)",
+                                            border: "1px solid rgba(255,255,255,0.06)",
+                                            borderRadius: 10, padding: "14px 16px",
+                                        }}>
+                                            <div style={{ color: "#fff", fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
+                                                Episode {episode.number}: {episode.title}
+                                            </div>
+                                            <p style={{ margin: 0, color: "rgba(255,255,255,0.5)", fontSize: 12, lineHeight: 1.5 }}>
+                                                {episode.description}
+                                            </p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
                         ) : (
                             <div style={{ padding: "20px 0" }}>
                                 <div style={{ marginBottom: 16 }}>

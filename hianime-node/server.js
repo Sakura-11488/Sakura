@@ -13,8 +13,33 @@ function serializeError(error) {
   };
 }
 
+// HiAnime's wrapper /ajax/mal endpoint sometimes returns skip data in
+// `[start, end]` array form, sometimes `{start, end}` object form, and
+// sometimes a meaningless `[0,0]`/`{start:0,end:0}` placeholder. Treat
+// anything where `end <= start` as no skip data so we don't clobber the
+// real values resolved further down by the actual extractor.
+function readSkipPair(value) {
+  if (!value) return null;
+  if (Array.isArray(value) && value.length >= 2) {
+    return { start: Number(value[0]) || 0, end: Number(value[1]) || 0 };
+  }
+  if (typeof value === "object") {
+    return { start: Number(value.start) || 0, end: Number(value.end) || 0 };
+  }
+  return null;
+}
+
+function hasRealSkipData(value) {
+  var pair = readSkipPair(value);
+  return Boolean(pair && pair.end > pair.start);
+}
+
+function normalizeSkipBlock(value) {
+  return readSkipPair(value);
+}
+
 app.get("/", function(req, res) {
-  res.json({ status: "ok", version: "2.3.0", domain: config.HIANIME_BASE });
+  res.json({ status: "ok", version: "2.4.3", domain: config.HIANIME_BASE });
 });
 
 app.get("/api/search", async function(req, res) {
@@ -53,7 +78,17 @@ app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
     var embed = await hianime.resolveEmbedForEpisode(slug, parseInt(epNum, 10), category);
     console.log("[m3u8] Embed: " + embed.embedUrl + " (" + embed.serverName + ", " + embed.type + ")");
     var result = await extractor.extract(embed.embedUrl, config.HIANIME_BASE + "/");
-    if (embed.skipData) { result.intro = embed.skipData.intro; result.outro = embed.skipData.outro; }
+    // Only override intro/outro from wrapper skip_data if it carries real
+    // values. hianime.dk's /ajax/mal often returns [0,0] / {start:0,end:0}
+    // for titles where Megaplay has the actual markers — clobbering the
+    // extractor's real values with zeros disables the Skip Intro / Outro
+    // buttons in the player for no reason.
+    if (embed.skipData && hasRealSkipData(embed.skipData.intro)) {
+      result.intro = normalizeSkipBlock(embed.skipData.intro);
+    }
+    if (embed.skipData && hasRealSkipData(embed.skipData.outro)) {
+      result.outro = normalizeSkipBlock(embed.skipData.outro);
+    }
     result.category = embed.type;
     result.availableCategories = embed.availableCategories || ["sub"];
     result.debug = { serverName: embed.serverName, triedServers: embed.triedServers || [] };
@@ -155,6 +190,6 @@ app.get("/api/debug/:slug/:epNum", async function(req, res) {
 });
 
 app.listen(config.PORT, function() {
-  console.log("[server] hianime-node v2.3.0 on port " + config.PORT);
+  console.log("[server] hianime-node v2.4.3 on port " + config.PORT);
   console.log("[server] Domain: " + config.HIANIME_BASE);
 });

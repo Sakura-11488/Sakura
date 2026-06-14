@@ -47,3 +47,12 @@ verify_jwt = false
 
 [functions.sakura-buyback-verify]
 verify_jwt = false
+
+[functions.generate-user-avatar]
+verify_jwt = false
+
+[functions.search-users]
+verify_jwt = false
+
+[functions.wallet-realtime-session]
+verify_jwt = false

@@ -40,6 +40,7 @@ export const STORAGE_KEYS = {
     NOVEL_TTS_SETTINGS: 'sakura_novel_tts_settings',
     NOVEL_AMBIENT_SETTINGS: 'sakura_novel_ambient_settings',
     TERMS_ACCEPTED: 'sakura_terms_accepted',
+    LANGUAGE: 'sakura_language',
 };
 
 function getScopedMangaKey(mangaId: string, sourceId?: string | null): string {

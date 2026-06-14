@@ -28,6 +28,11 @@ degenchronicles/*.zip
 degenchronicles/icons/
 degenchronicles/server/2heanime/incoming/
 degenchronicles/server/2heanime/videos/
+# Episode binaries — host on server/CDN; never commit (654MB+ breaks git push)
+degenchronicles/server/degegen-files/episodes/
+degenchronicles/server/**/*.mp4
+degenchronicles/server/**/*.mov
+degenchronicles/server/**/*.MOV
 
 .vercel
 *.tsbuildinfo

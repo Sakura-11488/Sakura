@@ -11,6 +11,7 @@ import {
     type LibraryItem,
 } from "@/lib/storage";
 import { getDefaultMangaSourceId, normalizeMangaSourceId } from "@/lib/sources/source-ids";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 function ConfirmModal({ title, message, onConfirm, onCancel }: {
     title: string; message: string; onConfirm: () => void; onCancel: () => void;
@@ -34,6 +35,7 @@ function ConfirmModal({ title, message, onConfirm, onCancel }: {
 }
 
 export default function LibraryPage() {
+    const { t } = useI18n();
     const [categories, setCategories] = useState<LibraryCategory[]>([]);
     const [activeTab, setActiveTab] = useState(0);
     const [confirmRemove, setConfirmRemove] = useState<{ item: LibraryItem; catName: string } | null>(null);
@@ -84,8 +86,8 @@ export default function LibraryPage() {
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
-                        <h2 className="section-title">ライブラリ</h2>
-                        <p className="section-subtitle">Your Library</p>
+                        <h2 className="section-title">{t("library.title")}</h2>
+                        <p className="section-subtitle">{t("library.subtitle")}</p>
                     </div>
 
                     {/* Category Tabs */}
@@ -94,7 +96,7 @@ export default function LibraryPage() {
                             className={`genre-chip ${activeTab === -1 ? "active" : ""}`}
                             onClick={() => setActiveTab(-1)}
                         >
-                            All ({uniqueAll.length})
+                            {t("library.all")} ({uniqueAll.length})
                         </button>
                         {categories.map((cat, idx) => (
                             <button
@@ -122,7 +124,7 @@ export default function LibraryPage() {
                                     opacity: 0.7,
                                 }}
                             >
-                                Delete &quot;{activeCat.name}&quot; category
+                                {t("library.deleteCategory", { name: activeCat.name })}
                             </button>
                         </div>
                     )}
@@ -136,17 +138,17 @@ export default function LibraryPage() {
                                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--sakura-pink)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, marginBottom: 16 }}>
                                         <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
                                     </svg>
-                                    <p style={{ fontFamily: "var(--font-jp)", fontSize: 18 }}>まだ何もありません</p>
-                                    <p style={{ fontSize: 14, marginTop: 4 }}>No items in this category yet.</p>
+                                    <p style={{ fontFamily: "var(--font-jp)", fontSize: 18 }}>{t("library.emptyTitle")}</p>
+                                    <p style={{ fontSize: 14, marginTop: 4 }}>{t("library.emptyDesc")}</p>
                                     <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20, flexWrap: "wrap" }}>
                                         <Link href="/manga" className="genre-chip active" style={{ textDecoration: "none" }}>
-                                            Browse Manga
+                                            {t("library.browseManga")}
                                         </Link>
                                         <Link href="/anime" className="genre-chip active" style={{ textDecoration: "none" }}>
-                                            Browse Anime
+                                            {t("library.browseAnime")}
                                         </Link>
                                         <Link href="/novel" className="genre-chip active" style={{ textDecoration: "none" }}>
-                                            Browse Novels
+                                            {t("library.browseNovels")}
                                         </Link>
                                     </div>
                                 </div>
@@ -233,23 +235,23 @@ export default function LibraryPage() {
                     {/* Browse shortcuts at bottom */}
                     <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 32, paddingBottom: 16, flexWrap: "wrap" }}>
                         <Link href="/manga" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(255,107,157,0.1)", border: "1px solid rgba(255,107,157,0.2)", color: "var(--sakura-pink)", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
-                            Browse Manga
+                            {t("library.browseManga")}
                         </Link>
                         <Link href="/anime" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(88,101,242,0.1)", border: "1px solid rgba(88,101,242,0.2)", color: "#5865f2", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
-                            Browse Anime
+                            {t("library.browseAnime")}
                         </Link>
                         <Link href="/novel" style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.2)", color: "#c084fc", fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
-                            Browse Novels
+                            {t("library.browseNovels")}
                         </Link>
                     </div>
                 </section>
 
                 <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
+                    <p className="footer-jp">{t("footer.jp")}</p>
+                    <p className="footer-text">{t("footer.text")}</p>
                     <div className="footer-solana">
                         <span className="sol-dot" />
-                        Built on Solana
+                        {t("footer.solana")}
                     </div>
                 </footer>
             </main>
@@ -257,7 +259,7 @@ export default function LibraryPage() {
             {/* Confirm Remove Item */}
             {confirmRemove && (
                 <ConfirmModal
-                    title="Remove from Library?"
+                    title={t("library.removeTitle")}
                     message={`Are you sure you want to remove "${confirmRemove.item.title}" from "${confirmRemove.catName}"?`}
                     onConfirm={confirmRemoveItem}
                     onCancel={() => setConfirmRemove(null)}

@@ -5,6 +5,7 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
 import { createCreatorPost, fetchCreatorFeed, type CreatorFeedPost } from '@/lib/creator-social';
+import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
@@ -91,7 +92,8 @@ export default function CreatorFeedScreen() {
         videoStub: { height: 310, alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' },
         videoText: { color: '#fff', fontFamily: Fonts.bodyBold },
         body: { padding: Spacing.md, gap: 8 },
-        creatorRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+        creatorRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+        creatorMeta: { flex: 1, gap: 2 },
         creator: { color: colors.text, fontSize: FontSize.md, fontWeight: FontWeight.bold },
         verified: { color: colors.primary, fontWeight: FontWeight.bold },
         caption: { color: colors.textSecondary, lineHeight: 20 },
@@ -161,8 +163,20 @@ export default function CreatorFeedScreen() {
               ) : null}
               <View style={styles.body}>
                 <View style={styles.creatorRow}>
-                  <Text style={styles.creator}>{creatorName(item)}</Text>
-                  {item.creator?.creator_verification_state === 'verified' ? <Text style={styles.verified}>✓</Text> : null}
+                  <ProfileAvatar
+                    profile={{
+                      wallet_address: item.creator_wallet,
+                      avatar_url: item.creator?.avatar_url ?? null,
+                      avatar_seed: item.creator?.avatar_seed ?? item.creator_wallet.slice(0, 8),
+                    }}
+                    size={36}
+                  />
+                  <View style={styles.creatorMeta}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.creator}>{creatorName(item)}</Text>
+                      {item.creator?.creator_verification_state === 'verified' ? <Text style={styles.verified}>✓</Text> : null}
+                    </View>
+                  </View>
                 </View>
                 {item.caption ? <Text style={styles.caption}>{item.caption}</Text> : null}
                 <Text style={styles.stats}>

@@ -1,5 +1,6 @@
 var kwik = require("./kwik");
 var megacloud = require("./megacloud");
+var megaplay = require("./megaplay");
 var config = require("../config");
 
 function makeExtractorError(code, message, details) {
@@ -30,6 +31,18 @@ async function extract(embedUrl, referer) {
     } catch (error) {
       console.warn("[extract] MegaCloud failed: " + error.message);
       errors.push("MegaCloud: " + error.message);
+    }
+  }
+
+  if (megaplay.isMegaplay(embedUrl)) {
+    try {
+      console.log("[extract] Trying Megaplay extractor for: " + embedUrl);
+      var result = await megaplay.extractM3u8(embedUrl);
+      if (result && result.sources && result.sources.length > 0) return result;
+      errors.push("Megaplay: empty sources");
+    } catch (error) {
+      console.warn("[extract] Megaplay failed: " + error.message);
+      errors.push("Megaplay: " + error.message);
     }
   }
 

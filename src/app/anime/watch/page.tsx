@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchEpisodeSources, type StreamingSource, fetchAnimeInfo, refreshAnimeInfo, type AnimeInfo } from "@/lib/anime";
 import { PSYOP_ID, isPsyopEpisode } from "@/lib/psyopAnime";
+import { TWO_HE_ANIME_ID, isTwoHeAnimeEpisode } from "@/lib/2heAnime";
 import Link from "next/link";
 import { Capacitor } from "@capacitor/core";
 import { getLocal, STORAGE_KEYS, saveAnimeWatchEntry } from "@/lib/storage";
@@ -86,7 +87,7 @@ function AnimeWatchInner() {
         ? anime?.episodes[currentEpisodeIndex + 1]
         : null;
     const errorGuidance = error ? getErrorGuidance(error) : null;
-    const canRematch = !!error && !isPsyopEpisode(episodeId) && (
+    const canRematch = !!error && !isPsyopEpisode(episodeId) && !isTwoHeAnimeEpisode(episodeId) && (
         error.stage === "mapping"
         || error.stage === "episodes"
         || error.code === "MISSING_SLUG"
@@ -123,7 +124,8 @@ function AnimeWatchInner() {
                 if (animeData) {
                     setAnime(animeData);
                     const isPsyop = id === PSYOP_ID;
-                    if (!isPsyop && !animeData.episodes.some((episode) => episode.id === episodeId)) {
+                    const isTwoHeAnime = id === TWO_HE_ANIME_ID;
+                    if (!isPsyop && !isTwoHeAnime && !animeData.episodes.some((episode) => episode.id === episodeId)) {
                         const currentNumber = parseEpisodeNumber(episodeId);
                         throw {
                             message: "The current episode is missing from the matched provider list.",
@@ -298,6 +300,12 @@ function AnimeWatchInner() {
                     episodeId,
                     hasNext: !!nextEp,
                     nextEpisodeTitle: nextEp?.title || (nextEp ? `Episode ${nextEp.number}` : ""),
+                    ...(source.intro != null
+                    && typeof source.intro.start === "number"
+                    && typeof source.intro.end === "number"
+                    && source.intro.end > source.intro.start
+                        ? { introStart: source.intro.start, introEnd: source.intro.end }
+                        : {}),
                 });
             }
 
@@ -557,6 +565,7 @@ function AnimeWatchInner() {
                     <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 14 }}>
                         {(() => {
                             if (isPsyopEpisode(episodeId)) return "PsyopAnime \u00d7 Sakura";
+                            if (isTwoHeAnimeEpisode(episodeId)) return "2heAnime x Sakura";
                             const allDownloads = typeof window !== "undefined" ? getLocal<Record<string, any>>(STORAGE_KEYS.ANIME_DOWNLOADS, {}) : {};
                             return allDownloads[episodeId]?.state === "completed" ? "Playing offline" : "Streaming via Sakura Engine";
                         })()}

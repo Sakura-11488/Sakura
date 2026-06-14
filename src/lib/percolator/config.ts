@@ -1,7 +1,7 @@
 /**
  * Trading configuration for the Sakura perps integration.
- * The actual trading is handled by the backend (Drift Protocol).
- * This file retains fee and risk display parameters used by the frontend.
+ * Legacy fee and risk display parameters from the old perps integration.
+ * Phoenix trading now routes through src/lib/phoenix.
  */
 
 // ============ Risk Parameters (for UI display) ============

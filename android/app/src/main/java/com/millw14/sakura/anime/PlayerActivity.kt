@@ -58,6 +58,8 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_EPISODE_ID = "episode_id"
         const val EXTRA_HAS_NEXT = "has_next"
         const val EXTRA_NEXT_TITLE = "next_title"
+        const val EXTRA_INTRO_START_MS = "intro_start_ms"
+        const val EXTRA_INTRO_END_MS = "intro_end_ms"
         private const val PREFS_NAME = "sakura_player_prefs"
         private const val UP_NEXT_THRESHOLD_MS = 60_000L
         private const val COUNTDOWN_SECONDS = 5
@@ -78,6 +80,9 @@ class PlayerActivity : AppCompatActivity() {
 
     private lateinit var upNextCard: LinearLayout
     private lateinit var countdownText: TextView
+    private lateinit var skipIntroButton: TextView
+    private var introStartMs: Long = -1L
+    private var introEndMs: Long = -1L
     private var upNextShown = false
     private val handler = Handler(Looper.getMainLooper())
     private var countdownValue = COUNTDOWN_SECONDS
@@ -124,6 +129,17 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private val skipIntroUiRunnable = object : Runnable {
+        override fun run() {
+            val p = player ?: return
+            updateSkipIntroVisibility(p)
+            val state = p.playbackState
+            if (state != Player.STATE_IDLE && state != Player.STATE_ENDED) {
+                handler.postDelayed(this, 250L)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -134,6 +150,12 @@ class PlayerActivity : AppCompatActivity() {
         episodeId = intent.getStringExtra(EXTRA_EPISODE_ID) ?: ""
         hasNext = intent.getBooleanExtra(EXTRA_HAS_NEXT, false)
         nextTitle = intent.getStringExtra(EXTRA_NEXT_TITLE) ?: ""
+        introStartMs = intent.getLongExtra(EXTRA_INTRO_START_MS, -1L)
+        introEndMs = intent.getLongExtra(EXTRA_INTRO_END_MS, -1L)
+        if (introEndMs <= introStartMs) {
+            introStartMs = -1L
+            introEndMs = -1L
+        }
         val title = intent.getStringExtra(EXTRA_TITLE) ?: ""
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
@@ -174,6 +196,16 @@ class PlayerActivity : AppCompatActivity() {
             gravity = Gravity.BOTTOM or Gravity.END
             marginEnd = dp(24)
             bottomMargin = dp(80)
+        })
+
+        skipIntroButton = buildSkipIntroButton()
+        root.addView(skipIntroButton, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            marginEnd = dp(24)
+            bottomMargin = dp(120)
         })
 
         setContentView(root)
@@ -257,6 +289,56 @@ class PlayerActivity : AppCompatActivity() {
 
     /* ── UI Cards ── */
 
+    private fun buildSkipIntroButton(): TextView {
+        return TextView(this).apply {
+            text = "Skip Intro"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(20), dp(10), dp(20), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setColor(Color.parseColor("#CC000000"))
+            }
+            visibility = View.GONE
+            elevation = dp(4).toFloat()
+            setOnClickListener {
+                val p = player ?: return@setOnClickListener
+                val dur = p.duration
+                val target = if (dur > 0L) kotlin.math.min(introEndMs, dur) else introEndMs
+                if (target > introStartMs) {
+                    p.seekTo(target)
+                }
+            }
+        }
+    }
+
+    private fun updateSkipIntroVisibility(p: ExoPlayer) {
+        if (introStartMs < 0L || introEndMs <= introStartMs) {
+            skipIntroButton.visibility = View.GONE
+            return
+        }
+        val dur = p.duration
+        val endClamp = if (dur > 0L) kotlin.math.min(introEndMs, dur) else introEndMs
+        if (endClamp <= introStartMs) {
+            skipIntroButton.visibility = View.GONE
+            return
+        }
+        val pos = p.currentPosition
+        val inIntro = pos >= introStartMs && pos < endClamp
+        skipIntroButton.visibility = if (inIntro) View.VISIBLE else View.GONE
+    }
+
+    private fun startSkipIntroTicker() {
+        if (introStartMs < 0L || introEndMs <= introStartMs) return
+        handler.removeCallbacks(skipIntroUiRunnable)
+        handler.post(skipIntroUiRunnable)
+    }
+
+    private fun stopSkipIntroTicker() {
+        handler.removeCallbacks(skipIntroUiRunnable)
+    }
+
     private fun buildUpNextCard(): LinearLayout {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -326,6 +408,7 @@ class PlayerActivity : AppCompatActivity() {
         handler.removeCallbacks(positionChecker)
         handler.removeCallbacks(countdownRunner)
         handler.removeCallbacks(bufferingWatchdog)
+        stopSkipIntroTicker()
 
         if (completed && episodeId.isNotEmpty()) {
             clearSavedPosition()
@@ -480,6 +563,11 @@ class PlayerActivity : AppCompatActivity() {
         val mimeType = when {
             url.contains(".m3u8") -> MimeTypes.APPLICATION_M3U8
             url.contains(".mp4") -> MimeTypes.VIDEO_MP4
+            // QuickTime (.mov) shares the same ISO BMFF container as MP4,
+            // so ExoPlayer's MP4 extractor plays it cleanly. Hint explicitly
+            // instead of relying on byte sniffing — saves a HEAD/probe round-
+            // trip on slow links and avoids "unknown source" first frame.
+            url.contains(".mov") -> MimeTypes.VIDEO_MP4
             url.contains(".webm") -> MimeTypes.VIDEO_WEBM
             else -> null
         }
@@ -574,9 +662,12 @@ class PlayerActivity : AppCompatActivity() {
                             errorRetryCount = 0
                             restorePosition()
                             handler.post(positionChecker)
+                            startSkipIntroTicker()
                         }
                         Player.STATE_ENDED -> {
                             handler.removeCallbacks(bufferingWatchdog)
+                            stopSkipIntroTicker()
+                            skipIntroButton.visibility = View.GONE
                             onPlaybackEnded()
                         }
                     }
@@ -624,9 +715,12 @@ class PlayerActivity : AppCompatActivity() {
                             handler.removeCallbacks(bufferingWatchdog)
                             restorePosition()
                             handler.post(positionChecker)
+                            startSkipIntroTicker()
                         }
                         Player.STATE_ENDED -> {
                             handler.removeCallbacks(bufferingWatchdog)
+                            stopSkipIntroTicker()
+                            skipIntroButton.visibility = View.GONE
                             onPlaybackEnded()
                         }
                     }

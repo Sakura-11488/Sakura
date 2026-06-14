@@ -24,5 +24,7 @@ coverage
 *.env.test
 *.env.production
 supabase/.temp/
+.secrets/
+.test-output/
 node_modules/
 

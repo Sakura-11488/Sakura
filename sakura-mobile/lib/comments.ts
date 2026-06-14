@@ -19,6 +19,7 @@ export interface CommentProfile {
   display_name: string | null;
   bio: string | null;
   avatar_seed: string;
+  avatar_url?: string | null;
 }
 
 export interface ReactionSummary {
@@ -79,7 +80,7 @@ async function getProfilesBatch(wallets: string[]): Promise<Record<string, Comme
   if (toFetch.length) {
     const { data } = await supabase
       .from('user_profiles')
-      .select('wallet_address, display_name, bio, avatar_seed')
+      .select('wallet_address, display_name, bio, avatar_seed, avatar_url')
       .in('wallet_address', toFetch);
     for (const p of data ?? []) {
       const profile: CommentProfile = {
@@ -87,6 +88,7 @@ async function getProfilesBatch(wallets: string[]): Promise<Record<string, Comme
         display_name: p.display_name ?? null,
         bio: p.bio ?? null,
         avatar_seed: p.avatar_seed ?? p.wallet_address.slice(0, 8),
+        avatar_url: p.avatar_url ?? null,
       };
       result[p.wallet_address] = profile;
       profileCache.set(p.wallet_address, { exp: Date.now() + PROFILES_TTL, data: profile });

@@ -10,10 +10,12 @@ import { getFavorites, type FavoriteManga } from "@/lib/supabase";
 import { useDownloads } from "@/lib/downloads";
 import { useMemo } from "react";
 import LottieIcon from "@/components/LottieIcon";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 export default function FavoritesPage() {
     const { publicKey } = useWallet();
     const { setVisible } = useSakuraWalletModal();
+    const { t } = useI18n();
     const [favorites, setFavorites] = useState<FavoriteManga[]>([]);
     const [loading, setLoading] = useState(true);
 
@@ -104,8 +106,8 @@ export default function FavoritesPage() {
             <main className="main-content">
                 <section className="section" style={{ paddingTop: 40 }}>
                     <div className="section-header">
-                        <h2 className="section-title">お気に入り Favorites</h2>
-                        <p className="section-subtitle">Your Collection</p>
+                        <h2 className="section-title">{t("favorites.title")}</h2>
+                        <p className="section-subtitle">{t("favorites.subtitle")}</p>
                     </div>
 
                     {!publicKey ? (
@@ -116,15 +118,15 @@ export default function FavoritesPage() {
                                     <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                                 </svg>
                             </div>
-                            <h3 className="empty-title">ログイン — Sign Up / Login</h3>
-                            <p className="empty-text">Sign up or login to see your favorites.</p>
+                            <h3 className="empty-title">{t("favorites.loginTitle")}</h3>
+                            <p className="empty-text">{t("favorites.loginDesc")}</p>
                             <button
                                 className="btn-primary"
                                 onClick={() => setVisible(true)}
                                 style={{ marginTop: 16 }}
                             >
                                 <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={18} colorFilter="brightness(0) invert(1) opacity(0.7)" replayIntervalMs={3000} autoplay />
-                                Sign Up / Login
+                                {t("wallet.signIn")}
                             </button>
                         </div>
                     ) : loading ? (
@@ -134,10 +136,10 @@ export default function FavoritesPage() {
                     ) : mergedLibrary.length === 0 ? (
                         <div className="empty-state">
                             <div className="empty-icon">💔</div>
-                            <h3 className="empty-title">まだありません</h3>
-                            <p className="empty-text">You haven&apos;t added any manga to favorites yet.</p>
+                            <h3 className="empty-title">{t("favorites.emptyTitle")}</h3>
+                            <p className="empty-text">{t("favorites.emptyDesc")}</p>
                             <Link href="/manga" className="btn-primary" style={{ marginTop: 16 }}>
-                                マンガを探す — Browse Manga
+                                {t("library.browseManga")}
                             </Link>
                         </div>
                     ) : (
@@ -158,11 +160,11 @@ export default function FavoritesPage() {
                 </section>
 
                 <footer className="footer">
-                    <p className="footer-jp">桜 — マンガの新しい形</p>
-                    <p className="footer-text">© 2026 Sakura. Read manga on the blockchain.</p>
+                    <p className="footer-jp">{t("footer.jp")}</p>
+                    <p className="footer-text">{t("footer.text")}</p>
                     <div className="footer-solana">
                         <span className="sol-dot" />
-                        Built on Solana
+                        {t("footer.solana")}
                     </div>
                 </footer>
             </main>

@@ -102,7 +102,7 @@ export default function PrivacyPage() {
                             <li>Google Books or similar metadata services</li>
                             <li>Transak</li>
                             <li>Jupiter</li>
-                            <li>Drift Protocol</li>
+                            <li>Phoenix Perps</li>
                         </ul>
                         <p>
                             Your use of those services may also be governed by their own privacy policies and terms.

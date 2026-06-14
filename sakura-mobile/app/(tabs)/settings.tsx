@@ -384,7 +384,7 @@ export default function SettingsScreen() {
     ]);
   }, [cacheSize]);
 
-  const version = Constants.expoConfig?.version ?? '1.9.3';
+  const version = Constants.expoConfig?.version ?? '1.9.4';
   const s = useMemo(() => makeStyles(colors), [colors]);
 
   return (

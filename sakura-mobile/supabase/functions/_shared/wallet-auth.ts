@@ -55,7 +55,7 @@ export function verifyWalletHeaders(
 export function corsHeaders(methods = 'POST, OPTIONS') {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-wallet-address, x-signature, x-message',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-wallet-address, x-signature, x-message, x-avatar-admin-test',
     'Access-Control-Allow-Methods': methods,
   };
 }

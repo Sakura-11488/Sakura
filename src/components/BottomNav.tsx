@@ -4,19 +4,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRef, useEffect, useState, useCallback } from "react";
 import Lottie, { type LottieRefCurrentProps } from "lottie-react";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 interface Tab {
     href: string;
-    label: string;
+    labelKey: "nav.home" | "nav.novel" | "nav.anime" | "nav.library" | "nav.settings";
     lottieFile: string;
 }
 
 const tabs: Tab[] = [
-    { href: "/", label: "Home", lottieFile: "/icons/wired-outline-1652-mortgage-loan-hover-pinch.json" },
-    { href: "/novel", label: "Novel", lottieFile: "/icons/wired-outline-471-ebook-reader-hover-pinch.json" },
-    { href: "/anime", label: "Anime", lottieFile: "/icons/wired-outline-2440-goku-hover-pinch.json" },
-    { href: "/library", label: "Library", lottieFile: "/icons/wired-outline-3140-book-open-hover-pinch.json" },
-    { href: "/settings", label: "Settings", lottieFile: "/icons/wired-outline-39-cog-hover-mechanic.json" },
+    { href: "/", labelKey: "nav.home", lottieFile: "/icons/wired-outline-1652-mortgage-loan-hover-pinch.json" },
+    { href: "/novel", labelKey: "nav.novel", lottieFile: "/icons/wired-outline-471-ebook-reader-hover-pinch.json" },
+    { href: "/anime", labelKey: "nav.anime", lottieFile: "/icons/wired-outline-2440-goku-hover-pinch.json" },
+    { href: "/library", labelKey: "nav.library", lottieFile: "/icons/wired-outline-3140-book-open-hover-pinch.json" },
+    { href: "/settings", labelKey: "nav.settings", lottieFile: "/icons/wired-outline-39-cog-hover-mechanic.json" },
 ];
 
 const HIDDEN_PATHS = ["/chapter", "/anime/watch", "/novel/read"];
@@ -78,6 +79,7 @@ function NavIcon({ tab, isActive }: { tab: Tab; isActive: boolean }) {
 
 export default function BottomNav() {
     const pathname = usePathname();
+    const { t } = useI18n();
 
     if (HIDDEN_PATHS.some(p => pathname.startsWith(p))) {
         return null;
@@ -96,7 +98,7 @@ export default function BottomNav() {
                         <span className="bottom-nav-icon">
                             <NavIcon tab={tab} isActive={isActive} />
                         </span>
-                        <span className="bottom-nav-label">{tab.label}</span>
+                        <span className="bottom-nav-label">{t(tab.labelKey)}</span>
                     </Link>
                 );
             })}

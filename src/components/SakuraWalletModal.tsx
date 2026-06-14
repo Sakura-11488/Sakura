@@ -20,6 +20,7 @@ import { Keypair } from "@solana/web3.js";
 const BuySakuraModal = dynamic(() => import("@/components/BuySakuraModal"), { ssr: false });
 const TipModal = dynamic(() => import("@/components/TipModal"), { ssr: false });
 import LottieIcon from "@/components/LottieIcon";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 /* ─── Context ─── */
 interface SakuraWalletModalContextType {
@@ -52,6 +53,7 @@ export function SakuraWalletModalProvider({ children }: { children: React.ReactN
 function SakuraWalletModal({ onClose }: { onClose: () => void }) {
     const { wallets, select, connect, publicKey, disconnect, connected } = useWallet();
     const router = useRouter();
+    const { t } = useI18n();
     const [balance, setBalance] = useState<number | null>(null);
     const [sakuraBalance, setSakuraBalance] = useState<number | null>(null);
 
@@ -425,7 +427,7 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                                     style={{ marginTop: 8, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                                 >
                                     <LottieIcon src="/icons/wired-outline-2611-sales-hover-pinch.json" size={22} playOnMount />
-                                    Trade SOL-PERP
+                                    Trade Phoenix SOL-PERP
                                 </button>
                             </>
                         )}
@@ -471,7 +473,7 @@ function SakuraWalletModal({ onClose }: { onClose: () => void }) {
                         <div className="swm-header-icon">
                             <LottieIcon src="/icons/wired-outline-421-wallet-purse-hover-pinch.json" size={48} colorFilter="brightness(0) saturate(100%) invert(52%) sepia(74%) saturate(1057%) hue-rotate(308deg) brightness(101%) contrast(98%)" replayIntervalMs={3000} autoplay />
                         </div>
-                        <h2 className="swm-title">Sign Up / Login</h2>
+                        <h2 className="swm-title">{t("wallet.signIn")}</h2>
                         <p className="swm-subtitle">Create or import a Sakura wallet.</p>
 
                         {error && (

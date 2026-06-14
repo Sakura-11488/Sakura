@@ -185,6 +185,28 @@ export async function getNovelsByCreator(wallet: string): Promise<Novel[]> {
     return data || [];
 }
 
+/** Published novels by the same on-chain creator (excludes `excludeNovelId` when set). */
+export async function getPublishedNovelsByCreator(
+    wallet: string,
+    excludeNovelId?: string,
+    limit: number = 24,
+): Promise<Novel[]> {
+    if (!supabase || !wallet) return [];
+    let query = supabase
+        .from("novels")
+        .select("*")
+        .eq("creator_wallet", wallet)
+        .eq("published", true)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+    if (excludeNovelId) {
+        query = query.neq("id", excludeNovelId);
+    }
+    const { data, error } = await query;
+    if (error) { console.error("getPublishedNovelsByCreator:", error); return []; }
+    return data || [];
+}
+
 export async function deleteNovel(novelId: string, wallet: string): Promise<boolean> {
     if (!supabase) return false;
     const { error } = await supabase

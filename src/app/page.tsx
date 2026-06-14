@@ -13,12 +13,15 @@ import { useRouter } from "next/navigation";
 import { getLocal, setLocal } from "@/lib/storage";
 import LottieIcon from "@/components/LottieIcon";
 import { getDefaultMangaSourceId, getHomeMangaSourceId, getPrimaryComicSourceId } from "@/lib/sources/source-ids";
+import PersonalizedRecommendationRow from "@/components/PersonalizedRecommendationRow";
+import { useI18n } from "@/lib/i18n/I18nProvider";
 
 type BrowseMode = "manga" | "comic";
 const BROWSE_MODE_KEY = "sakura_browse_mode";
 
 export default function Home() {
   const router = useRouter();
+  const { t } = useI18n();
   const [featured, setFeatured] = useState<Manga[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,16 +121,18 @@ export default function Home() {
             <img src="/sakura.png" alt="Sakura" className="home-hero-logo" />
             <div className="home-hero-text">
               <h1>桜 <span>Sakura</span></h1>
-              <p>読む。集める。所有する。— Read. Collect. Own.</p>
+              <p>{t("home.hero")}</p>
             </div>
           </div>
         </section>
+
+        <PersonalizedRecommendationRow mode="home" />
 
         {/* Manga / Comics segmented toggle */}
         <section className="section" style={{ paddingTop: 8, paddingBottom: 0 }}>
           <div
             role="tablist"
-            aria-label="Content type"
+            aria-label={t("home.contentType")}
             style={{
               display: "flex",
               margin: "0 auto 8px",
@@ -164,7 +169,7 @@ export default function Home() {
                     transition: "all 0.2s ease",
                   }}
                 >
-                  {m === "comic" ? "Comics" : "Manga"}
+                  {m === "comic" ? t("home.comics") : t("home.manga")}
                 </button>
               );
             })}
@@ -180,8 +185,8 @@ export default function Home() {
             <input
               type="text"
               placeholder={mode === "comic"
-                ? "Search for Marvel, DC, Image, and more..."
-                : "マンガを検索... Search manga..."}
+                ? t("home.searchComic")
+                : t("home.searchManga")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -201,8 +206,8 @@ export default function Home() {
         {showSearch && (
           <section className="section" style={{ paddingTop: 12 }}>
             <div className="section-header">
-              <h2 className="section-title">検索結果</h2>
-              <p className="section-subtitle">{searching ? "Searching..." : `${searchResults.length} Results`}</p>
+              <h2 className="section-title">{t("home.searchResults")}</h2>
+              <p className="section-subtitle">{searching ? t("settings.searching") : t("home.results", { count: searchResults.length })}</p>
             </div>
             {searching ? (
               <div className="manga-grid">
@@ -227,7 +232,7 @@ export default function Home() {
               </div>
             ) : (
               <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
-                <p>No results found for &ldquo;{searchQuery}&rdquo;</p>
+                <p>{t("home.noResults", { query: searchQuery })}</p>
               </div>
             )}
           </section>
@@ -241,7 +246,7 @@ export default function Home() {
                 className={`genre-chip ${selectedGenre === null ? 'active' : ''}`}
                 onClick={() => handleGenreSelect(null)}
               >
-                All
+                {t("home.all")}
               </button>
               {MANGA_GENRES.map(g => (
                 <button
@@ -386,9 +391,9 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="footer">
-          <p className="footer-jp">桜 — マンガの新しい形</p>
+          <p className="footer-jp">{t("footer.jp")}</p>
           <p className="footer-text">
-            © 2026 Sakura. Read manga on the blockchain.
+            {t("footer.text")}
           </p>
           <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
             <Link href="/privacy" style={{ color: "var(--sakura-pink)", textDecoration: "none", fontSize: "0.85rem" }}>
@@ -400,7 +405,7 @@ export default function Home() {
           </div>
           <div className="footer-solana">
             <span className="sol-dot" />
-            Built on Solana
+            {t("footer.solana")}
           </div>
         </footer>
       </main>

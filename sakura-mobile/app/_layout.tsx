@@ -130,6 +130,8 @@ export default function RootLayout() {
             <Stack.Screen name="downloads"    options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="reading-history" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="user/[wallet]" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="messages" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="creator-chat" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="become-creator" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-dashboard" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-upload" options={{ animation: 'slide_from_right' }} />

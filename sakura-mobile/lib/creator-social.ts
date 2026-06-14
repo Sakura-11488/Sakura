@@ -31,6 +31,7 @@ export interface CreatorFeedPost {
   creator?: {
     display_name: string | null;
     avatar_seed: string | null;
+    avatar_url?: string | null;
     creator_verification_state?: string | null;
   } | null;
   media?: CreatorPostMedia[];
@@ -217,17 +218,94 @@ export async function sendCreatorChatMessage(input: {
     headers: input.authHeaders,
   });
   if (error) throw error;
+  if (data?.error) throw new Error(String(data.error));
   return data.message as { id: string; sender_wallet: string; content: string; created_at: string };
 }
 
 export async function fetchCreatorChatMessages(input: {
   threadId: string;
   authHeaders: WalletAuthHeaders;
+  markRead?: boolean;
 }) {
   const { data, error } = await supabase.functions.invoke('creator-chat', {
-    body: { action: 'messages', thread_id: input.threadId },
+    body: {
+      action: 'messages',
+      thread_id: input.threadId,
+      mark_read: input.markRead ?? false,
+    },
     headers: input.authHeaders,
   });
   if (error) throw error;
+  if (data?.error) throw new Error(String(data.error));
   return (data.messages ?? []) as Array<{ id: string; sender_wallet: string; content: string; created_at: string }>;
+}
+
+export async function markChatThreadRead(input: {
+  threadId: string;
+  authHeaders: WalletAuthHeaders;
+}): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('creator-chat', {
+    body: { action: 'mark_read', thread_id: input.threadId },
+    headers: input.authHeaders,
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(String(data.error));
+}
+
+export async function blockChatUser(input: {
+  recipientWallet: string;
+  authHeaders: WalletAuthHeaders;
+}): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('creator-chat', {
+    body: { action: 'block', recipient_wallet: input.recipientWallet },
+    headers: input.authHeaders,
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(String(data.error));
+}
+
+export async function reportChatThread(input: {
+  threadId: string;
+  reason: string;
+  authHeaders: WalletAuthHeaders;
+}): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('creator-chat', {
+    body: { action: 'report', thread_id: input.threadId, reason: input.reason },
+    headers: input.authHeaders,
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(String(data.error));
+}
+
+export { countUnreadThreads, isThreadUnread } from './chat-utils';
+
+export interface ChatThreadSummary {
+  thread_id: string;
+  last_read_at: string | null;
+  peer_wallet: string | null;
+  peer_username: string | null;
+  peer_display_name: string | null;
+  peer_avatar_url: string | null;
+  peer_avatar_seed: string | null;
+  last_message: string | null;
+  last_message_at: string | null;
+}
+
+export async function fetchChatThreads(authHeaders: WalletAuthHeaders): Promise<ChatThreadSummary[]> {
+  const { data, error } = await supabase.functions.invoke('creator-chat', {
+    body: { action: 'threads' },
+    headers: authHeaders,
+  });
+  if (error) throw error;
+  return (data.threads ?? []).map((row: Record<string, unknown>) => ({
+    thread_id: String(row.thread_id),
+    last_read_at: row.last_read_at ? String(row.last_read_at) : null,
+    peer_wallet: row.peer_wallet ? String(row.peer_wallet) : null,
+    peer_username: row.peer_username ? String(row.peer_username) : null,
+    peer_display_name: row.peer_display_name ? String(row.peer_display_name) : null,
+    peer_avatar_url: row.peer_avatar_url ? String(row.peer_avatar_url) : null,
+    peer_avatar_seed: row.peer_avatar_seed ? String(row.peer_avatar_seed) : null,
+    last_message: row.last_message ? String(row.last_message) : null,
+    last_message_at: row.last_message_at ? String(row.last_message_at) : null,
+  }));
 }
