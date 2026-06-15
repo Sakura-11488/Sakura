@@ -44,6 +44,7 @@ export async function syncAiDisplayName(walletAddress: string, displayName: stri
   await upsertProfile(walletAddress, displayName, existing?.bio ?? null);
 }
 
+/** MY-page display name: profile first, then AI memories — not a unique public handle. */
 export async function resolveProfileDisplayName(walletAddress: string): Promise<string> {
   const profile = await getProfile(walletAddress);
   const fromProfile = profile?.display_name?.trim();

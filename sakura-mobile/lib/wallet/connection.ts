@@ -1,6 +1,7 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, Keypair, TransactionInstruction } from '@solana/web3.js';
 import { SOLANA_RPC, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, lamportsToSol, rawToSakura, sakuraToRaw, SAKURA_SEND_SOL_RESERVE } from './config';
-import { fetchSolBalance, fetchSakuraBalance, getSakuraAta } from './balances';
+import { fetchSolBalance, fetchSakuraBalance, fetchSakuraBalanceWithMeta, getSakuraAta } from './balances';
+import type { SakuraBalanceSource } from './balance-diagnostics';
 export { SAKURA_SEND_SOL_RESERVE, SOL_SEND_FEE_RESERVE } from './config';
 
 const ASSOC_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS');
@@ -104,6 +105,21 @@ export async function getSakuraBalance(publicKey: PublicKey): Promise<number | n
   } catch (e) {
     if (__DEV__) console.warn('[wallet] getSakuraBalance failed', e);
     return null;
+  }
+}
+
+export async function getSakuraBalanceWithMeta(publicKey: PublicKey): Promise<{
+  balance: number | null;
+  source: SakuraBalanceSource;
+  error: string | null;
+}> {
+  try {
+    const result = await fetchSakuraBalanceWithMeta(publicKey);
+    return { balance: result.balance, source: result.source, error: result.error ?? null };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Balance read failed';
+    if (__DEV__) console.warn('[wallet] getSakuraBalanceWithMeta failed', e);
+    return { balance: null, source: 'error', error: message };
   }
 }
 

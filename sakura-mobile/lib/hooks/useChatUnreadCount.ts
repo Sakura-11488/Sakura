@@ -8,7 +8,7 @@ import { useWallet } from '@/lib/wallet/context';
 import { useChatInboxRealtime } from '@/lib/hooks/useChatInboxRealtime';
 
 export function useChatUnreadCount(options?: { allowUnlock?: boolean }) {
-  const { connected, address, signWithBiometrics } = useWallet();
+  const { connected, address, unlockForAppSession } = useWallet();
   const [unreadCount, setUnreadCount] = useState(getChatUnreadCount());
 
   useEffect(() => subscribeChatUnreadCount(setUnreadCount), []);
@@ -21,7 +21,7 @@ export function useChatUnreadCount(options?: { allowUnlock?: boolean }) {
 
     let headers = peekWalletAuthSession('creator-chat');
     if (!headers && options?.allowUnlock) {
-      headers = await getOrRefreshWalletAuthSession(signWithBiometrics, 'creator-chat');
+      headers = await getOrRefreshWalletAuthSession(unlockForAppSession, 'creator-chat');
     }
     if (!headers) return;
 
@@ -31,7 +31,7 @@ export function useChatUnreadCount(options?: { allowUnlock?: boolean }) {
     } catch {
       // keep last known count
     }
-  }, [connected, options?.allowUnlock, signWithBiometrics]);
+  }, [connected, options?.allowUnlock, unlockForAppSession]);
 
   useEffect(() => {
     refresh();
@@ -47,7 +47,7 @@ export function useChatUnreadCount(options?: { allowUnlock?: boolean }) {
   useChatInboxRealtime({
     enabled: connected && !!address && !!options?.allowUnlock,
     walletAddress: address,
-    unlock: signWithBiometrics,
+    unlock: unlockForAppSession,
     onNewMessage: refresh,
   });
 

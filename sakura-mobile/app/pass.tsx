@@ -284,7 +284,7 @@ export default function PassScreen() {
           </View>
           <Text style={s.heroTitle}>Sakura Monthly Pass</Text>
           <Text style={s.heroSub}>
-            Unlock the newest chapters across every series and support creators directly with $SAKURA.
+            Unlock the newest chapters across every series and support creators with SKR.
           </Text>
         </View>
 
@@ -295,7 +295,7 @@ export default function PassScreen() {
             <CheckIcon color="#2DB24A" size={20} />
             <Text style={s.statusText}>
               {status?.source === 'whale'
-                ? "You're a $SAKURA holder — lifetime access unlocked!"
+                ? "You're an SKR holder — lifetime access unlocked!"
                 : `Pass active${status?.expiresAt ? ` · ${formatPassTimeRemaining(status.expiresAt)}` : ''}`}
             </Text>
           </View>
@@ -305,7 +305,7 @@ export default function PassScreen() {
           <View style={s.priceRow}>
             <SakuraIcon size={22} />
             <Text style={s.priceVal}>{MONTHLY_PASS_PRICE}</Text>
-            <Text style={s.priceUnit}>$SAKURA</Text>
+            <Text style={s.priceUnit}>SKR</Text>
           </View>
           <Text style={s.priceSub}>{PASS_DURATION_DAYS} days of full access · {getSolanaNetworkLabel()}</Text>
 
@@ -323,7 +323,7 @@ export default function PassScreen() {
           <View style={s.divider} />
 
           <View style={s.metaRow}>
-            <Text style={s.metaLabel}>Your $SAKURA balance</Text>
+            <Text style={s.metaLabel}>Your SKR balance</Text>
             <Text style={s.metaVal}>
               {wallet.connected
                 ? wallet.sakuraBalance !== null
@@ -344,7 +344,7 @@ export default function PassScreen() {
           <>
             {txid ? (
               <TouchableOpacity onPress={() => Linking.openURL(`https://solscan.io/tx/${txid}`)} activeOpacity={0.7}>
-                <Text style={s.link}>View transaction on Solscan ↗</Text>
+                <Text style={s.link}>View receipt on Solscan ↗</Text>
               </TouchableOpacity>
             ) : null}
             <TouchableOpacity style={s.cta} activeOpacity={0.85} onPress={onTap(() => router.back())}>
@@ -368,16 +368,16 @@ export default function PassScreen() {
               ) : (
                 <Text style={s.ctaText}>
                   {!wallet.connected
-                    ? 'Connect Wallet'
+                    ? 'Connect account'
                     : !hasEnoughSakura
-                      ? 'Get $SAKURA'
-                      : 'Unlock with Face ID / Biometrics'}
+                      ? 'Get SKR'
+                      : 'Confirm with Face ID'}
                 </Text>
               )}
             </TouchableOpacity>
             {wallet.connected && !hasEnoughSakura ? (
               <Text style={s.hint}>
-                You need at least {MONTHLY_PASS_PRICE} $SAKURA. Tap above to buy or swap into $SAKURA.
+                You need at least {MONTHLY_PASS_PRICE} SKR. Tap above to top up or swap into SKR.
               </Text>
             ) : null}
           </>

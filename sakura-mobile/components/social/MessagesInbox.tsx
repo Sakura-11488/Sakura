@@ -48,7 +48,7 @@ type Props = {
 export default function MessagesInbox({ showBack = false }: Props) {
   const { colors } = useTheme();
   const router = useRouter();
-  const { address, connected, signWithBiometrics } = useWallet();
+  const { address, connected, unlockForAppSession } = useWallet();
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const listRef = useRef<FlatList<ChatThreadSummary>>(null);
@@ -62,24 +62,24 @@ export default function MessagesInbox({ showBack = false }: Props) {
     }
     if (!options?.silent) setLoading(true);
     try {
-      const headers = await getOrRefreshWalletAuthSession(signWithBiometrics, 'creator-chat');
+      const headers = await getOrRefreshWalletAuthSession(unlockForAppSession, 'creator-chat');
       const rows = await fetchChatThreads(headers);
       setThreads(rows);
       setChatUnreadCount(countUnreadThreads(rows));
     } catch (error) {
       if (!options?.silent) {
-        Alert.alert('Messages unavailable', error instanceof Error ? error.message : 'Please try again.');
+        Alert.alert('Could not load messages', error instanceof Error ? error.message : 'Please try again.');
         setThreads([]);
       }
     } finally {
       if (!options?.silent) setLoading(false);
     }
-  }, [address, connected, signWithBiometrics]);
+  }, [address, connected, unlockForAppSession]);
 
   useChatInboxRealtime({
     enabled: connected && !!address,
     walletAddress: address,
-    unlock: signWithBiometrics,
+    unlock: unlockForAppSession,
     onNewMessage: () => {
       loadThreads({ silent: true });
     },
@@ -195,8 +195,8 @@ export default function MessagesInbox({ showBack = false }: Props) {
 
       {!connected ? (
         <EmptyState
-          title="Connect your wallet"
-          subtitle="Your Sakura wallet unlocks direct messages with other users."
+          title="Sign in to message"
+          subtitle="Connect your Sakura account to send and receive direct messages."
         />
       ) : loading ? (
         <View style={styles.loader}>

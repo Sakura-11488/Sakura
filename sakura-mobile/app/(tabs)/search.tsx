@@ -27,6 +27,8 @@ import { searchNovels } from '@/lib/allnovel';
 import { searchUsers, type UserSearchResult } from '@/lib/user-search';
 import { lookupUsernamePrefix, normalizeUserQuery } from '@/lib/user-resolve';
 import ProfileAvatar from '@/components/ui/ProfileAvatar';
+import { useWallet } from '@/lib/wallet/context';
+import { formatUserSearchTitle, formatUserSearchMeta } from '@/lib/user-identity';
 
 const { width: W } = Dimensions.get('window');
 const FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
@@ -61,6 +63,7 @@ function SearchIcon({ color }: { color: string }) {
 export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const { address: walletAddress } = useWallet();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autocompleteRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<any>(null);
@@ -138,18 +141,12 @@ export default function SearchTabScreen() {
       }
       if (usersRes.status === 'fulfilled') {
         usersRes.value.forEach((user) => {
-          const handle = user.username ? `@${user.username}` : user.display_name || 'Sakura User';
-          const metaParts = [
-            user.username ? user.display_name : null,
-            user.verified ? 'Verified' : null,
-            user.follower_count > 0 ? `${user.follower_count} followers` : null,
-          ].filter(Boolean);
           merged.push({
             key: `user-${user.wallet_address}`,
-            title: handle,
+            title: formatUserSearchTitle(user),
             cover: user.avatar_url || '',
             type: 'user',
-            meta: metaParts.join(' · ') || 'User',
+            meta: formatUserSearchMeta(user),
             navTarget: `/user/${encodeURIComponent(user.wallet_address)}`,
             user,
           });
@@ -162,7 +159,7 @@ export default function SearchTabScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [walletAddress]);
 
   const onChangeQuery = useCallback(
     (text: string) => {
@@ -353,6 +350,15 @@ export default function SearchTabScreen() {
         resultInfo: { flex: 1, justifyContent: 'center', gap: 3 },
         resultTitle: { color: colors.text, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
         resultMeta: { color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.body },
+        youChip: {
+          alignSelf: 'flex-start',
+          paddingHorizontal: 8,
+          paddingVertical: 2,
+          borderRadius: Radius.full,
+          backgroundColor: `${colors.primary}22`,
+          marginBottom: 2,
+        },
+        youChipText: { color: colors.primary, fontSize: FontSize.xs, fontFamily: Fonts.bodyBold },
         sectionHeading: {
           fontSize: FontSize.md,
           fontFamily: Fonts.bodyBold,
@@ -385,7 +391,12 @@ export default function SearchTabScreen() {
   );
 
   const renderResultRow = useCallback(
-    (item: SearchResult, index: number) => (
+    (item: SearchResult, index: number) => {
+      const isSelfUser = item.type === 'user' && Boolean(
+        walletAddress && item.user?.wallet_address === walletAddress,
+      );
+
+      return (
       <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
         <TouchableOpacity
           style={s.resultRow}
@@ -397,7 +408,7 @@ export default function SearchTabScreen() {
               profile={{
                 wallet_address: item.user.wallet_address,
                 avatar_url: item.user.avatar_url,
-                avatar_seed: item.user.avatar_seed ?? item.user.wallet_address.slice(0, 8),
+                avatar_seed: item.user.avatar_seed ?? item.user.wallet_address,
               }}
               size={56}
               style={s.userAvatar}
@@ -406,17 +417,23 @@ export default function SearchTabScreen() {
             <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
           )}
           <View style={s.resultInfo}>
+            {isSelfUser ? (
+              <View style={s.youChip}>
+                <Text style={s.youChipText}>You</Text>
+              </View>
+            ) : null}
             <Text style={s.resultTitle} numberOfLines={2}>
               {item.title}
             </Text>
-            <Text style={s.resultMeta} numberOfLines={1}>
+            <Text style={s.resultMeta} numberOfLines={2}>
               {item.meta}
             </Text>
           </View>
         </TouchableOpacity>
       </Animated.View>
-    ),
-    [router, s],
+      );
+    },
+    [router, s, walletAddress],
   );
 
   return (

@@ -134,7 +134,7 @@ function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
         </View>
         <View>
           <Text style={[row.label, { color: colors.text }]}>
-            {connected ? 'Sakura Wallet' : t('settings.connectWallet')}
+            {connected ? 'Sakura Account' : t('settings.connectWallet')}
           </Text>
           {connected && (
             <Text style={[row.sub, { color: colors.primary }]} numberOfLines={1}>
@@ -472,7 +472,7 @@ export default function ProfileScreen() {
 
   const handleGenerateAvatar = useCallback(async (mode: 'tastes' | 'general') => {
     if (!address || !connected) {
-      Alert.alert('Connect wallet', 'Connect your Sakura wallet to mint an anime portrait NFT.');
+      Alert.alert('Connect your account', 'Sign in to forge your Sakura avatar.');
       return;
     }
 
@@ -488,7 +488,7 @@ export default function ProfileScreen() {
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) {
-        Alert.alert('Wallet locked', 'Unlock your wallet to pay and mint your avatar NFT.');
+        Alert.alert('Confirm to continue', 'Approve with Face ID to pay and forge your Sakura avatar.');
         return;
       }
 
@@ -511,24 +511,24 @@ export default function ProfileScreen() {
           bio: null,
           email: null,
           avatar_url: result.public_url ?? null,
-          avatar_seed: address.slice(0, 8),
+          avatar_seed: address,
           avatar_mint_address: result.mint_address ?? null,
           updated_at: new Date().toISOString(),
         });
         Alert.alert(
-          'Avatar NFT minted',
-          `Your MAPPA-style portrait is in your wallet.\n\nMint: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
+          'Sakura avatar forged',
+          `Your Sakura-bound avatar relic is ready.\n\nCollectible: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
           [
-            { text: 'View NFT', onPress: () => Linking.openURL(solanaExplorerToken(result.mint_address!)) },
+            { text: 'View collectible', onPress: () => Linking.openURL(solanaExplorerToken(result.mint_address!)) },
             { text: 'View payment', onPress: () => Linking.openURL(solanaExplorerTx(paymentTxSignature)) },
             { text: 'Done', style: 'cancel' },
           ],
         );
       } else {
-        Alert.alert('Mint failed', result.error || 'Could not mint your portrait NFT.');
+        Alert.alert('Could not forge avatar', result.error || 'Please try again.');
       }
     } catch (error) {
-      Alert.alert('Mint failed', error instanceof Error ? error.message : 'Please try again later.');
+      Alert.alert('Could not forge avatar', error instanceof Error ? error.message : 'Please try again later.');
     } finally {
       setGeneratingAvatar(false);
     }
@@ -540,12 +540,12 @@ export default function ProfileScreen() {
       return;
     }
     Alert.alert(
-      'Mint avatar NFT',
-      `Pay ${formatAvatarMintPrice()} to mint a MAPPA-style Jujutsu Kaisen-inspired anime portrait NFT to your wallet. It will appear in Phantom and other Solana wallets.`,
+      'Awaken your Sakura Avatar',
+      `Spend ${formatAvatarMintPrice()} to forge a Sakura-bound avatar, shaped from your reading tastes and profile aura. It stays linked to your account and travels with you.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: `Mint from tastes (${formatAvatarMintPrice()})`, onPress: () => handleGenerateAvatar('tastes') },
-        { text: `Mint general (${formatAvatarMintPrice()})`, onPress: () => handleGenerateAvatar('general') },
+        { text: 'Forge from my tastes', onPress: () => handleGenerateAvatar('tastes') },
+        { text: 'Forge a fresh avatar', onPress: () => handleGenerateAvatar('general') },
       ],
     );
   }, [connected, handleGenerateAvatar]);
@@ -590,7 +590,7 @@ export default function ProfileScreen() {
                   profile={{
                     wallet_address: address,
                     avatar_url: profile?.avatar_url ?? null,
-                    avatar_seed: profile?.avatar_seed ?? address.slice(0, 8),
+                    avatar_seed: profile?.avatar_seed ?? address,
                   }}
                   size={88}
                   borderColor={colors.primary}
@@ -616,14 +616,12 @@ export default function ProfileScreen() {
           </Text>
           <Text style={[s.username, { color: colors.textSecondary }]}>
             {connected
-              ? (sakuraHandle
-                ? `@${sakuraHandle}`
-                : generatingAvatar
-                  ? `Paying ${formatAvatarMintPrice()} and minting NFT…`
-                  : (profile?.avatar_mint_address
-                    ? 'Tap to mint a new avatar NFT'
-                    : (shortAddress ?? `Tap avatar to mint NFT · ${formatAvatarMintPrice()}`)))
-              : 'Connect wallet to get started'}
+              ? (generatingAvatar
+                ? `Forging avatar · ${formatAvatarMintPrice()}`
+                : sakuraHandle
+                  ? `@${sakuraHandle}`
+                  : `${shortAddress ?? ''}${shortAddress ? ' · ' : ''}Claim @username`)
+              : 'Sign in to get started'}
           </Text>
         </Animated.View>
 

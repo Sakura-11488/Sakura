@@ -1,8 +1,8 @@
 import React from 'react';
 import { View, StyleSheet, ViewStyle, StyleProp } from 'react-native';
 import { Image } from 'expo-image';
-import { resolveAvatarUri, type AvatarProfileFields } from '@/lib/user-avatar';
-import { Radius } from '@/constants/theme';
+import { resolveAvatarUri, hasMintedAvatar, type AvatarProfileFields } from '@/lib/user-avatar';
+import { walletAccentColor } from '@/lib/user-identity';
 
 type Props = {
   profile: AvatarProfileFields;
@@ -13,6 +13,9 @@ type Props = {
 
 export default function ProfileAvatar({ profile, size = 88, style, borderColor }: Props) {
   const uri = resolveAvatarUri(profile);
+  const minted = hasMintedAvatar(profile);
+  const accent = walletAccentColor(profile.wallet_address);
+  const resolvedBorder = borderColor ?? (minted ? 'transparent' : accent);
 
   return (
     <View
@@ -22,8 +25,10 @@ export default function ProfileAvatar({ profile, size = 88, style, borderColor }
           width: size,
           height: size,
           borderRadius: size / 2,
-          borderColor: borderColor ?? 'transparent',
+          borderColor: resolvedBorder,
+          borderWidth: minted ? 2 : 3,
         },
+        !minted && { backgroundColor: `${accent}22` },
         style,
       ]}
     >
@@ -31,7 +36,7 @@ export default function ProfileAvatar({ profile, size = 88, style, borderColor }
         source={{ uri }}
         style={{ width: size, height: size, borderRadius: size / 2 }}
         contentFit="cover"
-        recyclingKey={uri}
+        recyclingKey={`${profile.wallet_address}:${uri}`}
       />
     </View>
   );

@@ -8,6 +8,7 @@ import {
   lamportsToSol,
   rawToSakura,
 } from './config';
+import type { SakuraBalanceSource } from './balance-diagnostics';
 
 const ASSOC_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS');
 
@@ -21,6 +22,39 @@ function getRpcConnection(): Connection {
   }
   return _connection;
 }
+
+export type SakuraBalanceResult = {
+  balance: number;
+  source: SakuraBalanceSource;
+  error?: string;
+};
+
+function readRawTokenAmount(data: Buffer): bigint | null {
+  if (data.length < 72) return null;
+  try {
+    const mint = new PublicKey(data.subarray(0, 32));
+    if (!mint.equals(SAKURA_MINT)) return null;
+    return data.readBigUInt64LE(64);
+  } catch {
+    return null;
+  }
+}
+
+async function sumRawOwnerScan(conn: Connection, owner: PublicKey): Promise<number> {
+  const rawAccounts = await conn.getTokenAccountsByOwner(
+    owner,
+    { programId: SAKURA_TOKEN_PROGRAM_ID },
+    'confirmed',
+  );
+
+  let total = 0n;
+  for (const acc of rawAccounts.value) {
+    const amount = readRawTokenAmount(acc.account.data);
+    if (amount !== null) total += amount;
+  }
+  return rawToSakura(Number(total));
+}
+
 export function getSakuraAta(owner: PublicKey): PublicKey {
   const [ata] = PublicKey.findProgramAddressSync(
     [owner.toBuffer(), SAKURA_TOKEN_PROGRAM_ID.toBuffer(), SAKURA_MINT.toBuffer()],
@@ -50,41 +84,68 @@ export async function fetchSolBalance(publicKey: PublicKey): Promise<number> {
 }
 
 export async function fetchSakuraBalance(publicKey: PublicKey): Promise<number> {
+  const result = await fetchSakuraBalanceWithMeta(publicKey);
+  return result.balance;
+}
+
+export async function fetchSakuraBalanceWithMeta(publicKey: PublicKey): Promise<SakuraBalanceResult> {
   const conn = getRpcConnection();
   const ata = getSakuraAta(publicKey);
 
   try {
     const direct = await withRetry(() => conn.getTokenAccountBalance(ata, 'confirmed'));
-    return rawToSakura(Number(direct.value.amount));
+    return { balance: rawToSakura(Number(direct.value.amount)), source: 'ata' };
   } catch {
-    // ATA may not exist yet — fall back to owner scan (Token-2022 + legacy).
+    // ATA may not exist yet — fall through to other reads.
   }
 
-  const accounts = await withRetry(() =>
-    conn.getParsedTokenAccountsByOwner(
-      publicKey,
-      { programId: SAKURA_TOKEN_PROGRAM_ID },
-      'confirmed',
-    ),
-  );
-
-  let total = 0;
-  for (const acc of accounts.value) {
-    const info = acc.account.data.parsed?.info;
-    if (!info || info.mint !== SAKURA_MINT.toBase58()) continue;
-    total += rawToSakura(Number(info.tokenAmount.amount));
+  try {
+    const parsedAta = await withRetry(() => conn.getParsedAccountInfo(ata, 'confirmed'));
+    const parsedAmount = parsedAta.value?.data && 'parsed' in parsedAta.value.data
+      ? parsedAta.value.data.parsed?.info?.tokenAmount?.amount
+      : null;
+    if (parsedAmount != null) {
+      return { balance: rawToSakura(Number(parsedAmount)), source: 'ata' };
+    }
+  } catch {
+    // continue
   }
 
-  if (total > 0) return total;
+  try {
+    const accounts = await withRetry(() =>
+      conn.getParsedTokenAccountsByOwner(
+        publicKey,
+        { programId: SAKURA_TOKEN_PROGRAM_ID },
+        'confirmed',
+      ),
+    );
 
-  const legacyScan = await withRetry(() =>
-    conn.getParsedTokenAccountsByOwner(publicKey, { mint: SAKURA_MINT }, 'confirmed'),
-  );
-  for (const acc of legacyScan.value) {
-    total += rawToSakura(Number(acc.account.data.parsed.info.tokenAmount.amount));
+    let total = 0;
+    for (const acc of accounts.value) {
+      const info = acc.account.data.parsed?.info;
+      if (!info || info.mint !== SAKURA_MINT.toBase58()) continue;
+      total += rawToSakura(Number(info.tokenAmount.amount));
+    }
+
+    if (total > 0) return { balance: total, source: 'ownerParsedScan' };
+
+    const legacyScan = await withRetry(() =>
+      conn.getParsedTokenAccountsByOwner(publicKey, { mint: SAKURA_MINT }, 'confirmed'),
+    );
+    for (const acc of legacyScan.value) {
+      total += rawToSakura(Number(acc.account.data.parsed.info.tokenAmount.amount));
+    }
+
+    if (total > 0) return { balance: total, source: 'legacyMintScan' };
+
+    const rawTotal = await withRetry(() => sumRawOwnerScan(conn, publicKey));
+    if (rawTotal > 0) return { balance: rawTotal, source: 'rawScan' };
+
+    return { balance: 0, source: 'none' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Balance read failed';
+    throw new Error(message);
   }
-
-  return total;
 }
 
 export async function recipientNeedsSakuraAta(recipient: PublicKey): Promise<boolean> {

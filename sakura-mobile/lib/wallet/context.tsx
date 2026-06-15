@@ -17,8 +17,10 @@ import {
   importWalletFromKey,
 } from './storage';
 import { clearWalletAuthSession } from '@/lib/wallet-auth-session';
-import { getSolBalance, getSakuraBalance } from './connection';
-import { truncateAddress, getSolanaNetworkLabel } from './config';
+import { getSolBalance, getSakuraBalanceWithMeta } from './connection';
+import { truncateAddress, getSolanaNetworkLabel, SOLANA_RPC } from './config';
+import { rpcDisplayLabel, setBalanceDiagnostics, type SakuraBalanceSource } from './balance-diagnostics';
+import { unlockForAppSession, clearAppSessionKeypair } from './app-session';
 
 export { getSolanaNetworkLabel };
 
@@ -30,12 +32,19 @@ export interface WalletState {
   solBalance: number | null;
   sakuraBalance: number | null;
   loadingBalances: boolean;
+  balanceError: string | null;
+  sakuraBalanceSource: SakuraBalanceSource;
+  rpcLabel: string;
+  lastBalanceRefreshAt: number | null;
   // Actions
   createWallet: () => Promise<void>;
   connectExisting: () => Promise<void>;
   importWallet: (key: string) => Promise<void>;
   disconnect: () => Promise<void>;
   refreshBalances: () => Promise<void>;
+  /** Cached unlock for chat/realtime — prompts once per app session. */
+  unlockForAppSession: () => Promise<import('@solana/web3.js').Keypair | null>;
+  /** Fresh biometric unlock for payments, transfers, and trades. */
   signWithBiometrics: () => Promise<import('@solana/web3.js').Keypair | null>;
   shortAddress: string | null;
 }
@@ -54,18 +63,38 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [sakuraBalance, setSakuraBalance] = useState<number | null>(null);
   const [loadingBalances, setLoadingBalances] = useState(false);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [sakuraBalanceSource, setSakuraBalanceSource] = useState<SakuraBalanceSource>('none');
+  const [lastBalanceRefreshAt, setLastBalanceRefreshAt] = useState<number | null>(null);
+  const rpcLabel = rpcDisplayLabel(SOLANA_RPC);
 
   const refreshBalances = useCallback(async () => {
     if (!publicKey) return;
     setLoadingBalances(true);
-    const [sol, sakura] = await Promise.all([
+    const [sol, sakuraMeta] = await Promise.all([
       getSolBalance(publicKey),
-      getSakuraBalance(publicKey),
+      getSakuraBalanceWithMeta(publicKey),
     ]);
-    setSolBalance(sol);
-    setSakuraBalance(sakura);
+
+    if (sol !== null) setSolBalance(sol);
+    if (sakuraMeta.balance !== null) {
+      setSakuraBalance(sakuraMeta.balance);
+      setSakuraBalanceSource(sakuraMeta.source);
+      setBalanceError(sakuraMeta.error ?? null);
+    } else {
+      setBalanceError(sakuraMeta.error ?? 'Could not refresh SAKURA balance');
+    }
+
+    const refreshedAt = Date.now();
+    setLastBalanceRefreshAt(refreshedAt);
+    setBalanceDiagnostics({
+      sakuraSource: sakuraMeta.source,
+      sakuraError: sakuraMeta.error,
+      rpcLabel,
+      lastRefreshAt: refreshedAt,
+    });
     setLoadingBalances(false);
-  }, [publicKey]);
+  }, [publicKey, rpcLabel]);
 
   // Restore session on mount
   useEffect(() => {
@@ -144,11 +173,19 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const disconnect = useCallback(async () => {
     await removeWallet();
+    clearAppSessionKeypair();
     setPublicKey(null);
     setAddress(null);
     setConnected(false);
     setSolBalance(null);
     setSakuraBalance(null);
+    setBalanceError(null);
+    setSakuraBalanceSource('none');
+    setLastBalanceRefreshAt(null);
+  }, []);
+
+  const unlockForAppSessionFn = useCallback(async () => {
+    return unlockForAppSession();
   }, []);
 
   const signWithBiometrics = useCallback(async () => {
@@ -167,11 +204,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         solBalance,
         sakuraBalance,
         loadingBalances,
+        balanceError,
+        sakuraBalanceSource,
+        rpcLabel,
+        lastBalanceRefreshAt,
         createWallet,
         connectExisting,
         importWallet,
         disconnect,
         refreshBalances,
+        unlockForAppSession: unlockForAppSessionFn,
         signWithBiometrics,
         shortAddress,
       }}

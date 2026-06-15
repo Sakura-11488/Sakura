@@ -26,8 +26,8 @@ import { sendSol, sendSakura } from '@/lib/wallet/connection';
 import {
   maxSendableSol,
   maxSendableSakura,
-  SAKURA_SEND_SOL_RESERVE,
 } from '@/lib/wallet/balances';
+import { SAKURA_SEND_SOL_RESERVE } from '@/lib/wallet/config';
 import { buildTransakBuySolUrl } from '@/lib/wallet/transak';
 import { getSolanaNetworkLabel } from '@/lib/wallet/config';
 import QRCode from 'react-native-qrcode-svg';
@@ -835,6 +835,25 @@ export default function WalletModal({ visible, onClose }: Props) {
         marginBottom: 16,
       },
       refreshText: { fontSize: FontSize.sm, color: '#E84545', fontWeight: FontWeight.medium },
+      balanceDebugWrap: {
+        marginBottom: 16,
+        padding: 12,
+        borderRadius: Radius.md,
+        backgroundColor: colors.surfaceSecondary,
+        borderWidth: 1,
+        borderColor: colors.borderLight,
+        gap: 4,
+      },
+      balanceDebugTitle: {
+        fontSize: FontSize.xs,
+        fontWeight: FontWeight.semibold,
+        color: colors.textSecondary,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        marginBottom: 4,
+      },
+      balanceDebugLine: { fontSize: FontSize.xs, color: colors.textSecondary },
+      balanceDebugError: { color: '#FF3B30' },
       actionsRow: { flexDirection: 'row', gap: 8, marginBottom: 20 },
       actionBtn: {
         flex: 1,
@@ -1063,12 +1082,12 @@ export default function WalletModal({ visible, onClose }: Props) {
   );
 
   const routeTitle = route === 'main'
-    ? (wallet.connected ? 'SAKURA WALLET' : 'CONNECT WALLET')
+    ? (wallet.connected ? 'YOUR SAKURA' : 'GET STARTED')
     : route === 'receive'
       ? 'RECEIVE'
       : route === 'send'
         ? 'SEND'
-        : 'BUY SAKURA';
+        : 'GET SKR';
 
   if (!visible) return null;
 
@@ -1107,7 +1126,7 @@ export default function WalletModal({ visible, onClose }: Props) {
                 <Text style={s.heading}>{routeTitle}</Text>
                 <Text style={s.headingSub}>
                   {route === 'main'
-                    ? (wallet.connected ? 'Manage your wallet and balances' : 'Create or import your Solana wallet')
+                    ? (wallet.connected ? 'Balances, sends, and top-ups' : 'Create or restore your Sakura account')
                     : 'Secure action'}
                 </Text>
               </View>
@@ -1150,7 +1169,7 @@ export default function WalletModal({ visible, onClose }: Props) {
               <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
                 <View style={s.connectedHero}>
                   <View style={s.connectedHeroTop}>
-                    <Text style={s.connectTitle}>Wallet Active</Text>
+                    <Text style={s.connectTitle}>You're connected</Text>
                     <View style={s.connectedBadgeRow}>
                       <View style={s.connectedBadge}>
                         <Text style={s.connectedBadgeText}>CONNECTED</Text>
@@ -1161,7 +1180,7 @@ export default function WalletModal({ visible, onClose }: Props) {
                     </View>
                   </View>
                   <Text style={s.connectSubtitle}>
-                    Send, receive and swap without leaving Sakura.
+                    Send, receive, and top up without leaving Sakura.
                   </Text>
                 </View>
 
@@ -1193,6 +1212,20 @@ export default function WalletModal({ visible, onClose }: Props) {
                   <Text style={s.refreshText}>Refresh Balances</Text>
                 </TouchableOpacity>
 
+                <View style={s.balanceDebugWrap}>
+                  <Text style={s.balanceDebugTitle}>Connection details</Text>
+                  <Text style={s.balanceDebugLine}>RPC · {wallet.rpcLabel}</Text>
+                  <Text style={s.balanceDebugLine}>SKR source · {wallet.sakuraBalanceSource}</Text>
+                  {wallet.lastBalanceRefreshAt ? (
+                    <Text style={s.balanceDebugLine}>
+                      Last refresh · {new Date(wallet.lastBalanceRefreshAt).toLocaleTimeString()}
+                    </Text>
+                  ) : null}
+                  {wallet.balanceError ? (
+                    <Text style={[s.balanceDebugLine, s.balanceDebugError]}>{wallet.balanceError}</Text>
+                  ) : null}
+                </View>
+
                 <Text style={s.sectionLabel}>Quick Actions</Text>
                 <View style={s.actionsRow}>
                   <TouchableOpacity style={s.actionBtn} activeOpacity={0.8} onPress={onTap(() => setRoute('send'))}>
@@ -1205,12 +1238,12 @@ export default function WalletModal({ visible, onClose }: Props) {
                   </TouchableOpacity>
                   <TouchableOpacity style={[s.actionBtn, s.buyBtn]} activeOpacity={0.8} onPress={onTap(() => setRoute('buy'))}>
                     <StarIcon />
-                    <Text style={[s.actionBtnText, { color: '#fff' }]}>Buy SAKURA</Text>
+                    <Text style={[s.actionBtnText, { color: '#fff' }]}>Get SKR</Text>
                   </TouchableOpacity>
                 </View>
 
                 <TouchableOpacity onPress={handleDisconnect} style={s.disconnectBtn} activeOpacity={0.8}>
-                  <Text style={s.disconnectText}>Disconnect Wallet</Text>
+                  <Text style={s.disconnectText}>Sign out on this device</Text>
                 </TouchableOpacity>
               </BottomSheetScrollView>
             ) : (
@@ -1233,14 +1266,14 @@ export default function WalletModal({ visible, onClose }: Props) {
                 {tab === 'create' ? (
                   <View style={s.tabContent}>
                     <View style={s.connectHero}>
-                      <Text style={s.connectTitle}>New wallet in 10 seconds</Text>
+                      <Text style={s.connectTitle}>Set up in seconds</Text>
                       <Text style={s.connectSubtitle}>
-                        Create a secure wallet protected by Face ID / biometrics. Your key stays on this device.
+                        A private Sakura account on this device, protected by Face ID or your passcode.
                       </Text>
                       <View style={s.tipsRow}>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Local encrypted key storage</Text></View>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Fast one-tap transaction signing</Text></View>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>You can export your key later in Settings</Text></View>
+                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Stays on this device</Text></View>
+                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Quick approval for purchases</Text></View>
+                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Back up your account in Settings</Text></View>
                       </View>
                     </View>
                     <TouchableOpacity
@@ -1259,7 +1292,7 @@ export default function WalletModal({ visible, onClose }: Props) {
                 ) : (
                   <View style={s.tabContent}>
                     <View style={s.connectHero}>
-                      <Text style={s.connectTitle}>Restore an existing wallet</Text>
+                      <Text style={s.connectTitle}>Restore your account</Text>
                       <Text style={s.connectSubtitle}>
                         Paste your Base58 private key to connect the wallet you already use.
                       </Text>

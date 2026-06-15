@@ -9,9 +9,11 @@ type CachedRealtimeSession = {
 };
 
 let cachedSession: CachedRealtimeSession | null = null;
+let inflightRealtime: Promise<string> | null = null;
 
 export function clearRealtimeSession(): void {
   cachedSession = null;
+  inflightRealtime = null;
   supabase.realtime.setAuth(null);
 }
 
@@ -32,24 +34,34 @@ export async function ensureRealtimeAuth(
     return cached;
   }
 
-  const keypair = await unlock();
-  if (!keypair) throw new Error('Wallet approval is required.');
+  if (inflightRealtime) return inflightRealtime;
 
-  const address = keypair.publicKey.toBase58();
-  const headers = buildWalletAuthHeaders(keypair, 'realtime-session');
-  const { data, error } = await supabase.functions.invoke('wallet-realtime-session', {
-    body: {},
-    headers,
-  });
+  inflightRealtime = (async () => {
+    const keypair = await unlock();
+    if (!keypair) throw new Error('Could not connect to live messages. Try again.');
 
-  if (error) throw new Error(error.message || 'Realtime session failed.');
-  if (data?.error) throw new Error(String(data.error));
+    const address = keypair.publicKey.toBase58();
+    const headers = buildWalletAuthHeaders(keypair, 'realtime-session');
+    const { data, error } = await supabase.functions.invoke('wallet-realtime-session', {
+      body: {},
+      headers,
+    });
 
-  const token = String(data.access_token ?? '');
-  if (!token) throw new Error('Realtime session token missing.');
+    if (error) throw new Error(error.message || 'Live messages unavailable.');
+    if (data?.error) throw new Error(String(data.error));
 
-  const expiresAt = Number(data.expires_at ?? Date.now() + 30 * 60_000);
-  cachedSession = { walletAddress: address, token, expiresAt };
-  supabase.realtime.setAuth(token);
-  return token;
+    const token = String(data.access_token ?? '');
+    if (!token) throw new Error('Live messages session missing.');
+
+    const expiresAt = Number(data.expires_at ?? Date.now() + 30 * 60_000);
+    cachedSession = { walletAddress: address, token, expiresAt };
+    supabase.realtime.setAuth(token);
+    return token;
+  })();
+
+  try {
+    return await inflightRealtime;
+  } finally {
+    inflightRealtime = null;
+  }
 }

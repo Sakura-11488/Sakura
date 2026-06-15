@@ -45,7 +45,7 @@ export default function CreatorChatScreen() {
   }>();
   const router = useRouter();
   const { colors } = useTheme();
-  const { address, signWithBiometrics } = useWallet();
+  const { address, unlockForAppSession } = useWallet();
   const [threadId, setThreadId] = useState(thread ?? '');
   const [peerWallet, setPeerWallet] = useState(wallet ?? '');
   const [peerUsername, setPeerUsername] = useState(peerUsernameParam ?? '');
@@ -58,8 +58,8 @@ export default function CreatorChatScreen() {
   const listRef = useRef<FlatList<ChatMessageRow>>(null);
 
   const authHeaders = useCallback(
-    () => getOrRefreshWalletAuthSession(signWithBiometrics, 'creator-chat'),
-    [signWithBiometrics],
+    () => getOrRefreshWalletAuthSession(unlockForAppSession, 'creator-chat'),
+    [unlockForAppSession],
   );
 
   const peerLabel = formatPeerLabel({
@@ -89,16 +89,21 @@ export default function CreatorChatScreen() {
     }
   }, [authHeaders, scrollToEnd, threadId]);
 
+  const onRealtimeMessages = useCallback(
+    (rows: ChatMessageRow[]) => {
+      setMessages(rows);
+      scrollToEnd();
+    },
+    [scrollToEnd],
+  );
+
   const { setMessages: setRealtimeMessages } = useChatRealtime({
     threadId: booting ? null : threadId,
     enabled: !!address && !booting,
     paused: busy,
     walletAddress: address,
-    unlock: signWithBiometrics,
-    onMessages: (rows) => {
-      setMessages(rows);
-      scrollToEnd();
-    },
+    unlock: unlockForAppSession,
+    onMessages: onRealtimeMessages,
     onFallbackPoll: fallbackPoll,
   });
 
@@ -135,7 +140,7 @@ export default function CreatorChatScreen() {
         if (!active) return;
         const message = error instanceof Error ? error.message : 'Please try again.';
         if (message.toLowerCase().includes('blocked')) setBlocked(true);
-        Alert.alert('Messages unavailable', message);
+        Alert.alert('Could not open chat', message);
       } finally {
         if (active) setBooting(false);
       }
@@ -332,7 +337,7 @@ export default function CreatorChatScreen() {
 
         {booting ? (
           <View style={styles.booting}>
-            <Text style={styles.bootingText}>Unlocking messages…</Text>
+            <Text style={styles.bootingText}>Opening conversation…</Text>
           </View>
         ) : (
           <>

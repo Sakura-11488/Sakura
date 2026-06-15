@@ -4,6 +4,7 @@ import {
   generateWalletAuthMessage,
   type WalletAuthHeaders,
 } from './wallet-auth';
+import { clearRealtimeSession } from './wallet-realtime-session';
 
 const SESSION_TTL_MS = 4 * 60 * 1000; // under server 300s window
 
@@ -14,15 +15,15 @@ type CachedSession = {
 };
 
 const sessionCache = new Map<string, CachedSession>();
+const inflightAuth = new Map<string, Promise<WalletAuthHeaders>>();
 
 function cacheKey(walletAddress: string, action: string): string {
   return `${walletAddress}:${action}`;
 }
 
-import { clearRealtimeSession } from './wallet-realtime-session';
-
 export function clearWalletAuthSession(): void {
   sessionCache.clear();
+  inflightAuth.clear();
   clearRealtimeSession();
 }
 
@@ -56,9 +57,22 @@ export async function getOrRefreshWalletAuthSession(
   const cached = peekWalletAuthSession(action);
   if (cached) return cached;
 
-  const keypair = await unlock();
-  if (!keypair) throw new Error('Wallet approval is required.');
-  return getWalletAuthSession(keypair, action, { forceRefresh: true });
+  const inflightKey = `auth:${action}`;
+  const existing = inflightAuth.get(inflightKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const keypair = await unlock();
+    if (!keypair) throw new Error('Could not verify your identity. Try again.');
+    return getWalletAuthSession(keypair, action, { forceRefresh: true });
+  })();
+
+  inflightAuth.set(inflightKey, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightAuth.delete(inflightKey);
+  }
 }
 
 export function peekWalletAuthSession(action: string): WalletAuthHeaders | null {

@@ -1,7 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { supabase } from './supabase';
 import { buildMemoryContext, addMemory, forgetMemory, listMemories } from './ai-memories';
-import { extractDisplayNameFromMemory, syncAiDisplayName } from './ai-display-name';
 import {
   findSimilarAnime,
   findSimilarManga,
@@ -18,6 +17,7 @@ import {
   sendSakura,
 } from './wallet/connection';
 import { getWalletWithBiometrics } from './wallet/storage';
+import { sakuraToRaw } from './wallet/config';
 import { resolveUserWallet } from './user-resolve';
 import { recordSupportOnChain } from './wallet/ino';
 import {
@@ -431,10 +431,7 @@ async function dispatchTool(
       if (!walletAddress) return { ok: false, error: 'No wallet — memory not saved.' };
       const result = await addMemory(walletAddress, args.note, args.tag);
       if (result.ok) {
-        const displayName = extractDisplayNameFromMemory(String(args.note ?? ''), args.tag);
-        if (displayName) {
-          await syncAiDisplayName(walletAddress, displayName).catch(() => {});
-        }
+        // AI display names stay in memories for MY page only — not auto-synced to public profile.
       }
       return result;
     }

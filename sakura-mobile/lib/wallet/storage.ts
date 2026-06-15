@@ -6,7 +6,7 @@ import bs58 from 'bs58';
 const KEY_SECRET = 'sakura_wallet_secret';
 const KEY_PUBKEY = 'sakura_wallet_pubkey';
 
-const AUTH_PROMPT = 'Authenticate to access your Sakura Wallet';
+const AUTH_PROMPT = 'Unlock Sakura';
 
 function secretStoreOptions(): SecureStore.SecureStoreOptions {
   return {

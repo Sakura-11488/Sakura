@@ -45,38 +45,40 @@ export function useChatRealtime({
 }: Options) {
   const messagesRef = useRef<ChatMessageRow[]>([]);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const pausedRef = useRef(paused ?? false);
+  const onMessagesRef = useRef(onMessages);
+  const onFallbackPollRef = useRef(onFallbackPoll);
 
-  const setMessages = useCallback(
-    (messages: ChatMessageRow[]) => {
-      messagesRef.current = messages;
-    },
-    [],
-  );
+  pausedRef.current = paused ?? false;
+  onMessagesRef.current = onMessages;
+  onFallbackPollRef.current = onFallbackPoll;
 
-  const appendRow = useCallback(
-    (row: RealtimeRow) => {
-      if (row.moderation_state === 'removed') return;
-      const merged = mergeChatMessages(messagesRef.current, [toChatRow(row)]);
-      if (merged !== messagesRef.current) {
-        messagesRef.current = merged;
-        onMessages(merged);
-      }
-    },
-    [onMessages],
-  );
+  const setMessages = useCallback((messages: ChatMessageRow[]) => {
+    messagesRef.current = messages;
+  }, []);
+
+  const appendRow = useCallback((row: RealtimeRow) => {
+    if (pausedRef.current) return;
+    if (row.moderation_state === 'removed') return;
+    const merged = mergeChatMessages(messagesRef.current, [toChatRow(row)]);
+    if (merged !== messagesRef.current) {
+      messagesRef.current = merged;
+      onMessagesRef.current(merged);
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      if (!threadId || !enabled || paused) return;
+      if (!threadId || !enabled) return;
 
       let active = true;
       let fallbackTimer: ReturnType<typeof setInterval> | null = null;
       let realtimeReady = false;
 
       const startFallback = () => {
-        if (fallbackTimer || !onFallbackPoll) return;
+        if (fallbackTimer || !onFallbackPollRef.current) return;
         fallbackTimer = setInterval(() => {
-          if (active) onFallbackPoll();
+          if (active && !pausedRef.current) onFallbackPollRef.current?.();
         }, FALLBACK_POLL_MS);
       };
 
@@ -131,10 +133,10 @@ export function useChatRealtime({
           channelRef.current = null;
         }
         if (!realtimeReady) {
-          // no-op; next focus will retry
+          // next focus will retry
         }
       };
-    }, [appendRow, enabled, onFallbackPoll, paused, threadId, unlock, walletAddress]),
+    }, [appendRow, enabled, threadId, unlock, walletAddress]),
   );
 
   return { setMessages };

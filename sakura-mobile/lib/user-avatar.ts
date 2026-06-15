@@ -38,8 +38,12 @@ export interface AvatarMintQuote {
 
 export function resolveAvatarUri(profile: AvatarProfileFields): string {
   if (profile.avatar_url?.trim()) return profile.avatar_url.trim();
-  const seed = profile.avatar_seed?.trim() || profile.wallet_address.slice(0, 8);
+  const seed = profile.wallet_address.trim() || profile.avatar_seed?.trim() || 'sakura';
   return `https://robohash.org/${encodeURIComponent(seed)}?set=set4&bgset=bg1`;
+}
+
+export function hasMintedAvatar(profile: AvatarProfileFields): boolean {
+  return Boolean(profile.avatar_url?.trim() || profile.avatar_mint_address?.trim());
 }
 
 async function parseInvokeError(error: { message?: string; context?: Response }): Promise<string> {
