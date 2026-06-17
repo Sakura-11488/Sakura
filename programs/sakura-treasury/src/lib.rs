@@ -10,9 +10,9 @@ pub mod sakura_treasury {
 
     /// Initialize the treasury PDA and its SAKURA token account.
     /// Called once by admin.
-    pub fn initialize(ctx: Context<Initialize>, admin: Pubkey) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let treasury = &mut ctx.accounts.treasury;
-        treasury.admin = admin;
+        treasury.admin = ctx.accounts.admin.key();
         treasury.treasury_bump = ctx.bumps.treasury;
         treasury.total_deposited = 0;
         Ok(())
