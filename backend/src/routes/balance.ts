@@ -13,6 +13,7 @@ import {
     upsertBalance,
     recordDeposit,
     getDepositHistory,
+    getDepositByTxSignature,
 } from "../db";
 
 const router = Router();
@@ -65,6 +66,16 @@ router.post("/deposit-confirm", requireWalletAuth, async (req, res) => {
             return;
         }
 
+        // F-01 FIX: Application-level replay check 
+        const existing = await getDepositByTxSignature(txSignature);
+        if (existing) {
+            res.status(409).json({
+                error: "Transaction already processed. This deposit has already been credited.",
+                txSignature,
+            });
+            return;
+        }
+
         const connection = getMainnetConnection();
         const serverWallet = getServerWalletAddress();
 
@@ -108,13 +119,26 @@ router.post("/deposit-confirm", requireWalletAuth, async (req, res) => {
         const user = await getOrCreateUser(wallet);
 
         // Record the deposit
-        await recordDeposit({
-            wallet,
-            amount_sol: depositSol,
-            direction: "deposit",
-            tx_signature: txSignature,
-            status: "confirmed",
-        });
+        try {
+            await recordDeposit({
+                wallet,
+                amount_sol: depositSol,
+                direction: "deposit",
+                tx_signature: txSignature,
+                status: "confirmed",
+            });
+        }  catch (insertErr: any) {
+            if (insertErr?.code === "23505" || insertErr?.message?.includes("unique")) {
+                res.status(409).json({
+                    error: "Transaction already processed. This deposit has already been credited.",
+                    txSignature,
+                });
+                return;
+            }
+            throw insertErr;
+        }
+
+        
 
         // Update balance
         const currentBalance = await getBalance(wallet);
