@@ -14,6 +14,7 @@ import {
   Nunito_800ExtraBold,
 } from '@expo-google-fonts/nunito';
 import { WalletProvider } from '@/lib/wallet/context';
+import { UnreadMessagesProvider } from '@/lib/unread-messages-context';
 import { ThemeProvider, useTheme } from '@/lib/theme';
 import { I18nProvider } from '@/lib/i18n';
 import AnimatedSplash from '@/components/ui/AnimatedSplash';
@@ -107,6 +108,7 @@ export default function RootLayout() {
         <ThemeProvider>
         <I18nProvider>
         <WalletProvider>
+          <UnreadMessagesProvider>
           <TransferCelebrationProvider>
           <ThemedStatusBar />
           <LiveActivityDeepLinkBridge />
@@ -130,7 +132,8 @@ export default function RootLayout() {
             <Stack.Screen name="downloads"    options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="reading-history" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="user/[wallet]" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="messages" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="creator/[username]" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="messages/[threadId]" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-chat" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="become-creator" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-dashboard" options={{ animation: 'slide_from_right' }} />
@@ -147,6 +150,7 @@ export default function RootLayout() {
             <AnimatedSplash onFinish={() => setShowSplash(false)} />
           )}
           </TransferCelebrationProvider>
+          </UnreadMessagesProvider>
         </WalletProvider>
         </I18nProvider>
         </ThemeProvider>

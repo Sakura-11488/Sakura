@@ -6,7 +6,7 @@ import Animated, {
   withSpring,
   withSequence,
 } from 'react-native-reanimated';
-import LottieView from 'lottie-react-native';
+import SakuraLottie from '@/components/ui/SakuraLottie';
 import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
@@ -19,7 +19,7 @@ export default function WalletButton() {
   const { connected, shortAddress, sakuraBalance } = useWallet();
   const { colors } = useTheme();
   const scale = useSharedValue(1);
-  const lottieRef = useRef<LottieView>(null);
+  const lottieRef = useRef<React.ElementRef<typeof SakuraLottie>>(null);
 
   const s = useMemo(() => StyleSheet.create({
     btn: {
@@ -76,20 +76,20 @@ export default function WalletButton() {
           activeOpacity={1}
           style={[s.btn, connected && s.btnConnected]}
         >
-          <LottieView
+          <SakuraLottie
             ref={lottieRef}
+            key={connected ? 'wallet-connected' : 'wallet-disconnected'}
             source={require('@/assets/lottie/wallet.json')}
             style={s.lottie}
             autoPlay
             loop
             speed={0.55}
-            colorFilters={connected ? [{ keypath: '*', color: '#FFFFFF' }] : []}
           />
           <Text style={[s.label, connected && s.labelConnected]}>
             {connected
               ? sakuraBalance !== null
                 ? `${sakuraBalance.toLocaleString(undefined, { maximumFractionDigits: 0 })} SKR`
-                : shortAddress ?? 'Wallet'
+                : shortAddress ?? 'Account'
               : 'Connect'}
           </Text>
         </TouchableOpacity>

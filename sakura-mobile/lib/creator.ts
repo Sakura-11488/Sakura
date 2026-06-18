@@ -355,3 +355,120 @@ export function statusLabel(status: string): string {
   if (status === 'submitted') return 'In review';
   return status.replace(/_/g, ' ');
 }
+
+export interface PublicCreatorProfile {
+  wallet_address: string;
+  username: string | null;
+  display_name: string | null;
+  bio: string | null;
+  avatar_seed: string | null;
+  avatar_url: string | null;
+  follower_count: number;
+  creator_verification_state: string | null;
+  creator_verified_at: string | null;
+}
+
+export interface UserSearchResult {
+  wallet_address: string;
+  username: string;
+  display_name: string | null;
+  avatar_seed: string | null;
+  avatar_url: string | null;
+}
+
+export async function searchUsersByUsername(query: string, limit = 20): Promise<UserSearchResult[]> {
+  const trimmed = query.replace(/^@/, '').trim();
+  if (trimmed.length < 2) return [];
+
+  const { data: usernameRows, error } = await supabase
+    .from('sakura_usernames')
+    .select('wallet_address, username, display_name')
+    .ilike('username', `%${trimmed}%`)
+    .limit(limit);
+  if (error) throw error;
+  if (!usernameRows?.length) return [];
+
+  const wallets = usernameRows.map((r) => r.wallet_address);
+  const { data: profiles } = await supabase
+    .from('user_profiles')
+    .select('wallet_address, display_name, avatar_seed, avatar_url')
+    .in('wallet_address', wallets);
+
+  const profileMap = new Map((profiles ?? []).map((p) => [p.wallet_address, p]));
+
+  return usernameRows.map((row) => {
+    const profile = profileMap.get(row.wallet_address);
+    return {
+      wallet_address: row.wallet_address,
+      username: row.username,
+      display_name: profile?.display_name ?? row.display_name ?? null,
+      avatar_seed: profile?.avatar_seed ?? row.wallet_address.slice(0, 8),
+      avatar_url: profile?.avatar_url ?? null,
+    };
+  });
+}
+
+export async function getCreatorByUsername(username: string): Promise<PublicCreatorProfile | null> {
+  const trimmed = username.replace(/^@/, '').trim();
+  if (!trimmed) return null;
+
+  const { data: usernameRow, error } = await supabase
+    .from('sakura_usernames')
+    .select('wallet_address, username, display_name')
+    .ilike('username', trimmed)
+    .maybeSingle();
+  if (error) throw error;
+  if (!usernameRow) return null;
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('wallet_address, display_name, bio, avatar_seed, avatar_url, follower_count, creator_verification_state, creator_verified_at')
+    .eq('wallet_address', usernameRow.wallet_address)
+    .maybeSingle();
+
+  return {
+    wallet_address: usernameRow.wallet_address,
+    username: usernameRow.username,
+    display_name: profile?.display_name ?? usernameRow.display_name ?? null,
+    bio: profile?.bio ?? null,
+    avatar_seed: profile?.avatar_seed ?? usernameRow.wallet_address.slice(0, 8),
+    avatar_url: profile?.avatar_url ?? null,
+    follower_count: profile?.follower_count ?? 0,
+    creator_verification_state: profile?.creator_verification_state ?? null,
+    creator_verified_at: profile?.creator_verified_at ?? null,
+  };
+}
+
+export async function getPublicCreatorWorks(creatorWallet: string): Promise<CreatorWork[]> {
+  const { data, error } = await supabase
+    .from('creator_works')
+    .select('*')
+    .eq('creator_wallet', creatorWallet)
+    .eq('visibility', 'public')
+    .eq('publication_status', 'published')
+    .order('published_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as CreatorWork[];
+}
+
+export async function uploadCreatorAvatar(input: {
+  keypair: import('@solana/web3.js').Keypair;
+  localUri: string;
+  mimeType?: string;
+}): Promise<string> {
+  const { invokeCreatorFunction } = await import('./creator-api');
+  const base64 = await FileSystem.readAsStringAsync(input.localUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const mimeType = input.mimeType?.trim() || 'image/jpeg';
+
+  const result = await invokeCreatorFunction<{ avatar_url: string }>(
+    'upload-profile-avatar',
+    'upload-profile-avatar',
+    input.keypair,
+    { image_base64: base64, mime_type: mimeType },
+  );
+
+  if (!result.avatar_url) throw new Error('Avatar upload failed.');
+  return result.avatar_url;
+}

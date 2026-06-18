@@ -10,7 +10,7 @@ import Animated, {
   interpolate,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Radius } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -92,6 +92,62 @@ export function HomeScreenSkeleton() {
     </SafeAreaView>
   );
 }
+
+export function MessagesInboxSkeleton({ rows = 8 }: { rows?: number }) {
+  const { colors } = useTheme();
+  return (
+    <View style={[msgSk.wrap, { backgroundColor: colors.background }]}>
+      {Array.from({ length: rows }).map((_, i) => (
+        <View
+          key={i}
+          style={[
+            msgSk.row,
+            i < rows - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderLight },
+          ]}
+        >
+          <ShimmerBox width={48} height={48} borderRadius={24} />
+          <View style={msgSk.textCol}>
+            <ShimmerBox width={`${55 + (i % 3) * 10}%`} height={14} borderRadius={4} />
+            <ShimmerBox width={`${70 - (i % 2) * 12}%`} height={12} borderRadius={4} style={{ marginTop: 8 }} />
+          </View>
+          <ShimmerBox width={24} height={10} borderRadius={4} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+export function ChatThreadSkeleton() {
+  const { colors } = useTheme();
+  const widths = ['68%', '52%', '74%', '44%'];
+  return (
+    <View style={[msgSk.thread, { backgroundColor: colors.background }]}>
+      {widths.map((w, i) => (
+        <View
+          key={i}
+          style={[msgSk.bubbleRow, i % 2 === 1 && msgSk.bubbleRowMine]}
+        >
+          <ShimmerBox width={w} height={i === 1 ? 36 : 48} borderRadius={16} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const msgSk = StyleSheet.create({
+  wrap: { flex: 1 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 12,
+  },
+  textCol: { flex: 1 },
+  thread: { flex: 1, paddingHorizontal: Spacing.md, paddingTop: 16, gap: 10 },
+  bubbleRow: { flexDirection: 'row' },
+  bubbleRowMine: { justifyContent: 'flex-end' },
+});
 
 const styles = StyleSheet.create({
   skeleton: {

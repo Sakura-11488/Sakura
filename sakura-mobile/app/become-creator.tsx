@@ -18,7 +18,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import LottieView from 'lottie-react-native';
+import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
@@ -35,7 +35,7 @@ function CardHeader({ title, subtitle, colors }: { title: string; subtitle?: str
   return (
     <View style={cardHeaderStyles.wrap}>
       <View style={[cardHeaderStyles.lottieBadge, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}35` }]}>
-        <LottieView
+        <SakuraLottie
           source={require('@/assets/lottie/write.json')}
           style={cardHeaderStyles.lottie}
           autoPlay
@@ -159,7 +159,7 @@ export default function BecomeCreatorScreen() {
           backgroundColor: '#181818',
           ...Shadow.md,
         },
-        heroImage: { ...StyleSheet.absoluteFillObject },
+        heroImage: { ...StyleSheet.absoluteFill },
         heroGradBottom: {
           position: 'absolute',
           left: 0,
@@ -167,7 +167,7 @@ export default function BecomeCreatorScreen() {
           bottom: 0,
           height: '85%',
         },
-        heroGradTint: { ...StyleSheet.absoluteFillObject },
+        heroGradTint: { ...StyleSheet.absoluteFill },
         heroBackBtn: {
           position: 'absolute',
           top: Spacing.sm,
@@ -323,7 +323,7 @@ export default function BecomeCreatorScreen() {
                   Claim your @username and start publishing on Sakura.
                 </Text>
               </View>
-              <LottieView
+              <SakuraLottie
                 source={require('@/assets/lottie/write.json')}
                 style={styles.heroLottie}
                 autoPlay
@@ -337,11 +337,11 @@ export default function BecomeCreatorScreen() {
             <Animated.View entering={FadeInUp.delay(80).duration(400)} style={styles.card}>
               <CardHeader
                 colors={colors}
-                title="Connect your wallet"
-                subtitle="Link your Sakura wallet to claim a creator username."
+                title="Connect your account"
+                subtitle="Link your Sakura account to claim a creator username."
               />
               <TouchableOpacity style={styles.primaryBtn} onPress={() => setWalletVisible(true)} activeOpacity={0.85}>
-                <Text style={styles.primaryBtnText}>Connect Wallet</Text>
+                <Text style={styles.primaryBtnText}>Connect Account</Text>
               </TouchableOpacity>
             </Animated.View>
           ) : (
@@ -400,7 +400,7 @@ export default function BecomeCreatorScreen() {
             <Animated.View entering={FadeInUp.delay(120).duration(400)} style={styles.card}>
               <Text style={styles.sectionTitle}>Why create on Sakura?</Text>
               {[
-                'Claim a unique @username linked to your wallet',
+                'Claim a unique @username linked to your account',
                 'Publish novels, manga chapters, and anime episodes',
                 'Sync your creator profile across Sakura apps',
                 'Reach readers who already live in the app',

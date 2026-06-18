@@ -17,7 +17,6 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
-import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { onTap } from '@/lib/sound';
 import { CreatorUploadSkeleton } from '@/components/creator/CreatorSkeletons';
 import {
@@ -33,10 +32,14 @@ import {
   createCreatorWork,
   createWorkRelease,
   getCreatorProfile,
-  publishCreatorWork,
   uploadWorkCover,
   type CreatorWorkKind,
 } from '@/lib/creator';
+import {
+  publishWorkViaApi,
+  registerWorkMintOnChain,
+  verifyWorkMint,
+} from '@/lib/work-mint';
 
 export default function CreatorUploadScreen() {
   const { colors } = useTheme();
@@ -52,6 +55,7 @@ export default function CreatorUploadScreen() {
   const [releaseTitle, setReleaseTitle] = useState('');
   const [releaseBody, setReleaseBody] = useState('');
   const [coverUri, setCoverUri] = useState<string | null>(null);
+  const [mintAsNft, setMintAsNft] = useState(true);
 
   useFocusEffect(
     useCallback(() => {
@@ -124,20 +128,38 @@ export default function CreatorUploadScreen() {
         bodyText: releaseBody,
       });
 
+      let coverUrl: string | null = null;
       if (coverUri) {
-        await uploadWorkCover({
+        coverUrl = await uploadWorkCover({
           walletAddress: address,
           workId: work.id,
           localUri: coverUri,
         });
       }
 
-      const keypair = await signWithBiometrics();
-      if (!keypair) throw new Error('Wallet approval is required to publish.');
-      await publishCreatorWork(work.id, buildWalletAuthHeaders(keypair, 'creator-publish-work'));
-      Alert.alert('Published', 'Your work is live on Sakura.', [
-        { text: 'View dashboard', onPress: () => router.replace('/creator-dashboard') },
-      ]);
+      const kp = await signWithBiometrics();
+      if (!kp) throw new Error('Could not unlock account.');
+
+      if (mintAsNft) {
+        const txSignature = await registerWorkMintOnChain(kp, work.id, workTitle.trim());
+        await verifyWorkMint(kp, {
+          workId: work.id,
+          title: workTitle.trim(),
+          kind: workKind,
+          coverUrl,
+          txSignature,
+        });
+      }
+
+      const result = await publishWorkViaApi(kp, work.id);
+
+      Alert.alert(
+        mintAsNft ? 'Published & minted' : 'Published',
+        mintAsNft
+          ? `Your work is live. NFT receipt registered to your account.${result.followers_notified ? ` ${result.followers_notified} subscribers notified.` : ''}`
+          : `Your work is live on Sakura.${result.followers_notified ? ` ${result.followers_notified} subscribers notified.` : ''}`,
+        [{ text: 'View dashboard', onPress: () => router.replace('/creator-dashboard') }],
+      );
     } catch (e) {
       Alert.alert('Upload failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
@@ -268,13 +290,61 @@ export default function CreatorUploadScreen() {
                 </Text>
               )}
             </FormSection>
+
+            <FormSection
+              title="NFT ownership"
+              subtitle="Register this work on-chain to your Sakura account when you publish."
+              colors={colors}
+            >
+              <TouchableOpacity
+                onPress={() => setMintAsNft((v) => !v)}
+                activeOpacity={0.85}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  backgroundColor: colors.surfaceSecondary,
+                  borderRadius: Radius.lg,
+                  padding: 14,
+                  borderWidth: 1,
+                  borderColor: mintAsNft ? colors.primary : colors.border,
+                }}
+              >
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={{ fontSize: FontSize.md, fontWeight: FontWeight.bold, color: colors.text }}>
+                    Mint to my account
+                  </Text>
+                  <Text style={{ fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 4, lineHeight: 18 }}>
+                    Signs a receipt on Solana and links it to your wallet — like Sakura Studio.
+                  </Text>
+                </View>
+                <View
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    borderWidth: 2,
+                    borderColor: mintAsNft ? colors.primary : colors.border,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: mintAsNft ? colors.primary : 'transparent',
+                  }}
+                >
+                  {mintAsNft ? <Text style={{ color: '#fff', fontSize: 12 }}>✓</Text> : null}
+                </View>
+              </TouchableOpacity>
+            </FormSection>
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
         <Text style={styles.footerHint}>
-          {canPublish ? 'Ready to publish publicly on Sakura' : 'Fill in series title and release title to continue'}
+          {canPublish
+            ? mintAsNft
+              ? 'Publish publicly and mint NFT receipt to your account'
+              : 'Ready to publish publicly on Sakura'
+            : 'Fill in series title and release title to continue'}
         </Text>
         <TouchableOpacity
           style={[styles.primaryBtn, (!canPublish || uploading) && styles.primaryBtnDisabled]}
@@ -285,7 +355,7 @@ export default function CreatorUploadScreen() {
           {uploading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.primaryBtnText}>Publish to Sakura</Text>
+            <Text style={styles.primaryBtnText}>{mintAsNft ? 'Publish & Mint' : 'Publish to Sakura'}</Text>
           )}
         </TouchableOpacity>
       </View>

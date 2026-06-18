@@ -1,6 +1,15 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Dimensions,
+} from 'react-native';
 import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import AntDesign from '@expo/vector-icons/AntDesign';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
@@ -9,9 +18,9 @@ import type { AnimeWatchProgress } from '@/lib/watch-progress';
 import { playTap } from '@/lib/sound';
 import SectionHeader from '@/components/ui/SectionHeader';
 
-const CARD_W = Dimensions.get('window').width * 0.58;
-const CARD_H = CARD_W * 0.38;
-const THUMB_W = CARD_H * 0.62;
+const CARD_W = Dimensions.get('window').width * 0.65;
+const CARD_H = CARD_W * 0.48;
+const THUMB_W = CARD_H * 1.15;
 
 interface ContinueWatchingRowProps {
   items: AnimeWatchProgress[];
@@ -55,7 +64,14 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
               onPress={() => open(item)}
               style={[s.card, { backgroundColor: colors.white, borderColor: colors.border }]}
             >
-              <Image source={{ uri: thumb }} style={s.thumb} contentFit="cover" />
+              <View style={s.thumbWrap}>
+                {thumb ? (
+                  <Image source={{ uri: thumb }} style={s.thumb} contentFit="cover" contentPosition="top" />
+                ) : (
+                  <View style={[s.thumb, s.thumbPlaceholder, { backgroundColor: colors.surfaceSecondary }]} />
+                )}
+              </View>
+
               <View style={s.body}>
                 <Text style={[s.title, { color: colors.text }]} numberOfLines={1}>
                   {item.title}
@@ -65,6 +81,22 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
                 </Text>
                 <View style={[s.track, { backgroundColor: `${colors.primary}22` }]}>
                   <View style={[s.fill, { width: `${pct}%`, backgroundColor: colors.primary }]} />
+                </View>
+              </View>
+
+              <View style={s.thumbOverlay} pointerEvents="none">
+                <LinearGradient
+                  colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.35)', 'rgba(0,0,0,0.65)']}
+                  locations={[0, 0.45, 1]}
+                  style={StyleSheet.absoluteFill}
+                />
+                <View style={s.playStack}>
+                  <View style={s.rippleOuter} />
+                  <View style={s.rippleMid} />
+                  <View style={s.rippleInner} />
+                  <View style={s.playIconWrap}>
+                    <AntDesign name="play-circle" size={26} color="#fff" />
+                  </View>
                 </View>
               </View>
             </TouchableOpacity>
@@ -89,31 +121,89 @@ const s = StyleSheet.create({
     overflow: 'hidden',
     flexDirection: 'row',
     borderWidth: StyleSheet.hairlineWidth,
+    position: 'relative',
+  },
+  thumbWrap: {
+    width: THUMB_W,
+    height: CARD_H,
+    overflow: 'hidden',
   },
   thumb: {
     width: THUMB_W,
-    height: '100%',
+    height: CARD_H,
+  },
+  thumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thumbOverlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: THUMB_W,
+    height: CARD_H,
+    zIndex: 30,
+    elevation: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playStack: {
+    width: 62,
+    height: 62,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rippleOuter: {
+    position: 'absolute',
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  rippleMid: {
+    position: 'absolute',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  rippleInner: {
+    position: 'absolute',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  playIconWrap: {
+    zIndex: 3,
+    elevation: 3,
   },
   body: {
     flex: 1,
     paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
+    paddingVertical: 8,
     justifyContent: 'center',
-    gap: 2,
+    gap: 3,
   },
   title: {
-    fontSize: FontSize.xs,
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
-    lineHeight: 15,
+    lineHeight: 17,
   },
   sub: {
-    fontSize: 10,
+    fontSize: FontSize.xs,
     fontFamily: Fonts.body,
   },
   track: {
-    height: 3,
+    height: 4,
     borderRadius: 2,
-    marginTop: 3,
+    marginTop: 4,
     overflow: 'hidden',
   },
   fill: {

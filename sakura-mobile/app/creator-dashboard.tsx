@@ -6,13 +6,17 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
-import LottieView from 'lottie-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
+import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
@@ -23,6 +27,7 @@ import {
   getCreatorProfile,
   getCreatorWorks,
   statusLabel,
+  uploadCreatorAvatar,
   workCoverUrl,
   type CreatorProfile,
   type CreatorWork,
@@ -40,12 +45,20 @@ function kindColor(kind: CreatorWorkKind): string {
   return '#007AFF';
 }
 
+function avatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 62%, 48%)`;
+}
+
 export default function CreatorDashboardScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { connected, address, shortAddress } = useWallet();
+  const { connected, address, shortAddress, signWithBiometrics } = useWallet();
 
   const [loading, setLoading] = useState(true);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [filter, setFilter] = useState<'all' | CreatorWorkKind>('all');
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [works, setWorks] = useState<CreatorWork[]>([]);
@@ -96,14 +109,67 @@ export default function CreatorDashboardScreen() {
     [works, filter],
   );
 
+  const pickAvatar = useCallback(async () => {
+    if (!address || uploadingAvatar) return;
+
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Photos', 'Allow photo access to upload your profile picture.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.85,
+    });
+    if (result.canceled || !result.assets[0]?.uri) return;
+
+    setUploadingAvatar(true);
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair) {
+        Alert.alert('Wallet', 'Unlock your wallet to update your profile photo.');
+        return;
+      }
+
+      const asset = result.assets[0];
+      const avatarUrl = await uploadCreatorAvatar({
+        keypair,
+        localUri: asset.uri,
+        mimeType: asset.mimeType ?? undefined,
+      });
+
+      setCreator((prev) => {
+        if (!prev) return prev;
+        const profile = prev.profile ?? {
+          wallet_address: address,
+          display_name: null,
+          bio: null,
+          avatar_seed: address.slice(0, 8),
+          avatar_url: null,
+          created_at: null,
+          updated_at: null,
+        };
+        return {
+          ...prev,
+          profile: { ...profile, avatar_url: avatarUrl },
+        };
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Try again.');
+    } finally {
+      setUploadingAvatar(false);
+    }
+  }, [address, signWithBiometrics, uploadingAvatar]);
+
   const displayName =
     creator?.username?.display_name ||
     creator?.profile?.display_name ||
     creator?.username?.username ||
     'Creator';
-  const verificationState = creator?.profile?.creator_verification_state ?? 'unverified';
-  const isVerified = verificationState === 'verified';
-  const revenueEnabled = !!creator?.profile?.revenue_enabled_at;
 
   const styles = useMemo(
     () =>
@@ -153,8 +219,28 @@ export default function CreatorDashboardScreen() {
           justifyContent: 'center',
           borderWidth: 2,
           borderColor: 'rgba(255,255,255,0.35)',
+          overflow: 'hidden',
         },
         avatarText: { color: '#fff', fontSize: FontSize.xl, fontWeight: FontWeight.bold },
+        avatarOverlay: {
+          ...StyleSheet.absoluteFill,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: 'rgba(0,0,0,0.45)',
+        },
+        avatarBadge: {
+          position: 'absolute',
+          right: -2,
+          bottom: -2,
+          width: 22,
+          height: 22,
+          borderRadius: 11,
+          backgroundColor: colors.primary,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: 2,
+          borderColor: '#141418',
+        },
         heroText: { flex: 1 },
         heroTag: { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1, marginBottom: 4 },
         heroName: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, color: '#fff' },
@@ -303,6 +389,8 @@ export default function CreatorDashboardScreen() {
   if (loading) return <CreatorDashboardSkeleton />;
 
   const initial = (creator?.username?.username?.[0] || 'C').toUpperCase();
+  const avatarUrl = creator?.profile?.avatar_url ?? null;
+  const avatarSeed = creator?.profile?.avatar_seed ?? address?.slice(0, 8) ?? 'creator';
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -329,9 +417,37 @@ export default function CreatorDashboardScreen() {
 
           <View style={styles.heroContent}>
             <View style={styles.heroRow}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{initial}</Text>
-              </View>
+              <TouchableOpacity
+                onPress={onTap(pickAvatar)}
+                activeOpacity={0.85}
+                disabled={uploadingAvatar}
+                accessibilityLabel="Change profile photo"
+              >
+                <View style={[styles.avatar, !avatarUrl && { backgroundColor: avatarColor(avatarSeed) }]}>
+                  {avatarUrl ? (
+                    <Image source={{ uri: avatarUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                  ) : (
+                    <Text style={styles.avatarText}>{initial}</Text>
+                  )}
+                  {uploadingAvatar ? (
+                    <View style={styles.avatarOverlay}>
+                      <ActivityIndicator color="#fff" size="small" />
+                    </View>
+                  ) : (
+                    <View style={styles.avatarBadge}>
+                      <Svg width={11} height={11} viewBox="0 0 24 24" fill="none">
+                        <Path
+                          d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"
+                          stroke="#fff"
+                          strokeWidth={2.2}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </Svg>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
               <View style={styles.heroText}>
                 <Text style={styles.heroTag}>CREATOR DASHBOARD</Text>
                 <Text style={styles.heroName} numberOfLines={1}>{displayName}</Text>
@@ -391,71 +507,9 @@ export default function CreatorDashboardScreen() {
           </TouchableOpacity>
         </Animated.View>
 
-        <Animated.View entering={FadeInUp.delay(105).duration(380)} style={styles.actionsRow}>
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionSecondary]}
-            onPress={onTap(() => router.push('/creator-verification'))}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.actionInner, { backgroundColor: colors.surface }]}>
-              <View>
-                <Text style={[styles.actionTitle, { color: colors.text }]}>
-                  {isVerified ? 'Verified creator' : verificationState === 'pending' ? 'Verification pending' : 'Request verification'}
-                </Text>
-                <Text style={[styles.actionSub, { color: colors.textSecondary }]}>
-                  {isVerified ? 'Badge active on your profile' : 'Unlock badges and revenue review'}
-                </Text>
-              </View>
-              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
-                <Path d="M20 7 9 18l-5-5" stroke={colors.primary} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
-              </Svg>
-            </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionCard, !revenueEnabled && { opacity: 0.58 }]}
-            onPress={onTap(() => {
-              if (revenueEnabled) router.push('/creator-coin-launch');
-            })}
-            activeOpacity={0.85}
-          >
-            <LinearGradient colors={['#9B21BE', '#E84545']} style={styles.actionInner}>
-              <View>
-                <Text style={[styles.actionTitle, { color: '#fff' }]}>Revenue generation</Text>
-                <Text style={[styles.actionSub, { color: 'rgba(255,255,255,0.85)' }]}>
-                  {revenueEnabled ? 'Request coin launch' : 'Requires eligibility'}
-                </Text>
-              </View>
-              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
-                <Path d="M12 3v18M17 6.5A4 4 0 0 0 12 5H9.5a3.5 3.5 0 0 0 0 7H14.5a3.5 3.5 0 0 1 0 7H12a4 4 0 0 1-5-1.5" stroke="#fff" strokeWidth={2} strokeLinecap="round" />
-              </Svg>
-            </LinearGradient>
-          </TouchableOpacity>
-        </Animated.View>
-
-        <Animated.View entering={FadeInUp.delay(115).duration(380)} style={styles.actionsRow}>
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionSecondary]}
-            onPress={onTap(() => router.push('/creator-feed'))}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.actionInner, { backgroundColor: colors.surface }]}>
-              <View>
-                <Text style={[styles.actionTitle, { color: colors.text }]}>Creator feed</Text>
-                <Text style={[styles.actionSub, { color: colors.textSecondary }]}>
-                  Post updates and see creator clips
-                </Text>
-              </View>
-              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
-                <Path d="M4 5h16M4 12h10M4 19h16" stroke={colors.primary} strokeWidth={2.5} strokeLinecap="round" />
-              </Svg>
-            </View>
-          </TouchableOpacity>
-        </Animated.View>
-
         <Animated.View entering={FadeInUp.delay(120).duration(380)} style={styles.walletBar}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.walletLabel}>Connected wallet</Text>
+            <Text style={styles.walletLabel}>Connected account</Text>
             <Text style={styles.walletValue}>{shortAddress}</Text>
           </View>
         </Animated.View>
@@ -492,7 +546,7 @@ export default function CreatorDashboardScreen() {
 
         {works.length === 0 ? (
           <Animated.View entering={FadeIn.delay(150).duration(380)} style={styles.emptyWrap}>
-            <LottieView
+            <SakuraLottie
               source={require('@/assets/lottie/write.json')}
               style={{ width: 56, height: 56 }}
               autoPlay

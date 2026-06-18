@@ -80,7 +80,7 @@ Deno.serve(async (req) => {
 
   const isSol = asset === 'sol';
   const pushType = isSol ? 'sol_transfer' : 'sakura_transfer';
-  const unit = isSol ? 'SOL' : 'SAKURA';
+  const unit = isSol ? 'SOL' : 'SKR';
   const amountLabel = isSol ? formatSolAmount(amount) : formatSakuraAmount(amount);
 
   const messages: Array<{

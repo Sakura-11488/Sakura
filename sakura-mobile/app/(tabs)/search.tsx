@@ -7,39 +7,30 @@ import {
   TouchableOpacity,
   ScrollView,
   FlatList,
-  SectionList,
   Dimensions,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet/context';
 import EmptyState from '@/components/ui/EmptyState';
 import { fetchTrendingManga, searchManga, toContentItem } from '@/lib/manga';
 import { searchAnime } from '@/lib/anime';
 import { searchNovels } from '@/lib/allnovel';
-
-import { searchUsers, type UserSearchResult } from '@/lib/user-search';
-import { lookupUsernamePrefix, normalizeUserQuery } from '@/lib/user-resolve';
-import ProfileAvatar from '@/components/ui/ProfileAvatar';
-import { useWallet } from '@/lib/wallet/context';
-import { formatUserSearchTitle, formatUserSearchMeta } from '@/lib/user-identity';
+import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
+import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
 
 const { width: W } = Dimensions.get('window');
 const FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
 type Filter = (typeof FILTERS)[number];
-
-const SECTION_ORDER: Array<{ key: SearchResult['type']; title: string }> = [
-  { key: 'user', title: 'People' },
-  { key: 'anime', title: 'Anime' },
-  { key: 'manga', title: 'Manga' },
-  { key: 'novel', title: 'Novels' },
-];
 
 type SearchResult = {
   key: string;
@@ -47,9 +38,16 @@ type SearchResult = {
   cover: string;
   type: 'manga' | 'anime' | 'novel' | 'user';
   meta: string;
-  navTarget: string;
+  navTarget?: string;
   user?: UserSearchResult;
 };
+
+function avatarColor(seed: string): string {
+  const palette = ['#E84545', '#9B21BE', '#3498DB', '#27AE60', '#E67E22', '#5856D6'];
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+}
 
 function SearchIcon({ color }: { color: string }) {
   return (
@@ -63,9 +61,8 @@ function SearchIcon({ color }: { color: string }) {
 export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { address: walletAddress } = useWallet();
+  const { address, unlockForAppSession } = useWallet();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autocompleteRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<any>(null);
   useScrollToTop(scrollRef);
 
@@ -73,8 +70,7 @@ export default function SearchTabScreen() {
   const [filter, setFilter] = useState<Filter>('All');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [messagingUser, setMessagingUser] = useState<string | null>(null);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
 
   useEffect(() => {
@@ -94,11 +90,11 @@ export default function SearchTabScreen() {
     }
     setLoading(true);
     try {
-      const [mangaRes, animeRes, novelRes, usersRes] = await Promise.allSettled([
+      const [mangaRes, animeRes, novelRes, userRes] = await Promise.allSettled([
         searchManga(q, 12),
         searchAnime(q),
         searchNovels(q),
-        searchUsers(q, 12),
+        searchUsersByUsername(q, 12),
       ]);
 
       const merged: SearchResult[] = [];
@@ -139,18 +135,20 @@ export default function SearchTabScreen() {
           });
         });
       }
-      if (usersRes.status === 'fulfilled') {
-        usersRes.value.forEach((user) => {
-          merged.push({
-            key: `user-${user.wallet_address}`,
-            title: formatUserSearchTitle(user),
-            cover: user.avatar_url || '',
-            type: 'user',
-            meta: formatUserSearchMeta(user),
-            navTarget: `/user/${encodeURIComponent(user.wallet_address)}`,
-            user,
+      if (userRes.status === 'fulfilled') {
+        userRes.value
+          .filter((user) => !address || user.wallet_address !== address)
+          .slice(0, 10)
+          .forEach((user) => {
+            merged.push({
+              key: `user-${user.wallet_address}`,
+              title: userDisplayLabel(user),
+              cover: user.avatar_url ?? '',
+              type: 'user',
+              meta: `@${user.username}`,
+              user,
+            });
           });
-        });
       }
 
       setResults(merged);
@@ -159,34 +157,11 @@ export default function SearchTabScreen() {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress]);
+  }, [address]);
 
   const onChangeQuery = useCallback(
     (text: string) => {
       setQuery(text);
-      if (text.trim().startsWith('@')) {
-        setFilter('Users');
-      }
-
-      if (autocompleteRef.current) clearTimeout(autocompleteRef.current);
-      const prefix = normalizeUserQuery(text);
-      if (prefix.length >= 2 && (text.includes('@') || text.trim().startsWith('@'))) {
-        autocompleteRef.current = setTimeout(() => {
-          lookupUsernamePrefix(prefix, 8)
-            .then((rows) => {
-              setSuggestions(rows);
-              setShowSuggestions(rows.length > 0);
-            })
-            .catch(() => {
-              setSuggestions([]);
-              setShowSuggestions(false);
-            });
-        }, 250);
-      } else {
-        setSuggestions([]);
-        setShowSuggestions(false);
-      }
-
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (text.trim().length < 2) {
         setResults([]);
@@ -199,22 +174,10 @@ export default function SearchTabScreen() {
     [runSearch],
   );
 
-  const pickSuggestion = useCallback(
-    (username: string) => {
-      const next = `@${username}`;
-      setQuery(next);
-      setFilter('Users');
-      setShowSuggestions(false);
-      setSuggestions([]);
-      setLoading(true);
-      runSearch(next);
-    },
-    [runSearch],
-  );
-
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (autocompleteRef.current) clearTimeout(autocompleteRef.current);
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, []);
 
   const filteredResults = useMemo(() => {
@@ -223,15 +186,39 @@ export default function SearchTabScreen() {
     return results.filter((r) => r.type === filter.toLowerCase());
   }, [filter, results]);
 
-  const groupedSections = useMemo(() => {
-    if (filter !== 'All') return [];
-    return SECTION_ORDER
-      .map((section) => ({
-        title: section.title,
-        data: filteredResults.filter((item) => item.type === section.key),
-      }))
-      .filter((section) => section.data.length > 0);
-  }, [filter, filteredResults]);
+  const openUserChat = useCallback(
+    async (user: UserSearchResult) => {
+      if (messagingUser) return;
+      if (!address) {
+        Alert.alert('Connect Account', 'Connect your Sakura account to send messages.');
+        return;
+      }
+      setMessagingUser(user.wallet_address);
+      try {
+        const kp = await unlockForAppSession();
+        if (!kp) return;
+        await navigateToUserChat(router, kp, user);
+      } catch (e) {
+        Alert.alert('Message failed', e instanceof Error ? e.message : 'Try again.');
+      } finally {
+        setMessagingUser(null);
+      }
+    },
+    [address, messagingUser, router, unlockForAppSession],
+  );
+
+  const handleResultPress = useCallback(
+    (item: SearchResult) => {
+      if (item.type === 'user' && item.user) {
+        void openUserChat(item.user);
+        return;
+      }
+      if (item.navTarget) {
+        router.push(item.navTarget as never);
+      }
+    },
+    [openUserChat, router],
+  );
 
   const categoryCards = useMemo(
     () => [
@@ -346,94 +333,22 @@ export default function SearchTabScreen() {
           padding: 10,
         },
         resultCover: { width: 56, height: 76, borderRadius: 8, backgroundColor: colors.surfaceTertiary },
-        userAvatar: { width: 56, height: 56, borderRadius: 28 },
+        userCover: {
+          width: 56,
+          height: 56,
+          borderRadius: 28,
+          backgroundColor: colors.surfaceTertiary,
+          overflow: 'hidden',
+        },
+        userCoverText: { color: '#fff', fontFamily: Fonts.bodyBold, fontSize: FontSize.lg },
         resultInfo: { flex: 1, justifyContent: 'center', gap: 3 },
         resultTitle: { color: colors.text, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
         resultMeta: { color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.body },
-        youChip: {
-          alignSelf: 'flex-start',
-          paddingHorizontal: 8,
-          paddingVertical: 2,
-          borderRadius: Radius.full,
-          backgroundColor: `${colors.primary}22`,
-          marginBottom: 2,
-        },
-        youChipText: { color: colors.primary, fontSize: FontSize.xs, fontFamily: Fonts.bodyBold },
-        sectionHeading: {
-          fontSize: FontSize.md,
-          fontFamily: Fonts.bodyBold,
-          color: colors.textSecondary,
-          marginTop: 4,
-          marginBottom: 6,
-          textTransform: 'uppercase',
-          letterSpacing: 0.6,
-        },
+        messageHint: { color: colors.primary, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium },
         loader: { paddingTop: 48, alignItems: 'center' },
         empty: { paddingTop: 24 },
-        suggestBox: {
-          marginTop: -12,
-          marginBottom: 12,
-          borderRadius: Radius.md,
-          backgroundColor: colors.surface,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: colors.borderLight,
-          overflow: 'hidden',
-        },
-        suggestRow: {
-          paddingHorizontal: 14,
-          paddingVertical: 12,
-          borderBottomWidth: StyleSheet.hairlineWidth,
-          borderBottomColor: colors.borderLight,
-        },
-        suggestText: { color: colors.primary, fontSize: FontSize.md, fontFamily: Fonts.bodyMedium },
       }),
     [colors],
-  );
-
-  const renderResultRow = useCallback(
-    (item: SearchResult, index: number) => {
-      const isSelfUser = item.type === 'user' && Boolean(
-        walletAddress && item.user?.wallet_address === walletAddress,
-      );
-
-      return (
-      <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
-        <TouchableOpacity
-          style={s.resultRow}
-          activeOpacity={0.85}
-          onPress={() => router.push(item.navTarget as never)}
-        >
-          {item.type === 'user' && item.user ? (
-            <ProfileAvatar
-              profile={{
-                wallet_address: item.user.wallet_address,
-                avatar_url: item.user.avatar_url,
-                avatar_seed: item.user.avatar_seed ?? item.user.wallet_address,
-              }}
-              size={56}
-              style={s.userAvatar}
-            />
-          ) : (
-            <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
-          )}
-          <View style={s.resultInfo}>
-            {isSelfUser ? (
-              <View style={s.youChip}>
-                <Text style={s.youChipText}>You</Text>
-              </View>
-            ) : null}
-            <Text style={s.resultTitle} numberOfLines={2}>
-              {item.title}
-            </Text>
-            <Text style={s.resultMeta} numberOfLines={2}>
-              {item.meta}
-            </Text>
-          </View>
-        </TouchableOpacity>
-      </Animated.View>
-      );
-    },
-    [router, s, walletAddress],
   );
 
   return (
@@ -448,30 +363,13 @@ export default function SearchTabScreen() {
           <TextInput
             value={query}
             onChangeText={onChangeQuery}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-            placeholder="Series, @users, categories…"
+            placeholder="Series, creators, users, and more"
             placeholderTextColor={colors.textTertiary}
             style={s.input}
             autoCorrect={false}
             returnKeyType="search"
           />
         </Animated.View>
-
-        {showSuggestions && suggestions.length > 0 ? (
-          <View style={s.suggestBox}>
-            {suggestions.map((username) => (
-              <TouchableOpacity
-                key={username}
-                style={s.suggestRow}
-                onPress={() => pickSuggestion(username)}
-                activeOpacity={0.85}
-              >
-                <Text style={s.suggestText}>@{username}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        ) : null}
 
         {query.trim().length < 2 ? (
           <ScrollView
@@ -527,23 +425,6 @@ export default function SearchTabScreen() {
               <View style={s.loader}>
                 <ActivityIndicator color={colors.primary} size="large" />
               </View>
-            ) : filter === 'All' ? (
-              <SectionList
-                sections={groupedSections}
-                keyExtractor={(item) => item.key}
-                showsVerticalScrollIndicator={false}
-                scrollIndicatorInsets={{ bottom: 90 }}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={groupedSections.length === 0 ? undefined : s.results}
-                stickySectionHeadersEnabled={false}
-                renderSectionHeader={({ section }) => (
-                  <Text style={s.sectionHeading}>{section.title}</Text>
-                )}
-                renderItem={({ item, index }) => renderResultRow(item, index)}
-                ListEmptyComponent={
-                  <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
-                }
-              />
             ) : (
               <FlatList
                 data={filteredResults}
@@ -551,8 +432,58 @@ export default function SearchTabScreen() {
                 showsVerticalScrollIndicator={false}
                 scrollIndicatorInsets={{ bottom: 90 }}
                 keyboardShouldPersistTaps="handled"
-                contentContainerStyle={filteredResults.length === 0 ? undefined : s.results}
-                renderItem={({ item, index }) => renderResultRow(item, index)}
+                contentContainerStyle={s.results}
+                renderItem={({ item, index }) => {
+                  const isUser = item.type === 'user';
+                  const seed = item.user?.avatar_seed ?? item.user?.wallet_address.slice(0, 8) ?? '?';
+                  const busy = isUser && messagingUser === item.user?.wallet_address;
+
+                  return (
+                    <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
+                      <TouchableOpacity
+                        style={s.resultRow}
+                        activeOpacity={0.85}
+                        disabled={!!busy}
+                        onPress={() => handleResultPress(item)}
+                      >
+                        {isUser ? (
+                          <View
+                            style={[
+                              s.userCover,
+                              !item.cover && { backgroundColor: avatarColor(seed), alignItems: 'center', justifyContent: 'center' },
+                            ]}
+                          >
+                            {item.cover ? (
+                              <Image source={{ uri: item.cover }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                            ) : (
+                              <Text style={s.userCoverText}>{item.title.slice(0, 1).toUpperCase()}</Text>
+                            )}
+                          </View>
+                        ) : (
+                          <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
+                        )}
+                        <View style={s.resultInfo}>
+                          <Text style={s.resultTitle} numberOfLines={2}>
+                            {item.title}
+                          </Text>
+                          <Text style={s.resultMeta} numberOfLines={1}>
+                            {item.meta}
+                          </Text>
+                          {isUser ? (
+                            busy ? (
+                              <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginTop: 4 }} />
+                            ) : (
+                              <Text style={s.messageHint}>Tap to message</Text>
+                            )
+                          ) : null}
+                        </View>
+                        {isUser && !busy ? (
+                          <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
+                        ) : null}
+                      </TouchableOpacity>
+                    </Animated.View>
+                  );
+                }}
                 ListEmptyComponent={
                   <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
                 }

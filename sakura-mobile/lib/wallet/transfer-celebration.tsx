@@ -35,7 +35,7 @@ function formatAmount(amount: number, asset: TransferAsset): string {
 }
 
 function unitLabel(asset: TransferAsset): string {
-  return asset === 'sol' ? 'SOL' : 'SAKURA';
+  return asset === 'sol' ? 'SOL' : 'SKR';
 }
 
 function defaultTitle(payload: TransferCelebrationPayload): string {
@@ -51,7 +51,7 @@ function defaultSubtitle(payload: TransferCelebrationPayload): string {
   const asset = payload.asset ?? 'sakura';
   const unit = unitLabel(asset);
   if (payload.role === 'swap' && payload.amount != null) {
-    return `You received ~${formatAmount(payload.amount, 'sakura')} SAKURA`;
+    return `You received ~${formatAmount(payload.amount, 'sakura')} SKR`;
   }
   if (payload.role === 'received' && payload.amount != null && payload.counterparty) {
     return `You received ${formatAmount(payload.amount, asset)} ${unit} from ${shortenWallet(payload.counterparty)}`;

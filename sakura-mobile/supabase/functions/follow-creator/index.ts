@@ -9,6 +9,29 @@ type FollowBody = {
 
 const cors = corsHeaders();
 
+async function countFollowers(
+  supabase: ReturnType<typeof createClient>,
+  creatorWallet: string,
+): Promise<number> {
+  const { count, error } = await supabase
+    .from('creator_follows')
+    .select('*', { count: 'exact', head: true })
+    .eq('creator_wallet', creatorWallet);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+async function syncFollowerCount(
+  supabase: ReturnType<typeof createClient>,
+  creatorWallet: string,
+  followerCount: number,
+): Promise<void> {
+  await supabase
+    .from('user_profiles')
+    .update({ follower_count: followerCount })
+    .eq('wallet_address', creatorWallet);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
@@ -46,7 +69,7 @@ Deno.serve(async (req) => {
       if (error) return jsonResponse(500, { error: error.message }, cors);
     }
 
-    const [{ data: follow }, { data: profile }] = await Promise.all([
+    const [{ data: follow }, { data: profile }, followerCount] = await Promise.all([
       supabase
         .from('creator_follows')
         .select('notify_new_works, created_at')
@@ -55,17 +78,22 @@ Deno.serve(async (req) => {
         .maybeSingle(),
       supabase
         .from('user_profiles')
-        .select('follower_count, creator_verification_state, creator_verified_at')
+        .select('creator_verification_state, creator_verified_at')
         .eq('wallet_address', creatorWallet)
         .maybeSingle(),
+      countFollowers(supabase, creatorWallet),
     ]);
+
+    if (action === 'follow' || action === 'unfollow') {
+      await syncFollowerCount(supabase, creatorWallet, followerCount);
+    }
 
     return jsonResponse(
       200,
       {
         following: !!follow,
         notify_new_works: follow?.notify_new_works ?? false,
-        follower_count: profile?.follower_count ?? 0,
+        follower_count: followerCount,
         verified: profile?.creator_verification_state === 'verified',
         creator_verified_at: profile?.creator_verified_at ?? null,
       },

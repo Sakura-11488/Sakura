@@ -34,11 +34,15 @@ export async function requestNotificationPermission(): Promise<boolean> {
   const { status: current } = await Notifications.getPermissionsAsync();
   if (current === 'granted') return true;
   if (current === 'denied') {
-    await Linking.openSettings();
+    await openNotificationSettings();
     return false;
   }
   const { status } = await Notifications.requestPermissionsAsync();
   return status === 'granted';
+}
+
+export async function openNotificationSettings(): Promise<void> {
+  await Linking.openSettings();
 }
 
 function resolveEasProjectId(): string | undefined {

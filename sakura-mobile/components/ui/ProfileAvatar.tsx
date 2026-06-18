@@ -1,8 +1,12 @@
 import React from 'react';
 import { View, StyleSheet, ViewStyle, StyleProp } from 'react-native';
 import { Image } from 'expo-image';
-import { resolveAvatarUri, hasMintedAvatar, type AvatarProfileFields } from '@/lib/user-avatar';
-import { walletAccentColor } from '@/lib/user-identity';
+import {
+  resolveAvatarUri,
+  hasMintedAvatar,
+  walletAccentColor,
+  type AvatarProfileFields,
+} from '@/lib/user-avatar';
 
 type Props = {
   profile: AvatarProfileFields;

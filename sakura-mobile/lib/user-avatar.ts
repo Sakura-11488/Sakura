@@ -46,6 +46,15 @@ export function hasMintedAvatar(profile: AvatarProfileFields): boolean {
   return Boolean(profile.avatar_url?.trim() || profile.avatar_mint_address?.trim());
 }
 
+export function walletAccentColor(wallet: string): string {
+  let hash = 0;
+  for (let i = 0; i < wallet.length; i += 1) {
+    hash = wallet.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 62%, 52%)`;
+}
+
 async function parseInvokeError(error: { message?: string; context?: Response }): Promise<string> {
   if (error.context) {
     try {

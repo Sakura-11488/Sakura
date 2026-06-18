@@ -1,15 +1,23 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, ActivityIndicator, Alert, TextInput, Modal } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  RefreshControl,
+  Alert,
+  Linking,
+  ActivityIndicator,
+} from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import * as Linking from 'expo-linking';
 import { Image } from 'expo-image';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Svg, { Path, Circle } from 'react-native-svg';
-import LottieView from 'lottie-react-native';
+import SakuraLottie from '@/components/ui/SakuraLottie';
 import { useTheme } from '@/lib/theme';
-import { useI18n } from '@/lib/i18n';
 import { Spacing, Radius, FontSize, FontWeight, Shadow, Fonts } from '@/constants/theme';
 import { useWallet } from '@/lib/wallet/context';
 import {
@@ -18,15 +26,14 @@ import {
   formatSakuraAiRequirement,
 } from '@/lib/wallet/sakura-ai-access';
 import { useFocusEffect } from 'expo-router';
-import { resolveProfileDisplayName } from '@/lib/ai-display-name';
-import { getProfile, type UserProfile } from '@/lib/supabase';
+import { getProfile } from '@/lib/supabase';
 import { getCreatorProfile, getCreatorWorks } from '@/lib/creator';
-import { claimUsername, getUsernameForWallet, validateUsername } from '@/lib/user-username';
 import { Library } from '@/lib/storage';
 import { ShimmerBox } from '@/components/ui/ShimmerLoader';
+import WalletModal from '@/components/wallet/WalletModal';
 import ProfileAvatar from '@/components/ui/ProfileAvatar';
-import { buildAvatarAuthHeaders, generateUserAvatar } from '@/lib/user-avatar';
-import { getWalletWithBiometrics } from '@/lib/wallet/storage';
+import { onTap } from '@/lib/sound';
+import { sendSakura } from '@/lib/wallet/connection';
 import {
   AVATAR_MINT_PRICE_SAKURA,
   AVATAR_PAYMENT_WALLET,
@@ -34,9 +41,10 @@ import {
   solanaExplorerToken,
   solanaExplorerTx,
 } from '@/lib/wallet/config';
-import { sendSakura } from '@/lib/wallet/connection';
-import WalletModal from '@/components/wallet/WalletModal';
-import { onTap } from '@/lib/sound';
+import {
+  buildAvatarAuthHeaders,
+  generateUserAvatar,
+} from '@/lib/user-avatar';
 
 interface Stats { watching: number; reading: number; saved: number }
 
@@ -75,7 +83,7 @@ function AIRow({ colors }: { colors: any }) {
     >
       <View style={row.left}>
         <View style={[row.lottieBadge, { borderColor: `${colors.primary}40` }]}>
-          <LottieView
+          <SakuraLottie
             source={require('@/assets/lottie/AI.json')}
             style={row.lottie}
             autoPlay
@@ -106,14 +114,7 @@ function AIRow({ colors }: { colors: any }) {
 }
 
 function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
-  const { connected, shortAddress, sakuraBalance, solBalance, loadingBalances } = useWallet();
-  const { t } = useI18n();
-
-  const balanceLine = connected
-    ? loadingBalances && sakuraBalance === null && solBalance === null
-      ? 'Refreshing balances…'
-      : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} SKR · ${(solBalance ?? 0).toFixed(3)} SOL · ${shortAddress}`
-    : '';
+  const { connected, shortAddress, sakuraBalance } = useWallet();
 
   return (
     <TouchableOpacity
@@ -123,22 +124,24 @@ function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
     >
       <View style={row.left}>
         <View style={[row.lottieBadge, connected && { backgroundColor: colors.primary, borderColor: colors.primary }, !connected && { backgroundColor: `${colors.primary}18`, borderColor: `${colors.primary}40` }]}>
-          <LottieView
+          <SakuraLottie
+            key={connected ? 'wallet-connected' : 'wallet-disconnected'}
             source={require('@/assets/lottie/wallet.json')}
             style={row.lottie}
             autoPlay
             loop
             speed={0.6}
-            colorFilters={connected ? [{ keypath: '*', color: '#FFFFFF' }] : []}
           />
         </View>
         <View>
           <Text style={[row.label, { color: colors.text }]}>
-            {connected ? 'Sakura Account' : t('settings.connectWallet')}
+            {connected ? 'Sakura Account' : 'Connect Account'}
           </Text>
           {connected && (
-            <Text style={[row.sub, { color: colors.primary }]} numberOfLines={1}>
-              {balanceLine}
+            <Text style={[row.sub, { color: colors.primary }]}>
+              {sakuraBalance !== null
+                ? `${sakuraBalance.toLocaleString(undefined, { maximumFractionDigits: 0 })} SKR  ·  ${shortAddress}`
+                : shortAddress ?? ''}
             </Text>
           )}
         </View>
@@ -183,6 +186,7 @@ const DownloadsIcon = ({ color }: { color: string }) => (
     <Path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
   </Svg>
 );
+
 function CreatorRow({ colors }: { colors: any }) {
   const { connected, address } = useWallet();
   const [isCreator, setIsCreator] = useState(false);
@@ -217,7 +221,7 @@ function CreatorRow({ colors }: { colors: any }) {
   const route = isCreator ? '/creator-dashboard' : '/become-creator';
   const title = isCreator ? 'Creator Dashboard' : 'Become a Creator';
   const subtitle = !connected
-    ? 'Connect wallet to get started'
+    ? 'Connect your account to get started'
     : checking
       ? 'Loading creator status…'
       : isCreator
@@ -234,7 +238,7 @@ function CreatorRow({ colors }: { colors: any }) {
     >
       <View style={row.left}>
         <View style={[row.lottieBadge, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}35` }]}>
-          <LottieView
+          <SakuraLottie
             source={require('@/assets/lottie/write.json')}
             style={row.lottie}
             autoPlay
@@ -268,156 +272,6 @@ const LibraryIcon = ({ color }: { color: string }) => (
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
   </Svg>
 );
-const ProfileIcon = ({ color }: { color: string }) => (
-  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-    <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke={color} strokeWidth={2} strokeLinecap="round" />
-    <Circle cx="12" cy="7" r="4" stroke={color} strokeWidth={2} />
-  </Svg>
-);
-const AtIcon = ({ color }: { color: string }) => (
-  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-    <Circle cx="12" cy="12" r="4" stroke={color} strokeWidth={2} />
-    <Path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-  </Svg>
-);
-
-function UsernameClaimRow({ colors, profileDisplayName, onClaimed }: { colors: any; profileDisplayName?: string; onClaimed?: (handle: string) => void }) {
-  const { connected, address } = useWallet();
-  const [handle, setHandle] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [claiming, setClaiming] = useState(false);
-
-  const loadHandle = useCallback(async () => {
-    if (!connected || !address) {
-      setHandle(null);
-      return;
-    }
-    setChecking(true);
-    try {
-      const row = await getUsernameForWallet(address);
-      setHandle(row?.username ?? null);
-    } catch {
-      setHandle(null);
-    } finally {
-      setChecking(false);
-    }
-  }, [address, connected]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadHandle();
-    }, [loadHandle]),
-  );
-
-  const submitClaim = useCallback(async () => {
-    if (!address) return;
-    const err = validateUsername(draft);
-    if (err) {
-      Alert.alert('Invalid username', err);
-      return;
-    }
-    setClaiming(true);
-    try {
-      const row = await claimUsername({
-        walletAddress: address,
-        username: draft.trim(),
-        displayName: profileDisplayName?.trim() || undefined,
-      });
-      setHandle(row.username);
-      onClaimed?.(row.username);
-      setModalVisible(false);
-      setDraft('');
-      Alert.alert('Username claimed', `You're now @${row.username} on Sakura.`);
-    } catch (error) {
-      Alert.alert('Could not claim username', error instanceof Error ? error.message : 'Please try again.');
-    } finally {
-      setClaiming(false);
-    }
-  }, [address, draft, onClaimed, profileDisplayName]);
-
-  if (!connected) return null;
-  if (handle) return null;
-
-  return (
-    <>
-      <TouchableOpacity
-        style={[row.base, { backgroundColor: colors.surface }, row.walletRow]}
-        onPress={onTap(() => {
-          if (handle) return;
-          setModalVisible(true);
-        })}
-        activeOpacity={handle ? 1 : 0.7}
-      >
-        <View style={row.left}>
-          <View style={[row.lottieBadge, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}35` }]}>
-            <AtIcon color={colors.primary} />
-          </View>
-          <View style={row.textCol}>
-            <Text style={[row.label, { color: colors.text }]}>Sakura Username</Text>
-            {checking ? (
-              <ShimmerBox width={120} height={12} borderRadius={4} style={{ marginTop: 4 }} />
-            ) : (
-              <Text style={[row.sub, { color: colors.textSecondary }]} numberOfLines={1}>
-                {handle ? `@${handle}` : 'Claim your @handle for search & DMs'}
-              </Text>
-            )}
-          </View>
-        </View>
-        {!handle && !checking ? <ChevronRight color={colors.textTertiary} /> : null}
-      </TouchableOpacity>
-
-      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
-        <View style={usernameModal.overlay}>
-          <View style={[usernameModal.card, { backgroundColor: colors.surface }]}>
-            <Text style={[usernameModal.title, { color: colors.text }]}>Claim @username</Text>
-            <Text style={[usernameModal.hint, { color: colors.textSecondary }]}>
-              3–20 letters, numbers, or underscores. This is how others find you in Search.
-            </Text>
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="yourname"
-              placeholderTextColor={colors.textTertiary}
-              style={[usernameModal.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
-            />
-            <View style={usernameModal.actions}>
-              <TouchableOpacity onPress={() => setModalVisible(false)} style={usernameModal.btnGhost}>
-                <Text style={{ color: colors.textSecondary }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={submitClaim}
-                disabled={claiming}
-                style={[usernameModal.btnPrimary, { backgroundColor: colors.primary }]}
-              >
-                {claiming ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <Text style={{ color: '#fff', fontWeight: FontWeight.bold }}>Claim</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    </>
-  );
-}
-
-const usernameModal = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
-  card: { width: '100%', borderRadius: Radius.lg, padding: Spacing.lg },
-  title: { fontSize: FontSize.lg, fontWeight: FontWeight.bold, marginBottom: 6 },
-  hint: { fontSize: FontSize.sm, lineHeight: 19, marginBottom: Spacing.md },
-  input: { borderWidth: 1, borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: 12, fontSize: FontSize.md, marginBottom: Spacing.md },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, alignItems: 'center' },
-  btnGhost: { paddingHorizontal: 12, paddingVertical: 10 },
-  btnPrimary: { borderRadius: Radius.full, paddingHorizontal: 20, paddingVertical: 10, minWidth: 88, alignItems: 'center' },
-});
-
 const SettingsIcon = ({ color }: { color: string }) => (
   <Svg width={18} height={18} viewBox="0 0 24 24">
     <Path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" fill={color} />
@@ -427,35 +281,42 @@ const SettingsIcon = ({ color }: { color: string }) => (
 export default function ProfileScreen() {
   const [walletVisible, setWalletVisible] = useState(false);
   const [displayName, setDisplayName] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarSeed, setAvatarSeed] = useState('guest');
+  const [avatarMintAddress, setAvatarMintAddress] = useState<string | null>(null);
   const [sakuraHandle, setSakuraHandle] = useState<string | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [generatingAvatar, setGeneratingAvatar] = useState(false);
   const [stats, setStats] = useState<Stats>({ watching: 0, reading: 0, saved: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const { colors } = useTheme();
-  const { address, connected, shortAddress, sakuraBalance } = useWallet();
+  const { address, connected, shortAddress, sakuraBalance, signWithBiometrics } = useWallet();
   const scrollRef = useRef<any>(null);
   useScrollToTop(scrollRef);
 
   const loadProfile = useCallback(async () => {
     if (!address) {
       setDisplayName('');
+      setAvatarUrl(null);
+      setAvatarSeed('guest');
+      setAvatarMintAddress(null);
       setSakuraHandle(null);
-      setProfile(null);
       return;
     }
     try {
-      const [p, usernameRow, resolvedName] = await Promise.all([
+      const [p, creator] = await Promise.all([
         getProfile(address),
-        getUsernameForWallet(address),
-        resolveProfileDisplayName(address),
+        getCreatorProfile(address).catch(() => null),
       ]);
-      setProfile(p);
-      setDisplayName(resolvedName || p?.display_name || '');
-      setSakuraHandle(usernameRow?.username ?? null);
+      setDisplayName(p?.display_name ?? '');
+      setAvatarUrl(p?.avatar_url ?? null);
+      setAvatarSeed(p?.avatar_seed ?? address.slice(0, 8));
+      setAvatarMintAddress(p?.avatar_mint_address ?? null);
+      setSakuraHandle(creator?.username?.username ?? null);
     } catch {
-      setProfile(null);
       setDisplayName('');
+      setAvatarUrl(null);
+      setAvatarSeed(address.slice(0, 8));
+      setAvatarMintAddress(null);
       setSakuraHandle(null);
     }
   }, [address]);
@@ -466,9 +327,24 @@ export default function ProfileScreen() {
     }, [loadProfile]),
   );
 
-  useEffect(() => {
-    loadProfile();
-  }, [loadProfile]);
+  const loadStats = useCallback(async () => {
+    try {
+      const items = await Library.getAll();
+      const watching = items.filter((i) => i.type === 'anime').length;
+      const reading = items.filter((i) => i.type === 'manga' || i.type === 'novel').length;
+      setStats({ watching, reading, saved: items.length });
+    } catch {
+      setStats({ watching: 0, reading: 0, saved: 0 });
+    }
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([loadStats(), loadProfile()]);
+    setRefreshing(false);
+  }, [loadStats, loadProfile]);
+
+  useEffect(() => { loadStats(); }, [loadStats]);
 
   const handleGenerateAvatar = useCallback(async (mode: 'tastes' | 'general') => {
     if (!address || !connected) {
@@ -486,14 +362,13 @@ export default function ProfileScreen() {
 
     setGeneratingAvatar(true);
     try {
-      const keypair = await getWalletWithBiometrics();
+      const keypair = await signWithBiometrics();
       if (!keypair) {
         Alert.alert('Confirm to continue', 'Approve with Face ID to pay and forge your Sakura avatar.');
         return;
       }
 
       const paymentTxSignature = await sendSakura(keypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
-
       const result = await generateUserAvatar({
         mode,
         paymentTxSignature,
@@ -501,20 +376,8 @@ export default function ProfileScreen() {
       });
 
       if (result.public_url && result.mint_address) {
-        setProfile((prev) => prev ? {
-          ...prev,
-          avatar_url: result.public_url ?? prev.avatar_url,
-          avatar_mint_address: result.mint_address ?? prev.avatar_mint_address,
-        } : {
-          wallet_address: address,
-          display_name: displayName || null,
-          bio: null,
-          email: null,
-          avatar_url: result.public_url ?? null,
-          avatar_seed: address,
-          avatar_mint_address: result.mint_address ?? null,
-          updated_at: new Date().toISOString(),
-        });
+        setAvatarUrl(result.public_url);
+        setAvatarMintAddress(result.mint_address);
         Alert.alert(
           'Sakura avatar forged',
           `Your Sakura-bound avatar relic is ready.\n\nCollectible: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
@@ -532,7 +395,7 @@ export default function ProfileScreen() {
     } finally {
       setGeneratingAvatar(false);
     }
-  }, [address, connected, displayName, sakuraBalance]);
+  }, [address, connected, sakuraBalance, signWithBiometrics]);
 
   const onAvatarPress = useCallback(() => {
     if (!connected) {
@@ -541,7 +404,7 @@ export default function ProfileScreen() {
     }
     Alert.alert(
       'Awaken your Sakura Avatar',
-      `Spend ${formatAvatarMintPrice()} to forge a Sakura-bound avatar, shaped from your reading tastes and profile aura. It stays linked to your account and travels with you.`,
+      `Spend ${formatAvatarMintPrice()} to forge a Sakura-bound avatar NFT, shaped from your reading tastes. It stays linked to your account and travels with you.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Forge from my tastes', onPress: () => handleGenerateAvatar('tastes') },
@@ -549,27 +412,6 @@ export default function ProfileScreen() {
       ],
     );
   }, [connected, handleGenerateAvatar]);
-
-  const loadStats = useCallback(async (fromRefresh = false) => {
-    try {
-      const items = await Library.getAll();
-      const watching = items.filter((i) => i.type === 'anime').length;
-      const reading = items.filter((i) => i.type === 'manga' || i.type === 'novel').length;
-      setStats({ watching, reading, saved: items.length });
-    } catch {
-      setStats({ watching: 0, reading: 0, saved: 0 });
-    } finally {
-      if (fromRefresh) setRefreshing(false);
-    }
-  }, []);
-
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    loadStats(true);
-    loadProfile().finally(() => {});
-  }, [loadStats, loadProfile]);
-
-  useEffect(() => { loadStats(); }, [loadStats]);
 
   return (
     <SafeAreaView style={[s.safe, { backgroundColor: colors.background }]} edges={['top']}>
@@ -589,12 +431,15 @@ export default function ProfileScreen() {
                 <ProfileAvatar
                   profile={{
                     wallet_address: address,
-                    avatar_url: profile?.avatar_url ?? null,
-                    avatar_seed: profile?.avatar_seed ?? address,
+                    avatar_url: avatarUrl,
+                    avatar_seed: avatarSeed,
+                    avatar_mint_address: avatarMintAddress,
                   }}
                   size={88}
                   borderColor={colors.primary}
                 />
+              ) : avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={s.avatarPhoto} contentFit="cover" />
               ) : (
                 <Image
                   source={require('@/assets/images/logo.png')}
@@ -620,8 +465,8 @@ export default function ProfileScreen() {
                 ? `Forging avatar · ${formatAvatarMintPrice()}`
                 : sakuraHandle
                   ? `@${sakuraHandle}`
-                  : `${shortAddress ?? ''}${shortAddress ? ' · ' : ''}Claim @username`)
-              : 'Sign in to get started'}
+                  : shortAddress ?? '')
+              : 'Connect your account to get started'}
           </Text>
         </Animated.View>
 
@@ -658,11 +503,6 @@ export default function ProfileScreen() {
           <CreatorRow colors={colors} />
         </Animated.View>
 
-        {/* ── Username ── */}
-        <Animated.View entering={FadeInDown.delay(192).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
-          <UsernameClaimRow colors={colors} profileDisplayName={displayName} onClaimed={setSakuraHandle} />
-        </Animated.View>
-
         {/* ── Quick links ── */}
         <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.group}>
           <MenuRow
@@ -677,14 +517,6 @@ export default function ProfileScreen() {
             onPress={onTap(() => router.push('/reading-history'))}
             colors={colors}
           />
-          {connected && address ? (
-            <MenuRow
-              label="Public Profile"
-              icon={<IconBadge bg="#AF52DE"><ProfileIcon color="#fff" /></IconBadge>}
-              onPress={onTap(() => router.push(`/user/${encodeURIComponent(address)}` as any))}
-              colors={colors}
-            />
-          ) : null}
           <MenuRow
             label="Library"
             icon={<IconBadge bg="#E84545"><LibraryIcon color="#fff" /></IconBadge>}
@@ -713,12 +545,14 @@ const s = StyleSheet.create({
   header: { alignItems: 'center', paddingTop: Spacing.lg, paddingBottom: Spacing.md },
   avatarWrap: { width: 88, height: 88, borderRadius: 44, borderWidth: 3, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', ...Shadow.md },
   avatarLoading: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(0,0,0,0.45)',
   },
   avatar: { width: 64, height: 64 },
+  avatarPhoto: { width: '100%', height: '100%' },
+  avatarInitial: { color: '#fff', fontSize: 34, fontWeight: FontWeight.bold },
   name: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 26, letterSpacing: 0.2, marginTop: 12 },
   username: { fontSize: FontSize.md, marginTop: 4 },
   statsRow: { flexDirection: 'row', marginHorizontal: Spacing.md, borderRadius: Radius.lg, marginBottom: Spacing.md, ...Shadow.sm },

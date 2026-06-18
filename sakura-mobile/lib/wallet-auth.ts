@@ -23,3 +23,18 @@ export function buildWalletAuthHeaders(
     'x-message': message,
   };
 }
+
+/** Alias used by creator-api and upstream chat modules. */
+export function signWalletAuthMessage(keypair: Keypair, action: string): {
+  message: string;
+  signature: string;
+  headers: WalletAuthHeaders;
+} {
+  const message = generateWalletAuthMessage(action);
+  const headers = buildWalletAuthHeaders(keypair, action);
+  return {
+    message,
+    signature: headers['x-signature'],
+    headers,
+  };
+}

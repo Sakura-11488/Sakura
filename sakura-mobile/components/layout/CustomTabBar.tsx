@@ -17,18 +17,22 @@ import Animated, {
 } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { GlassView, GlassContainer, isGlassEffectAPIAvailable } from 'expo-glass-effect';
-import { Octicons, FontAwesome6, Entypo } from '@expo/vector-icons';
-import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import { Octicons, FontAwesome6, Entypo, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Colors, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { useUnreadMessages } from '@/lib/unread-messages-context';
 import { playSwitch } from '@/lib/sound';
-import { useChatUnreadCount } from '@/lib/hooks/useChatUnreadCount';
+
+type BottomTabBarProps = {
+  state: { index: number; routes: { name: string }[] };
+  navigation: { navigate: (name: never) => void };
+};
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const W = Dimensions.get('window').width;
 const ICON_SLOT   = 42;
-const ACTIVE_SLOT = 94;
+const ACTIVE_SLOT = 84;
 const SPRING = { damping: 22, stiffness: 280, mass: 0.7 };
 
 // Evaluated once at module load — avoids per-render cost
@@ -41,20 +45,20 @@ const AnimeIcon   = ({ active }: { active: boolean }) =>
   <Entypo      name="folder-video" size={22} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const SearchIcon  = ({ active }: { active: boolean }) =>
   <Octicons    name="search"       size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
-const MessagesIcon = ({ active }: { active: boolean }) =>
-  <Octicons    name="comment-discussion" size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const NovelIcon   = ({ active }: { active: boolean }) =>
   <FontAwesome6 name="book"        size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
+const MessagesIcon = ({ active }: { active: boolean }) =>
+  <Ionicons name="chatbubbles-sharp" size={24} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 const ProfileIcon = ({ active }: { active: boolean }) =>
   <FontAwesome6 name="user-large"  size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 
 const TABS = [
-  { name: 'index',    label: 'Home',     Icon: HomeIcon     },
-  { name: 'anime',    label: 'Watch',    Icon: AnimeIcon    },
-  { name: 'search',   label: 'Search',   Icon: SearchIcon   },
-  { name: 'messages', label: 'Chats', Icon: MessagesIcon },
-  { name: 'novel',    label: 'Novel',    Icon: NovelIcon    },
-  { name: 'profile',  label: 'My',       Icon: ProfileIcon  },
+  { name: 'index',    label: 'Home',   Icon: HomeIcon    },
+  { name: 'anime',    label: 'Watch',  Icon: AnimeIcon   },
+  { name: 'search',   label: 'Search', Icon: SearchIcon  },
+  { name: 'novel',    label: 'Novel',  Icon: NovelIcon   },
+  { name: 'messages', label: 'Chat',   Icon: MessagesIcon },
+  { name: 'profile',  label: 'My',     Icon: ProfileIcon },
 ];
 
 // ─── Glass pill — separate component so GlassView renders cleanly ─────────────
@@ -76,7 +80,7 @@ function GlassPill({ active }: { active: boolean }) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const { colors } = useTheme();
-  const { unreadCount } = useChatUnreadCount({ allowUnlock: true });
+  const { unreadCount } = useUnreadMessages();
 
   if (['settings', 'library'].includes(state.routes[state.index]?.name)) return null;
 
@@ -132,32 +136,32 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
 
   const ls0 = useAnimatedStyle(() => ({
     opacity: lo0.value,
-    maxWidth: interpolate(lo0.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo0.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo0.value, [0, 1], [10, 0]) }],
   }));
   const ls1 = useAnimatedStyle(() => ({
     opacity: lo1.value,
-    maxWidth: interpolate(lo1.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo1.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo1.value, [0, 1], [10, 0]) }],
   }));
   const ls2 = useAnimatedStyle(() => ({
     opacity: lo2.value,
-    maxWidth: interpolate(lo2.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo2.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo2.value, [0, 1], [10, 0]) }],
   }));
   const ls3 = useAnimatedStyle(() => ({
     opacity: lo3.value,
-    maxWidth: interpolate(lo3.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo3.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo3.value, [0, 1], [10, 0]) }],
   }));
   const ls4 = useAnimatedStyle(() => ({
     opacity: lo4.value,
-    maxWidth: interpolate(lo4.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo4.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo4.value, [0, 1], [10, 0]) }],
   }));
   const ls5 = useAnimatedStyle(() => ({
     opacity: lo5.value,
-    maxWidth: interpolate(lo5.value, [0, 1], [0, 72]),
+    maxWidth: interpolate(lo5.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo5.value, [0, 1], [10, 0]) }],
   }));
   const lStyles = [ls0, ls1, ls2, ls3, ls4, ls5];
@@ -183,7 +187,7 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
     const active = idx === i;
     const { Icon } = tab;
     const showBadge = tab.name === 'messages' && unreadCount > 0;
-    const badgeLabel = unreadCount > 9 ? '9+' : String(unreadCount);
+    const badgeLabel = unreadCount > 99 ? '99+' : String(unreadCount);
     return (
       <Animated.View key={tab.name} style={[ts.tabSlot, wStyles[i]]}>
         <Animated.View style={[ts.pill, psStyles[i]]}>
@@ -250,7 +254,7 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
 const ts = StyleSheet.create({
   wrapper: {
     position: 'absolute',
-    bottom: 34,
+    bottom: 22,
     left: 14,
     right: 14,
   },
@@ -328,20 +332,23 @@ const ts = StyleSheet.create({
   badge: {
     position: 'absolute',
     top: -5,
-    right: -10,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
+    right: -9,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
+    borderRadius: 9,
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 3,
+    borderWidth: 1.5,
+    borderColor: '#fff',
   },
   badgeText: {
     color: '#fff',
-    fontSize: 9,
+    fontSize: 10,
     fontFamily: Fonts.bodyBold,
     fontWeight: FontWeight.bold,
+    lineHeight: 12,
   },
   labelWrap: {
     overflow: 'hidden',

@@ -3,20 +3,40 @@ import { corsHeaders, isWallet, jsonResponse, verifyWalletHeaders } from '../_sh
 import { PUSH_NOTIFICATION_SOUND, sendExpoPushBatch } from '../_shared/expo-push.ts';
 
 type ChatBody = {
-  action?: 'start' | 'send' | 'threads' | 'messages' | 'mark_read' | 'block' | 'report';
+  action?: 'start' | 'send' | 'threads' | 'messages' | 'mark_read' | 'block' | 'report' | 'typing' | 'status';
   recipient_wallet?: string;
   thread_id?: string;
   content?: string;
+  message_type?: string;
   reason?: string;
   mark_read?: boolean;
+  typing?: boolean;
 };
 
 const cors = corsHeaders();
 const SEND_RATE_LIMIT = 30;
+const TYPING_TTL_MS = 5000;
 
 function shortenWallet(address: string): string {
   if (address.length < 12) return address;
   return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}
+
+const MEDIA_PREFIX = 'sakura-media:';
+
+function chatMessagePreview(content: string, messageType?: string): string {
+  if (messageType === 'gif') return 'GIF';
+  if (messageType === 'sticker') return 'Sticker';
+  if (content.startsWith(MEDIA_PREFIX)) {
+    try {
+      const parsed = JSON.parse(content.slice(MEDIA_PREFIX.length)) as { kind?: string };
+      if (parsed.kind === 'sticker') return 'Sticker';
+      if (parsed.kind === 'gif') return 'GIF';
+    } catch {
+      // ignore malformed media payload
+    }
+  }
+  return content.trim().slice(0, 120);
 }
 
 async function assertThreadMember(
@@ -43,6 +63,39 @@ async function markThreadRead(
     .update({ last_read_at: new Date().toISOString() })
     .eq('thread_id', threadId)
     .eq('wallet_address', walletAddress);
+  if (error) throw new Error(error.message);
+}
+
+async function clearTyping(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  walletAddress: string,
+) {
+  await supabase
+    .from('chat_typing')
+    .delete()
+    .eq('thread_id', threadId)
+    .eq('wallet_address', walletAddress);
+}
+
+async function setTyping(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  walletAddress: string,
+  active: boolean,
+) {
+  if (!active) {
+    await clearTyping(supabase, threadId, walletAddress);
+    return;
+  }
+  const { error } = await supabase.from('chat_typing').upsert(
+    {
+      thread_id: threadId,
+      wallet_address: walletAddress,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'thread_id,wallet_address' },
+  );
   if (error) throw new Error(error.message);
 }
 
@@ -75,6 +128,41 @@ async function getPeerWallet(
     .find((w) => w !== senderWallet) ?? null;
 }
 
+async function getThreadPresence(
+  supabase: ReturnType<typeof createClient>,
+  threadId: string,
+  walletAddress: string,
+) {
+  const peerWallet = await getPeerWallet(supabase, threadId, walletAddress);
+  if (!peerWallet) {
+    return { peer_wallet: null, peer_last_read_at: null, peer_is_typing: false };
+  }
+
+  const [{ data: peerMember }, { data: typingRow }] = await Promise.all([
+    supabase
+      .from('chat_members')
+      .select('last_read_at')
+      .eq('thread_id', threadId)
+      .eq('wallet_address', peerWallet)
+      .maybeSingle(),
+    supabase
+      .from('chat_typing')
+      .select('updated_at')
+      .eq('thread_id', threadId)
+      .eq('wallet_address', peerWallet)
+      .maybeSingle(),
+  ]);
+
+  const typingAt = typingRow?.updated_at ? new Date(typingRow.updated_at as string).getTime() : 0;
+  const peerIsTyping = typingAt > 0 && Date.now() - typingAt <= TYPING_TTL_MS;
+
+  return {
+    peer_wallet: peerWallet,
+    peer_last_read_at: (peerMember?.last_read_at as string | null) ?? null,
+    peer_is_typing: peerIsTyping,
+  };
+}
+
 async function getSenderLabel(
   supabase: ReturnType<typeof createClient>,
   senderWallet: string,
@@ -99,11 +187,12 @@ async function notifyRecipientOnSend(
     recipientWallet: string;
     messageId: string;
     content: string;
+    messageType?: string;
   },
 ) {
   const { displayName, username } = await getSenderLabel(supabase, input.senderWallet);
-  const preview = input.content.trim().slice(0, 120);
-  const route = `/creator-chat?thread=${input.threadId}&wallet=${encodeURIComponent(input.senderWallet)}`;
+  const preview = chatMessagePreview(input.content, input.messageType);
+  const route = `/messages/${input.threadId}`;
 
   const { error: notifyErr } = await supabase.from('creator_notifications').insert({
     recipient_wallet: input.recipientWallet,
@@ -139,6 +228,8 @@ async function notifyRecipientOnSend(
           type: 'chat_message',
           threadId: input.threadId,
           wallet: input.senderWallet,
+          peerName: displayName,
+          peerUsername: username ?? '',
         },
       }));
 
@@ -174,22 +265,22 @@ Deno.serve(async (req) => {
       const enriched = [];
       for (const row of data ?? []) {
         const threadId = row.thread_id as string;
-        const peerWallet = await getPeerWallet(supabase, threadId, walletAddress);
+        const presence = await getThreadPresence(supabase, threadId, walletAddress);
 
         let peer_username: string | null = null;
         let peer_display_name: string | null = null;
         let peer_avatar_url: string | null = null;
         let peer_avatar_seed: string | null = null;
 
-        if (peerWallet) {
+        if (presence.peer_wallet) {
           const [{ data: usernameRow }, { data: profileRow }] = await Promise.all([
-            supabase.from('sakura_usernames').select('username, display_name').eq('wallet_address', peerWallet).maybeSingle(),
-            supabase.from('user_profiles').select('display_name, avatar_url, avatar_seed').eq('wallet_address', peerWallet).maybeSingle(),
+            supabase.from('sakura_usernames').select('username, display_name').eq('wallet_address', presence.peer_wallet).maybeSingle(),
+            supabase.from('user_profiles').select('display_name, avatar_url, avatar_seed').eq('wallet_address', presence.peer_wallet).maybeSingle(),
           ]);
           peer_username = usernameRow?.username ?? null;
           peer_display_name = profileRow?.display_name ?? usernameRow?.display_name ?? null;
           peer_avatar_url = profileRow?.avatar_url ?? null;
-          peer_avatar_seed = profileRow?.avatar_seed ?? peerWallet.slice(0, 8);
+          peer_avatar_seed = profileRow?.avatar_seed ?? presence.peer_wallet.slice(0, 8);
         }
 
         const { data: lastMessage } = await supabase
@@ -202,18 +293,39 @@ Deno.serve(async (req) => {
           .maybeSingle();
 
         enriched.push({
-          ...row,
-          peer_wallet: peerWallet,
+          thread_id: threadId,
+          role: row.role,
+          last_read_at: row.last_read_at,
+          peer_wallet: presence.peer_wallet,
+          peer_last_read_at: presence.peer_last_read_at,
+          peer_is_typing: presence.peer_is_typing,
           peer_username,
           peer_display_name,
           peer_avatar_url,
           peer_avatar_seed,
           last_message: lastMessage?.content ?? null,
           last_message_at: lastMessage?.created_at ?? (row as { chat_threads?: { last_message_at?: string } }).chat_threads?.last_message_at ?? null,
+          last_message_sender: lastMessage?.sender_wallet ?? null,
         });
       }
 
       return jsonResponse(200, { threads: enriched }, cors);
+    }
+
+    if (action === 'status') {
+      if (!body.thread_id) return jsonResponse(400, { error: 'Missing thread_id.' }, cors);
+      const member = await assertThreadMember(supabase, body.thread_id, walletAddress);
+      if (!member) return jsonResponse(403, { error: 'Not a thread member.' }, cors);
+      const presence = await getThreadPresence(supabase, body.thread_id, walletAddress);
+      return jsonResponse(200, presence, cors);
+    }
+
+    if (action === 'typing') {
+      if (!body.thread_id) return jsonResponse(400, { error: 'Missing thread_id.' }, cors);
+      const member = await assertThreadMember(supabase, body.thread_id, walletAddress);
+      if (!member) return jsonResponse(403, { error: 'Not a thread member.' }, cors);
+      await setTyping(supabase, body.thread_id, walletAddress, body.typing !== false);
+      return jsonResponse(200, { ok: true }, cors);
     }
 
     if (action === 'mark_read') {
@@ -229,20 +341,27 @@ Deno.serve(async (req) => {
       const member = await assertThreadMember(supabase, body.thread_id, walletAddress);
       if (!member) return jsonResponse(403, { error: 'Not a thread member.' }, cors);
 
-      const { data, error } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('thread_id', body.thread_id)
-        .neq('moderation_state', 'removed')
-        .order('created_at', { ascending: false })
-        .limit(50);
+      const [{ data, error }, presence] = await Promise.all([
+        supabase
+          .from('chat_messages')
+          .select('*')
+          .eq('thread_id', body.thread_id)
+          .neq('moderation_state', 'removed')
+          .order('created_at', { ascending: false })
+          .limit(50),
+        getThreadPresence(supabase, body.thread_id, walletAddress),
+      ]);
       if (error) return jsonResponse(500, { error: error.message }, cors);
 
       if (body.mark_read) {
         await markThreadRead(supabase, body.thread_id, walletAddress);
       }
 
-      return jsonResponse(200, { messages: (data ?? []).reverse() }, cors);
+      return jsonResponse(200, {
+        messages: (data ?? []).reverse(),
+        peer_last_read_at: presence.peer_last_read_at,
+        peer_is_typing: presence.peer_is_typing,
+      }, cors);
     }
 
     if (action === 'block') {
@@ -321,18 +440,25 @@ Deno.serve(async (req) => {
       }
 
       const trimmed = body.content.trim().slice(0, 2000);
+      const messageType = body.message_type?.trim() || 'text';
+      const allowedTypes = new Set(['text', 'gif', 'sticker']);
+      const resolvedType = allowedTypes.has(messageType) ? messageType : 'text';
       const { data: message, error } = await supabase
         .from('chat_messages')
         .insert({
           thread_id: threadId,
           sender_wallet: walletAddress,
           content: trimmed,
+          message_type: resolvedType,
         })
         .select('*')
         .single();
       if (error) return jsonResponse(500, { error: error.message }, cors);
 
-      await supabase.from('chat_threads').update({ last_message_at: new Date().toISOString() }).eq('id', threadId);
+      await Promise.all([
+        supabase.from('chat_threads').update({ last_message_at: new Date().toISOString() }).eq('id', threadId),
+        clearTyping(supabase, threadId, walletAddress),
+      ]);
 
       if (peerWallet) {
         await notifyRecipientOnSend(supabase, {
@@ -341,6 +467,7 @@ Deno.serve(async (req) => {
           recipientWallet: peerWallet,
           messageId: message.id as string,
           content: trimmed,
+          messageType: resolvedType,
         });
       }
 

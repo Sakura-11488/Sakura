@@ -56,3 +56,9 @@ verify_jwt = false
 
 [functions.wallet-realtime-session]
 verify_jwt = false
+
+[functions.creator-work-mint-verify]
+verify_jwt = false
+
+[functions.upload-profile-avatar]
+verify_jwt = false
