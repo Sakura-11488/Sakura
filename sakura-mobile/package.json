@@ -1,7 +1,7 @@
 {
   "name": "sakura-expo",
   "main": "index.js",
-  "version": "1.9.5",
+  "version": "1.9.6",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
@@ -23,6 +23,7 @@
     "@supabase/supabase-js": "^2.96.0",
     "axios": "^1.13.5",
     "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
     "entities": "^8.0.0",
     "expo": "~56.0.6",
     "expo-audio": "~56.0.11",
