@@ -1,33 +1,49 @@
-import { Buffer } from 'buffer';
-import { Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram, Keypair, TransactionInstruction } from '@solana/web3.js';
-import { SOLANA_RPC, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, lamportsToSol, rawToSakura, sakuraToRaw, SAKURA_SEND_SOL_RESERVE } from './config';
-import { fetchSolBalance, fetchSakuraBalance, fetchSakuraBalanceWithMeta, getSakuraAta } from './balances';
+import {
+  Connection,
+  PublicKey,
+  LAMPORTS_PER_SOL,
+  Transaction,
+  SystemProgram,
+  Keypair,
+} from '@solana/web3.js';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  createTransferInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import {
+  SOLANA_RPC,
+  SAKURA_MINT,
+  sakuraToRaw,
+  SAKURA_SEND_SOL_RESERVE,
+} from './config';
+import {
+  fetchSolBalance,
+  fetchSakuraBalance,
+  fetchSakuraBalanceWithMeta,
+  resolveSakuraTokenAccount,
+} from './balances';
 import type { SakuraBalanceSource } from './balance-diagnostics';
 export { SAKURA_SEND_SOL_RESERVE, SOL_SEND_FEE_RESERVE } from './config';
 
-const ASSOC_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS');
-const SYS_PROGRAM_ID = new PublicKey('11111111111111111111111111111111');
-
-function getAta(owner: PublicKey, mint: PublicKey): PublicKey {
-  return getSakuraAta(owner);
-}
-
-function u64LeBuffer(value: number): Buffer {
-  const buf = Buffer.alloc(8);
-  let v = BigInt(Math.round(value));
-  for (let i = 0; i < 8; i++) {
-    buf[i] = Number(v & 0xffn);
-    v >>= 8n;
-  }
-  return buf;
+function destinationAta(owner: PublicKey): PublicKey {
+  return getAssociatedTokenAddressSync(
+    SAKURA_MINT,
+    owner,
+    true,
+    TOKEN_2022_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
 }
 
 export async function sendSakura(keypair: Keypair, toAddress: string, amount: number): Promise<string> {
   const conn = getConnection();
   const toPubkey = new PublicKey(toAddress);
-  const fromAta = getAta(keypair.publicKey, SAKURA_MINT);
-  const toAta = getAta(toPubkey, SAKURA_MINT);
-  const rawAmount = sakuraToRaw(amount);
+  const rawAmount = BigInt(sakuraToRaw(amount));
+  const fromTokenAccount = await resolveSakuraTokenAccount(keypair.publicKey, rawAmount);
+  const toAta = destinationAta(toPubkey);
 
   const solLamports = await conn.getBalance(keypair.publicKey, 'confirmed');
   const toAtaInfo = await conn.getAccountInfo(toAta, 'confirmed');
@@ -46,33 +62,29 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
   tx.lastValidBlockHeight = lastValidBlockHeight;
   tx.feePayer = keypair.publicKey;
 
-  // Create receiver ATA if it doesn't exist (idempotent create)
   if (!toAtaInfo) {
-    tx.add(new TransactionInstruction({
-      keys: [
-        { pubkey: keypair.publicKey, isSigner: true, isWritable: true },
-        { pubkey: toAta, isSigner: false, isWritable: true },
-        { pubkey: toPubkey, isSigner: false, isWritable: false },
-        { pubkey: SAKURA_MINT, isSigner: false, isWritable: false },
-        { pubkey: SYS_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: SAKURA_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      programId: ASSOC_TOKEN_PROGRAM_ID,
-      data: Buffer.from([1]), // idempotent create
-    }));
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        keypair.publicKey,
+        toAta,
+        toPubkey,
+        SAKURA_MINT,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      ),
+    );
   }
 
-  // SPL token transfer (instruction type 3)
-  const transferData = Buffer.concat([Buffer.from([3]), u64LeBuffer(rawAmount)]);
-  tx.add(new TransactionInstruction({
-    keys: [
-      { pubkey: fromAta, isSigner: false, isWritable: true },
-      { pubkey: toAta, isSigner: false, isWritable: true },
-      { pubkey: keypair.publicKey, isSigner: true, isWritable: false },
-    ],
-    programId: SAKURA_TOKEN_PROGRAM_ID,
-    data: transferData,
-  }));
+  tx.add(
+    createTransferInstruction(
+      fromTokenAccount,
+      toAta,
+      keypair.publicKey,
+      rawAmount,
+      [],
+      TOKEN_2022_PROGRAM_ID,
+    ),
+  );
 
   tx.sign(keypair);
   const txid = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });

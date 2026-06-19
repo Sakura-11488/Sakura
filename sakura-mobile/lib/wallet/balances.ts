@@ -1,5 +1,10 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import {
+  getAssociatedTokenAddressSync,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
+import {
   SAKURA_MINT,
   SAKURA_TOKEN_PROGRAM_ID,
   SOLANA_RPC,
@@ -9,8 +14,6 @@ import {
   rawToSakura,
 } from './config';
 import type { SakuraBalanceSource } from './balance-diagnostics';
-
-const ASSOC_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS');
 
 let _connection: Connection | null = null;
 let _connectionRpc: string | null = null;
@@ -56,11 +59,71 @@ async function sumRawOwnerScan(conn: Connection, owner: PublicKey): Promise<numb
 }
 
 export function getSakuraAta(owner: PublicKey): PublicKey {
-  const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), SAKURA_TOKEN_PROGRAM_ID.toBuffer(), SAKURA_MINT.toBuffer()],
-    ASSOC_TOKEN_PROGRAM_ID,
+  return getAssociatedTokenAddressSync(
+    SAKURA_MINT,
+    owner,
+    true,
+    TOKEN_2022_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  return ata;
+}
+
+/** Pick the wallet's funded SKR token account (ATA first, then owner scan). */
+export async function resolveSakuraTokenAccount(
+  owner: PublicKey,
+  minRawAmount = 0n,
+): Promise<PublicKey> {
+  const conn = getRpcConnection();
+  const ata = getSakuraAta(owner);
+
+  try {
+    const balance = await conn.getTokenAccountBalance(ata, 'confirmed');
+    const raw = BigInt(balance.value.amount);
+    if (raw >= minRawAmount) return ata;
+  } catch {
+    // ATA may not exist yet — fall through to owner scan.
+  }
+
+  const accounts = await conn.getParsedTokenAccountsByOwner(
+    owner,
+    { mint: SAKURA_MINT },
+    'confirmed',
+  );
+
+  let best: { pubkey: PublicKey; raw: bigint } | null = null;
+  for (const entry of accounts.value) {
+    const amount = entry.account.data.parsed?.info?.tokenAmount?.amount;
+    if (amount == null) continue;
+    const raw = BigInt(amount);
+    if (raw < minRawAmount) continue;
+    if (!best || raw > best.raw) {
+      best = { pubkey: entry.pubkey, raw };
+    }
+  }
+
+  if (!best) {
+    const programAccounts = await conn.getParsedTokenAccountsByOwner(
+      owner,
+      { programId: SAKURA_TOKEN_PROGRAM_ID },
+      'confirmed',
+    );
+    for (const entry of programAccounts.value) {
+      const info = entry.account.data.parsed?.info;
+      if (!info || info.mint !== SAKURA_MINT.toBase58()) continue;
+      const amount = info.tokenAmount?.amount;
+      if (amount == null) continue;
+      const raw = BigInt(amount);
+      if (raw < minRawAmount) continue;
+      if (!best || raw > best.raw) {
+        best = { pubkey: entry.pubkey, raw };
+      }
+    }
+  }
+
+  if (!best) {
+    throw new Error('No SAKURA token account with enough balance for this payment.');
+  }
+  return best.pubkey;
 }
 
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
