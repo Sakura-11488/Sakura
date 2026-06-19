@@ -11,7 +11,7 @@ import {
 import { corsHeaders, isWallet, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 
 type GenerateBody = {
-  action?: 'generate' | 'status' | 'quote';
+  action?: 'generate' | 'status' | 'quote' | 'eligibility' | 'list' | 'select';
   mode?: 'tastes' | 'general';
   hint?: string;
   generation_id?: string;
@@ -51,6 +51,75 @@ function avatarNftName(mode: string): string {
   return mode === 'tastes' ? 'Sakura Taste Avatar' : 'Sakura Anime Avatar';
 }
 
+async function listReadyMints(
+  supabase: ReturnType<typeof createClient>,
+  walletAddress: string,
+  activeGenerationId?: string | null,
+) {
+  const { data, error } = await supabase
+    .from('user_avatar_generations')
+    .select('id, mint_address, public_url, mode, created_at')
+    .eq('wallet_address', walletAddress)
+    .eq('status', 'ready')
+    .order('created_at', { ascending: false });
+
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    mint_address: row.mint_address ?? null,
+    public_url: row.public_url ?? null,
+    mode: row.mode as string,
+    created_at: row.created_at as string,
+    is_active: Boolean(activeGenerationId && row.id === activeGenerationId),
+  }));
+}
+
+async function buildEligibility(
+  supabase: ReturnType<typeof createClient>,
+  walletAddress: string,
+  mintPrice: number,
+) {
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('avatar_mint_address, avatar_url, avatar_generation_id')
+    .eq('wallet_address', walletAddress)
+    .maybeSingle();
+
+  const { data: recent } = await supabase
+    .from('user_avatar_generations')
+    .select('created_at, status')
+    .eq('wallet_address', walletAddress)
+    .in('status', ['queued', 'processing', 'ready'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let retryAfterHours = 0;
+  if (recent?.created_at) {
+    const elapsed = hoursSince(recent.created_at);
+    if (elapsed < RATE_LIMIT_HOURS) {
+      retryAfterHours = Math.max(1, Math.ceil(RATE_LIMIT_HOURS - elapsed));
+    }
+  }
+
+  const mints = await listReadyMints(supabase, walletAddress, profile?.avatar_generation_id ?? null);
+
+  return {
+    price_sakura: mintPrice,
+    currency: 'SAKURA',
+    rate_limit_hours: RATE_LIMIT_HOURS,
+    can_mint: retryAfterHours === 0,
+    already_minted: mints.length > 0,
+    mint_count: mints.length,
+    active_generation_id: profile?.avatar_generation_id ?? null,
+    mint_address: profile?.avatar_mint_address ?? null,
+    avatar_url: profile?.avatar_url ?? null,
+    retry_after_hours: retryAfterHours,
+    mints,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
@@ -65,6 +134,58 @@ Deno.serve(async (req) => {
         price_sakura: mintPrice,
         currency: 'SAKURA',
         rate_limit_hours: RATE_LIMIT_HOURS,
+      }, cors);
+    }
+
+    if (action === 'eligibility' || action === 'list') {
+      const { walletAddress } = verifyWalletHeaders(req.headers, 'generate-avatar');
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      );
+      const payload = await buildEligibility(supabase, walletAddress, mintPrice);
+      return jsonResponse(200, payload, cors);
+    }
+
+    if (action === 'select') {
+      const { walletAddress } = verifyWalletHeaders(req.headers, 'generate-avatar');
+      const generationId = body.generation_id?.trim();
+      if (!generationId) return jsonResponse(400, { error: 'generation_id is required.' }, cors);
+
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+      );
+
+      const { data: generation, error } = await supabase
+        .from('user_avatar_generations')
+        .select('id, wallet_address, public_url, mint_address, status')
+        .eq('id', generationId)
+        .eq('wallet_address', walletAddress)
+        .maybeSingle();
+
+      if (error) return jsonResponse(500, { error: error.message }, cors);
+      if (!generation || generation.status !== 'ready') {
+        return jsonResponse(404, { error: 'Avatar mint not found.' }, cors);
+      }
+
+      const now = new Date().toISOString();
+      await supabase.from('user_profiles').upsert(
+        {
+          wallet_address: walletAddress,
+          avatar_url: generation.public_url,
+          avatar_mint_address: generation.mint_address,
+          avatar_generation_id: generation.id,
+          avatar_seed: walletAddress.slice(0, 8),
+          updated_at: now,
+        },
+        { onConflict: 'wallet_address' },
+      );
+
+      return jsonResponse(200, {
+        generation_id: generation.id,
+        mint_address: generation.mint_address,
+        public_url: generation.public_url,
       }, cors);
     }
 
@@ -107,6 +228,25 @@ Deno.serve(async (req) => {
       }, cors);
     }
 
+    if (!paymentBypass) {
+      const { data: recent } = await supabase
+        .from('user_avatar_generations')
+        .select('created_at, status')
+        .eq('wallet_address', walletAddress)
+        .in('status', ['queued', 'processing', 'ready'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recent?.created_at && hoursSince(recent.created_at) < RATE_LIMIT_HOURS) {
+        const retryHours = Math.max(1, Math.ceil(RATE_LIMIT_HOURS - hoursSince(recent.created_at)));
+        return jsonResponse(429, {
+          error: `You can mint again in about ${retryHours} hour(s).`,
+          retry_after_hours: retryHours,
+        }, cors);
+      }
+    }
+
     const { data: usedPayment } = await supabase
       .from('user_avatar_generations')
       .select('id, wallet_address, status')
@@ -130,25 +270,6 @@ Deno.serve(async (req) => {
 
     const mode = body.mode === 'general' ? 'general' : 'tastes';
     const userHint = sanitizeUserHint(body.hint);
-
-    if (!paymentBypass) {
-      const { data: recent } = await supabase
-        .from('user_avatar_generations')
-        .select('created_at, status')
-        .eq('wallet_address', walletAddress)
-        .in('status', ['queued', 'processing', 'ready'])
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (recent?.created_at && hoursSince(recent.created_at) < RATE_LIMIT_HOURS) {
-        const retryHours = Math.max(1, Math.ceil(RATE_LIMIT_HOURS - hoursSince(recent.created_at)));
-        return jsonResponse(429, {
-          error: `You can mint again in about ${retryHours} hour(s).`,
-          retry_after_hours: retryHours,
-        }, cors);
-      }
-    }
 
     const taste = await buildTasteSnapshot(supabase, walletAddress);
     const prompt = buildAvatarPrompt({ mode, taste, userHint });

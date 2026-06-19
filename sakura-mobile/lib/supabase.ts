@@ -47,13 +47,14 @@ export interface UserProfile {
   avatar_url: string | null;
   avatar_seed: string | null;
   avatar_mint_address?: string | null;
+  avatar_generation_id?: string | null;
   updated_at: string;
 }
 
 export async function getProfile(walletAddress: string): Promise<UserProfile | null> {
   const { data } = await supabase
     .from('user_profiles')
-    .select('wallet_address, display_name, bio, avatar_url, avatar_seed, avatar_mint_address, updated_at')
+    .select('wallet_address, display_name, bio, avatar_url, avatar_seed, avatar_mint_address, avatar_generation_id, updated_at')
     .eq('wallet_address', walletAddress)
     .maybeSingle();
   if (!data) return null;
@@ -65,6 +66,7 @@ export async function getProfile(walletAddress: string): Promise<UserProfile | n
     avatar_url: data.avatar_url ?? null,
     avatar_seed: data.avatar_seed ?? walletAddress.slice(0, 8),
     avatar_mint_address: data.avatar_mint_address ?? null,
+    avatar_generation_id: data.avatar_generation_id ?? null,
     updated_at: data.updated_at ?? new Date().toISOString(),
   };
 }

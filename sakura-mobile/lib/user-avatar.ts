@@ -36,6 +36,26 @@ export interface AvatarMintQuote {
   rate_limit_hours: number;
 }
 
+export interface AvatarMintItem {
+  id: string;
+  mint_address: string | null;
+  public_url: string | null;
+  mode: AvatarGenerationMode;
+  created_at: string;
+  is_active: boolean;
+}
+
+export interface AvatarMintEligibility extends AvatarMintQuote {
+  can_mint: boolean;
+  already_minted: boolean;
+  mint_count: number;
+  active_generation_id: string | null;
+  mint_address: string | null;
+  avatar_url: string | null;
+  retry_after_hours: number;
+  mints: AvatarMintItem[];
+}
+
 export function resolveAvatarUri(profile: AvatarProfileFields): string {
   if (profile.avatar_url?.trim()) return profile.avatar_url.trim();
   const seed = profile.wallet_address.trim() || profile.avatar_seed?.trim() || 'sakura';
@@ -68,6 +88,57 @@ async function parseInvokeError(error: { message?: string; context?: Response })
     }
   }
   return error.message || 'Avatar mint failed.';
+}
+
+export async function fetchAvatarMintEligibility(
+  authHeaders: WalletAuthHeaders,
+): Promise<AvatarMintEligibility> {
+  const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+    body: { action: 'eligibility' },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await parseInvokeError(error));
+  if (data?.error) throw new Error(String(data.error));
+  return {
+    price_sakura: Number(data?.price_sakura ?? AVATAR_MINT_PRICE_SAKURA),
+    currency: String(data?.currency ?? 'SAKURA'),
+    rate_limit_hours: Number(data?.rate_limit_hours ?? 24),
+    can_mint: Boolean(data?.can_mint),
+    already_minted: Boolean(data?.already_minted),
+    mint_count: Number(data?.mint_count ?? 0),
+    active_generation_id: data?.active_generation_id ?? null,
+    mint_address: data?.mint_address ?? null,
+    avatar_url: data?.avatar_url ?? null,
+    retry_after_hours: Number(data?.retry_after_hours ?? 0),
+    mints: Array.isArray(data?.mints) ? (data.mints as AvatarMintItem[]) : [],
+  };
+}
+
+export async function listAvatarMints(authHeaders: WalletAuthHeaders): Promise<AvatarMintItem[]> {
+  const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+    body: { action: 'list' },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await parseInvokeError(error));
+  if (data?.error) throw new Error(String(data.error));
+  return Array.isArray(data?.mints) ? (data.mints as AvatarMintItem[]) : [];
+}
+
+export async function selectAvatarMint(
+  authHeaders: WalletAuthHeaders,
+  generationId: string,
+): Promise<{ mint_address: string | null; public_url: string | null; generation_id: string }> {
+  const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+    body: { action: 'select', generation_id: generationId },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await parseInvokeError(error));
+  if (data?.error) throw new Error(String(data.error));
+  return {
+    generation_id: String(data?.generation_id ?? generationId),
+    mint_address: data?.mint_address ?? null,
+    public_url: data?.public_url ?? null,
+  };
 }
 
 export async function fetchAvatarMintQuote(): Promise<AvatarMintQuote> {
