@@ -1,7 +1,7 @@
 {
   "name": "sakura-expo",
   "main": "index.js",
-  "version": "1.9.8",
+  "version": "1.9.9",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
@@ -39,6 +39,7 @@
     "expo-linear-gradient": "~56.0.4",
     "expo-linking": "~56.0.12",
     "expo-local-authentication": "~56.0.4",
+    "expo-media-library": "~56.0.7",
     "expo-navigation-bar": "~56.0.3",
     "expo-notifications": "~56.0.14",
     "expo-router": "~56.2.7",

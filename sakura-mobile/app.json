@@ -2,7 +2,7 @@
   "expo": {
     "name": "Sakura",
     "slug": "sakura-expo",
-    "version": "1.9.8",
+    "version": "1.9.9",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -74,7 +74,7 @@
         "backgroundColor": "#FFFFFF"
       },
       "package": "com.millw14.sakura",
-      "versionCode": 10908
+      "versionCode": 10909
     },
     "plugins": [
       "expo-router",
@@ -101,6 +101,13 @@
         "expo-image-picker",
         {
           "photosPermission": "Allow Sakura to upload cover art for your creator works."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Sakura to save your profile photo to your photo library.",
+          "savePhotosPermission": "Allow Sakura to save your profile photo to your photo library."
         }
       ]
     ],

@@ -41,11 +41,13 @@ import {
   solanaExplorerToken,
   solanaExplorerTx,
 } from '@/lib/wallet/config';
+import { saveProfileImageToDevice } from '@/lib/download-profile-image';
 import {
   buildAvatarAuthHeaders,
   fetchAvatarMintEligibility,
   generateUserAvatar,
   listAvatarMints,
+  resolveAvatarUri,
   selectAvatarMint,
   type AvatarMintItem,
 } from '@/lib/user-avatar';
@@ -293,6 +295,7 @@ export default function ProfileScreen() {
   const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
   const [selectingMintId, setSelectingMintId] = useState<string | null>(null);
   const [loadingAvatarMints, setLoadingAvatarMints] = useState(false);
+  const [downloadingAvatar, setDownloadingAvatar] = useState(false);
   const [sakuraHandle, setSakuraHandle] = useState<string | null>(null);
   const [generatingAvatar, setGeneratingAvatar] = useState(false);
   const [stats, setStats] = useState<Stats>({ watching: 0, reading: 0, saved: 0 });
@@ -453,6 +456,26 @@ export default function ProfileScreen() {
     }
   }, [unlockForAppSession]);
 
+  const handleDownloadProfileImage = useCallback(async () => {
+    if (!address) return;
+
+    setDownloadingAvatar(true);
+    try {
+      const uri = resolveAvatarUri({
+        wallet_address: address,
+        avatar_url: avatarUrl,
+        avatar_seed: avatarSeed,
+        avatar_mint_address: avatarMintAddress,
+      });
+      await saveProfileImageToDevice(uri, `sakura-pfp-${address.slice(0, 8)}`);
+      Alert.alert('Saved', 'Your profile photo was saved to your photo library.');
+    } catch (error) {
+      Alert.alert('Could not save photo', error instanceof Error ? error.message : 'Try again.');
+    } finally {
+      setDownloadingAvatar(false);
+    }
+  }, [address, avatarUrl, avatarSeed, avatarMintAddress]);
+
   const openForgeDialog = useCallback(() => {
     Alert.alert(
       'Forge a Sakura avatar',
@@ -483,7 +506,21 @@ export default function ProfileScreen() {
       setAvatarMints(eligibility.mints);
 
       if (eligibility.mints.length === 0) {
-        openForgeDialog();
+        const actions: { text: string; style?: 'cancel'; onPress?: () => void }[] = [
+          { text: 'Download photo', onPress: handleDownloadProfileImage },
+        ];
+        if (eligibility.can_mint) {
+          actions.push({ text: 'Forge avatar', onPress: openForgeDialog });
+        }
+        actions.push({ text: 'Cancel', style: 'cancel' });
+
+        Alert.alert(
+          'Profile photo',
+          eligibility.can_mint
+            ? 'Save your current profile photo or forge a Sakura avatar NFT.'
+            : 'Save your current profile photo to your device.',
+          actions,
+        );
         return;
       }
 
@@ -492,6 +529,7 @@ export default function ProfileScreen() {
         : '';
 
       const actions: { text: string; style?: 'cancel'; onPress?: () => void }[] = [
+        { text: 'Download photo', onPress: handleDownloadProfileImage },
         { text: 'Choose avatar', onPress: () => setAvatarPickerVisible(true) },
       ];
 
@@ -511,7 +549,7 @@ export default function ProfileScreen() {
     } finally {
       setLoadingAvatarMints(false);
     }
-  }, [connected, unlockForAppSession, openForgeDialog]);
+  }, [connected, unlockForAppSession, openForgeDialog, handleDownloadProfileImage]);
 
   return (
     <SafeAreaView style={[s.safe, { backgroundColor: colors.background }]} edges={['top']}>
@@ -525,7 +563,7 @@ export default function ProfileScreen() {
       >
         {/* ── Header ── */}
         <Animated.View entering={FadeInDown.duration(400)} style={s.header}>
-          <TouchableOpacity onPress={onTap(onAvatarPress)} activeOpacity={0.85} disabled={generatingAvatar || loadingAvatarMints}>
+          <TouchableOpacity onPress={onTap(onAvatarPress)} activeOpacity={0.85} disabled={generatingAvatar || loadingAvatarMints || downloadingAvatar}>
             <View style={[s.avatarWrap, { borderColor: colors.primary, backgroundColor: colors.surfaceSecondary }]}>
               {connected && address ? (
                 <ProfileAvatar
@@ -547,7 +585,7 @@ export default function ProfileScreen() {
                   contentFit="contain"
                 />
               )}
-              {generatingAvatar && (
+              {(generatingAvatar || downloadingAvatar) && (
                 <View style={s.avatarLoading}>
                   <ActivityIndicator color="#fff" />
                 </View>
