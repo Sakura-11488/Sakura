@@ -1,19 +1,18 @@
 import { getCachedValue, setCachedValue } from '@/lib/cache';
-
-// Hostname required for iOS 17+ ATS — bare IPs over HTTP are blocked on device/simulator.
-const DEFAULT_CONSUMET_URL = 'http://165-232-83-159.nip.io:3000';
-const LEGACY_CONSUMET_URL = 'http://165.232.83.159:3000';
-
-function consumetCandidates(): string[] {
-  const fromEnv = (process.env.EXPO_PUBLIC_CONSUMET_URL || '').replace(/\/+$/, '');
-  const list = [fromEnv, DEFAULT_CONSUMET_URL, LEGACY_CONSUMET_URL].filter(Boolean);
-  return [...new Set(list)];
-}
-
-let activeConsumetUrl = consumetCandidates()[0] || DEFAULT_CONSUMET_URL;
+import {
+  consuGet,
+  consumetCandidates,
+  getActiveConsumetUrl,
+  setActiveConsumetUrl,
+} from '@/lib/consumet-client';
+import {
+  HIANIME_BASE,
+  fetchUpstreamText,
+  fetchUpstreamJson,
+} from '@/lib/anime-upstream';
 
 export function getConsumetUrl() {
-  return activeConsumetUrl;
+  return getActiveConsumetUrl();
 }
 
 /** Ping streaming API from the device/simulator (use in Settings to verify connectivity). */
@@ -24,36 +23,29 @@ export async function pingStreamingServer(): Promise<{
   latencyMs?: number;
 }> {
   const candidates = consumetCandidates();
-  let lastError = 'No server configured';
-
-  for (const base of candidates) {
-    const t0 = Date.now();
-    try {
-      const res = await fetch(`${base}/`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        continue;
-      }
-      const data = (await res.json()) as { status?: string; version?: string };
-      if (data?.status === 'ok') {
-        activeConsumetUrl = base;
-        return {
-          ok: true,
-          url: base,
-          message: `Connected (v${data.version || '?'})`,
-          latencyMs: Date.now() - t0,
-        };
-      }
-      lastError = 'Unexpected response';
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : 'Network request failed';
-    }
+  if (candidates.length === 0) {
+    return { ok: false, url: '', message: 'No server configured' };
   }
 
-  return { ok: false, url: activeConsumetUrl, message: lastError };
+  const t0 = Date.now();
+  try {
+    const data = await consuGet('/');
+    if (data?.status === 'ok') {
+      return {
+        ok: true,
+        url: getActiveConsumetUrl(),
+        message: `Connected (v${String(data.version || '?')})`,
+        latencyMs: Date.now() - t0,
+      };
+    }
+    return { ok: false, url: getActiveConsumetUrl(), message: 'Unexpected response' };
+  } catch (e) {
+    return {
+      ok: false,
+      url: getActiveConsumetUrl(),
+      message: e instanceof Error ? e.message : 'Network request failed',
+    };
+  }
 }
 const ANILIST_URL = 'https://graphql.anilist.co';
 const JIKAN_API = 'https://api.jikan.moe/v4';
@@ -80,6 +72,13 @@ function cDelete(key: string) {
 export function clearAnimeSessionCache() {
   _mem.clear();
   _slugMap.clear();
+}
+
+/** Drop cached streaming slug mapping for a MAL id (used when provider stream is stale). */
+export function clearAnimeSourceCacheForMal(malId: string): void {
+  cDelete(`srcmap_${malId}`);
+  cDelete(`srcslug_${malId}`);
+  cDelete(`info2_${malId}`);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -136,8 +135,6 @@ export function getAnimeStreamUserAgent() {
   return MOBILE_SAFARI_UA;
 }
 
-const HIANIME_BASE = 'https://hianime.dk';
-
 /** HiAnime web player — Megaplay embed often returns 410 inside WebView */
 export function buildStreamEmbedUrl(
   malId: string,
@@ -176,32 +173,6 @@ export function buildPlaybackHeaders(referer?: string): Record<string, string> {
     Origin: origin,
     'User-Agent': MOBILE_SAFARI_UA,
   };
-}
-
-async function fetchTextUrl(url: string, referer?: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      Referer: referer || HIANIME_BASE + '/',
-      'User-Agent': MOBILE_SAFARI_UA,
-    },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.text();
-}
-
-async function fetchJsonUrl(url: string, referer?: string, origin?: string): Promise<Record<string, unknown>> {
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/json,text/plain,*/*',
-      Referer: referer || HIANIME_BASE + '/',
-      Origin: origin || new URL(url).origin,
-      'X-Requested-With': 'XMLHttpRequest',
-      'User-Agent': MOBILE_SAFARI_UA,
-    },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 function absolutePlayerUrl(src: string, baseUrl: string): string {
@@ -254,11 +225,11 @@ async function fetchMegaplaySourceFromEmbed(
   epNum?: string,
 ): Promise<StreamingSource | null> {
   let playerUrl = embedUrl;
-  let html = await fetchTextUrl(playerUrl, HIANIME_BASE + '/');
+  let html = await fetchUpstreamText(playerUrl, HIANIME_BASE + '/');
   const iframe = findPlayerIframe(html, playerUrl);
   if (iframe) {
     playerUrl = iframe;
-    html = await fetchTextUrl(playerUrl, embedUrl);
+    html = await fetchUpstreamText(playerUrl, embedUrl);
   }
 
   const dataId = findMegaplayDataId(html);
@@ -275,7 +246,7 @@ async function fetchMegaplaySourceFromEmbed(
   let payload: Record<string, unknown> | null = null;
   for (const endpoint of endpoints) {
     try {
-      payload = await fetchJsonUrl(endpoint, playerUrl, origin);
+      payload = await fetchUpstreamJson(endpoint, playerUrl, origin);
       if (pickMegaplayFile(payload)) break;
     } catch {
       // try the next known Megaplay source endpoint
@@ -308,7 +279,19 @@ async function fetchDirectMalSource(
   category: 'sub' | 'dub',
 ): Promise<StreamingSource | null> {
   const embedUrl = buildStreamEmbedUrl(malId, epNum, category);
-  return fetchMegaplaySourceFromEmbed(embedUrl, category, malId, epNum);
+  try {
+    const source = await fetchMegaplaySourceFromEmbed(embedUrl, category, malId, epNum);
+    if (source?.url || source?.embedUrl) return source;
+  } catch {
+    // The MAL player page can still be embedded even when direct HLS extraction fails.
+  }
+  return {
+    url: '',
+    isM3U8: false,
+    embedUrl,
+    category,
+    availableCategories: ['sub', 'dub'],
+  };
 }
 
 export const ANIME_GENRES: { id: number; name: string }[] = [
@@ -453,58 +436,6 @@ async function jikanFull(id: string): Promise<JikanFull | null> {
 }
 
 // ─── Consumet / HiAnime ──────────────────────────────────────────────────────
-async function consuGet(path: string, timeoutMs = 15000, retries = 2): Promise<Record<string, unknown>> {
-  const bases = consumetCandidates();
-  if (bases.length === 0) throw new Error('CONSUMET_URL not set');
-
-  const orderedBases = [
-    activeConsumetUrl,
-    ...bases.filter((b) => b !== activeConsumetUrl),
-  ].filter(Boolean) as string[];
-
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 1200 * attempt));
-
-    for (const base of orderedBases) {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      try {
-        const res = await fetch(`${base}${path}`, {
-          signal: ctrl.signal,
-          headers: { Accept: 'application/json', 'User-Agent': 'Sakura/1.0' },
-        });
-        if (!res.ok) throw new Error(`Consumet HTTP ${res.status}`);
-        const data = await res.json() as Record<string, unknown>;
-        if (data?.code === 20) {
-          lastErr = new Error('Consumet server aborted');
-          break;
-        }
-        if (data?.error) {
-          const errMsg = String(data.error);
-          const code = String(data.code || '');
-          if (
-            code === 'ANIME_ID_NOT_FOUND' ||
-            errMsg.includes('HTTP 404') ||
-            errMsg.includes('Could not resolve animeId')
-          ) {
-            throw new Error(errMsg);
-          }
-          lastErr = new Error(errMsg);
-          break;
-        }
-        activeConsumetUrl = base;
-        return data;
-      } catch (e) {
-        lastErr = e;
-      } finally {
-        clearTimeout(t);
-      }
-    }
-  }
-  throw lastErr;
-}
-
 async function consuSearch(
   query: string,
 ): Promise<{ slug: string; animeId: string; title: string }[]> {
@@ -1098,7 +1029,7 @@ export async function fetchAnimeInfo(
   }
 
   if (info.episodes.length === 0) {
-    info.episodeLoadError = activeConsumetUrl
+    info.episodeLoadError = getActiveConsumetUrl()
       ? 'Streaming source unavailable for this title.'
       : 'Streaming server is not configured.';
   }
@@ -1189,7 +1120,11 @@ export async function fetchEpisodeSources(
   episodeId: string,
   category: 'sub' | 'dub' = 'sub',
   malId?: string,
+  opts?: { force?: boolean },
 ): Promise<StreamingSource | null> {
+  if (opts?.force && malId) {
+    clearAnimeSourceCacheForMal(malId);
+  }
   // Sakura Originals stream from our own media server
   const { resolveSakuraOriginalStreamUrl } = await import('./sakura-originals');
   const origUrl = await resolveSakuraOriginalStreamUrl(episodeId);
@@ -1197,7 +1132,7 @@ export async function fetchEpisodeSources(
     return { url: origUrl, isM3U8: false };
   }
 
-  if (!activeConsumetUrl && consumetCandidates().length === 0) return null;
+  if (!getActiveConsumetUrl() && consumetCandidates().length === 0) return null;
 
   const parts = episodeId.match(/^hi-(\d+)-(\d+)$/);
   const malParts = episodeId.match(/^mal-(\d+)-(\d+)$/);

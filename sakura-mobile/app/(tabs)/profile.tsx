@@ -30,7 +30,14 @@ import { getProfile } from '@/lib/supabase';
 import { getCreatorProfile, getCreatorWorks } from '@/lib/creator';
 import { Library } from '@/lib/storage';
 import { ShimmerBox } from '@/components/ui/ShimmerLoader';
-import WalletModal from '@/components/wallet/WalletModal';
+import WalletModal, { type WalletSheetRoute } from '@/components/wallet/WalletModal';
+import { getForgeFundsStatus, getForgeFundsMessage } from '@/lib/avatar-forge-funds';
+import {
+  clearPendingAvatarPayment,
+  getPendingAvatarPayment,
+  savePendingAvatarPayment,
+} from '@/lib/avatar-forge-payment';
+import { showAlert } from '@/lib/confirm-alert';
 import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { onTap } from '@/lib/sound';
 import { sendSakura } from '@/lib/wallet/connection';
@@ -41,6 +48,7 @@ import {
   solanaExplorerToken,
   solanaExplorerTx,
 } from '@/lib/wallet/config';
+import { getAvatarMintAuthPrompt } from '@/lib/wallet/platform-labels';
 import { saveProfileImageToDevice } from '@/lib/download-profile-image';
 import {
   buildAvatarAuthHeaders,
@@ -52,6 +60,7 @@ import {
   type AvatarMintItem,
 } from '@/lib/user-avatar';
 import AvatarMintPickerModal from '@/components/social/AvatarMintPickerModal';
+import AvatarActionSheet, { type ActionSheetAction } from '@/components/social/AvatarActionSheet';
 
 interface Stats { watching: number; reading: number; saved: number }
 
@@ -287,12 +296,18 @@ const SettingsIcon = ({ color }: { color: string }) => (
 
 export default function ProfileScreen() {
   const [walletVisible, setWalletVisible] = useState(false);
+  const [walletInitialRoute, setWalletInitialRoute] = useState<WalletSheetRoute>('main');
   const [displayName, setDisplayName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarSeed, setAvatarSeed] = useState('guest');
   const [avatarMintAddress, setAvatarMintAddress] = useState<string | null>(null);
   const [avatarMints, setAvatarMints] = useState<AvatarMintItem[]>([]);
   const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
+  const [avatarSheet, setAvatarSheet] = useState<{
+    title: string;
+    message?: string;
+    actions: ActionSheetAction[];
+  } | null>(null);
   const [selectingMintId, setSelectingMintId] = useState<string | null>(null);
   const [loadingAvatarMints, setLoadingAvatarMints] = useState(false);
   const [downloadingAvatar, setDownloadingAvatar] = useState(false);
@@ -301,7 +316,7 @@ export default function ProfileScreen() {
   const [stats, setStats] = useState<Stats>({ watching: 0, reading: 0, saved: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const { colors } = useTheme();
-  const { address, connected, shortAddress, sakuraBalance, signWithBiometrics, unlockForAppSession } = useWallet();
+  const { address, connected, shortAddress, sakuraBalance, solBalance, signWithBiometrics, unlockForAppSession } = useWallet();
   const scrollRef = useRef<any>(null);
   useScrollToTop(scrollRef);
 
@@ -358,33 +373,54 @@ export default function ProfileScreen() {
 
   useEffect(() => { loadStats(); }, [loadStats]);
 
+  const openWalletBuy = useCallback(() => {
+    setWalletInitialRoute('buy');
+    setWalletVisible(true);
+  }, []);
+
+  const showForgeFundsGuide = useCallback(() => {
+    setAvatarSheet({
+      title: 'Need SKR and SOL',
+      message: getForgeFundsMessage(),
+      actions: [
+        { id: 'buy', label: 'Open wallet', onPress: openWalletBuy },
+        { id: 'cancel', label: 'Cancel' },
+      ],
+    });
+  }, [openWalletBuy]);
+
   const handleGenerateAvatar = useCallback(async (mode: 'tastes' | 'general') => {
     if (!address || !connected) {
-      Alert.alert('Connect your account', 'Sign in to forge your Sakura avatar.');
-      return;
-    }
-
-    if (sakuraBalance !== null && sakuraBalance < AVATAR_MINT_PRICE_SAKURA) {
-      Alert.alert(
-        'Insufficient SKR',
-        `Minting costs ${formatAvatarMintPrice()}. Your balance is ${Math.floor(sakuraBalance).toLocaleString()} SKR.`,
-      );
+      showAlert('Connect your account', 'Sign in to forge your Sakura avatar.');
+      setWalletVisible(true);
       return;
     }
 
     setGeneratingAvatar(true);
+    let paymentTxSignature: string | null = null;
     try {
       const keypair = await signWithBiometrics();
       if (!keypair) {
-        Alert.alert('Confirm to continue', 'Approve with Face ID to pay and forge your Sakura avatar.');
+        showAlert('Confirm to continue', getAvatarMintAuthPrompt());
         return;
       }
 
       const authHeaders = buildAvatarAuthHeaders(keypair);
+      const pendingPayment = await getPendingAvatarPayment(address);
+      const forgeMode = pendingPayment?.mode ?? mode;
+
+      if (!pendingPayment) {
+        const funds = getForgeFundsStatus(solBalance, sakuraBalance);
+        if (!funds.ok) {
+          showForgeFundsGuide();
+          return;
+        }
+      }
+
       const eligibility = await fetchAvatarMintEligibility(authHeaders);
 
       if (!eligibility.can_mint) {
-        Alert.alert(
+        showAlert(
           'Mint not available yet',
           eligibility.retry_after_hours > 0
             ? `You can forge again in about ${eligibility.retry_after_hours} hour(s). No SKR was charged.`
@@ -393,45 +429,54 @@ export default function ProfileScreen() {
         return;
       }
 
-      const paymentTxSignature = await sendSakura(keypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
+      if (pendingPayment) {
+        paymentTxSignature = pendingPayment.paymentTxSignature;
+      } else {
+        paymentTxSignature = await sendSakura(keypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
+        await savePendingAvatarPayment({
+          walletAddress: address,
+          paymentTxSignature,
+          mode: forgeMode,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
       const result = await generateUserAvatar({
-        mode,
+        mode: forgeMode,
         paymentTxSignature,
         authHeaders,
       });
 
       if (result.public_url && result.mint_address) {
+        await clearPendingAvatarPayment(address);
         setAvatarUrl(result.public_url);
         setAvatarMintAddress(result.mint_address);
         const refreshed = await listAvatarMints(authHeaders);
         setAvatarMints(refreshed);
-        Alert.alert(
+        showAlert(
           'Sakura avatar forged',
           `Your Sakura-bound avatar relic is ready.\n\nCollectible: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
-          [
-            { text: 'View collectible', onPress: () => Linking.openURL(solanaExplorerToken(result.mint_address!)) },
-            { text: 'View payment', onPress: () => Linking.openURL(solanaExplorerTx(paymentTxSignature)) },
-            { text: 'Done', style: 'cancel' },
-          ],
         );
       } else {
-        Alert.alert(
+        showAlert(
           'Could not forge avatar',
-          `${result.error || 'Please try again.'}\n\nIf SKR left your wallet, save the payment signature and contact support.`,
+          `${result.error || 'Please try again.'}\n\nYour payment signature is saved on this device, so retrying Forge will not charge SKR again.`,
         );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Please try again later.';
-      Alert.alert(
+      showAlert(
         'Could not forge avatar',
-        message.includes('hour')
+        paymentTxSignature
+          ? `${message}\n\nYour payment signature is saved on this device, so retrying Forge will not charge SKR again.`
+          : message.includes('hour')
           ? `${message}\n\nNo additional SKR should be charged when blocked before payment.`
           : message,
       );
     } finally {
       setGeneratingAvatar(false);
     }
-  }, [address, connected, sakuraBalance, signWithBiometrics]);
+  }, [address, connected, sakuraBalance, solBalance, signWithBiometrics, showForgeFundsGuide]);
 
   const handleSelectAvatarMint = useCallback(async (mint: AvatarMintItem) => {
     if (mint.is_active) return;
@@ -476,17 +521,34 @@ export default function ProfileScreen() {
     }
   }, [address, avatarUrl, avatarSeed, avatarMintAddress]);
 
-  const openForgeDialog = useCallback(() => {
-    Alert.alert(
-      'Forge a Sakura avatar',
-      `Spend ${formatAvatarMintPrice()} to mint a new avatar NFT. You can switch between your avatars anytime.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'From my tastes', onPress: () => handleGenerateAvatar('tastes') },
-        { text: 'Fresh avatar', onPress: () => handleGenerateAvatar('general') },
-      ],
-    );
-  }, [handleGenerateAvatar]);
+  const openForgeDialog = useCallback(async () => {
+    const pendingPayment = address ? await getPendingAvatarPayment(address) : null;
+    if (!pendingPayment) {
+      const funds = getForgeFundsStatus(solBalance, sakuraBalance);
+      if (!funds.ok) {
+        showForgeFundsGuide();
+        return;
+      }
+    }
+    setAvatarSheet({
+      title: pendingPayment ? 'Resume avatar forge' : 'Forge a Sakura avatar',
+      message: pendingPayment
+        ? 'Your SKR payment was already sent. Resume forging with the saved payment signature without paying again.'
+        : `Spend ${formatAvatarMintPrice()} to mint a new avatar NFT. You can switch between your avatars anytime.`,
+      actions: pendingPayment
+        ? [
+            {
+              id: 'resume',
+              label: 'Resume forging',
+              onPress: () => handleGenerateAvatar(pendingPayment.mode),
+            },
+          ]
+        : [
+            { id: 'tastes', label: 'From my tastes', onPress: () => handleGenerateAvatar('tastes') },
+            { id: 'general', label: 'Fresh avatar', onPress: () => handleGenerateAvatar('general') },
+          ],
+    });
+  }, [address, handleGenerateAvatar, sakuraBalance, solBalance, showForgeFundsGuide]);
 
   const onAvatarPress = useCallback(async () => {
     if (!connected) {
@@ -506,44 +568,40 @@ export default function ProfileScreen() {
       setAvatarMints(eligibility.mints);
 
       if (eligibility.mints.length === 0) {
-        const actions: { text: string; style?: 'cancel'; onPress?: () => void }[] = [
-          { text: 'Download photo', onPress: handleDownloadProfileImage },
+        const actions: ActionSheetAction[] = [
+          { id: 'download', label: 'Download photo', onPress: handleDownloadProfileImage },
         ];
         if (eligibility.can_mint) {
-          actions.push({ text: 'Forge avatar', onPress: openForgeDialog });
+          actions.push({ id: 'forge', label: 'Forge avatar', onPress: openForgeDialog });
         }
-        actions.push({ text: 'Cancel', style: 'cancel' });
-
-        Alert.alert(
-          'Profile photo',
-          eligibility.can_mint
+        setAvatarSheet({
+          title: 'Profile photo',
+          message: eligibility.can_mint
             ? 'Save your current profile photo or forge a Sakura avatar NFT.'
             : 'Save your current profile photo to your device.',
           actions,
-        );
+        });
         return;
       }
 
       const waitLine = eligibility.retry_after_hours > 0
-        ? `\n\nYou can forge another in about ${eligibility.retry_after_hours} hour(s).`
+        ? ` You can forge another in about ${eligibility.retry_after_hours} hour(s).`
         : '';
 
-      const actions: { text: string; style?: 'cancel'; onPress?: () => void }[] = [
-        { text: 'Download photo', onPress: handleDownloadProfileImage },
-        { text: 'Choose avatar', onPress: () => setAvatarPickerVisible(true) },
+      const actions: ActionSheetAction[] = [
+        { id: 'download', label: 'Download photo', onPress: handleDownloadProfileImage },
+        { id: 'choose', label: 'Choose avatar', onPress: () => setAvatarPickerVisible(true) },
       ];
 
       if (eligibility.can_mint) {
-        actions.push({ text: 'Forge another', onPress: openForgeDialog });
+        actions.push({ id: 'forge-another', label: 'Forge another', onPress: openForgeDialog });
       }
 
-      actions.push({ text: 'Cancel', style: 'cancel' });
-
-      Alert.alert(
-        'Sakura avatars',
-        `You have ${eligibility.mint_count} forged avatar${eligibility.mint_count === 1 ? '' : 's'}. Pick which one shows on your profile, or mint another.${waitLine}`,
+      setAvatarSheet({
+        title: 'Sakura avatars',
+        message: `You have ${eligibility.mint_count} forged avatar${eligibility.mint_count === 1 ? '' : 's'}. Pick which one shows on your profile, or mint another.${waitLine}`,
         actions,
-      );
+      });
     } catch (error) {
       Alert.alert('Could not load avatars', error instanceof Error ? error.message : 'Try again.');
     } finally {
@@ -673,7 +731,22 @@ export default function ProfileScreen() {
         <View style={{ height: 120 }} />
       </ScrollView>
 
-      <WalletModal visible={walletVisible} onClose={() => setWalletVisible(false)} />
+      <WalletModal
+        visible={walletVisible}
+        onClose={() => {
+          setWalletVisible(false);
+          setWalletInitialRoute('main');
+        }}
+        initialRoute={walletInitialRoute}
+      />
+      <AvatarActionSheet
+        visible={!!avatarSheet}
+        title={avatarSheet?.title ?? ''}
+        message={avatarSheet?.message}
+        actions={avatarSheet?.actions ?? []}
+        loading={loadingAvatarMints}
+        onClose={() => setAvatarSheet(null)}
+      />
       <AvatarMintPickerModal
         visible={avatarPickerVisible}
         mints={avatarMints}

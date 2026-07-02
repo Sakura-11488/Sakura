@@ -1,4 +1,5 @@
 import { Connection, PublicKey } from "@solana/web3.js";
+import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 
 // ============ Network Config ============
 export const SOLANA_NETWORK = "mainnet-beta";
@@ -22,6 +23,7 @@ export const SAKURA_MINT = new PublicKey(
 // swap quotes to come back ~1000x too large. Verified via getAsset and
 // getAccountInfo on mainnet.
 export const SAKURA_DECIMALS = 6;
+export const SAKURA_TOKEN_PROGRAM_ID = TOKEN_2022_PROGRAM_ID;
 
 // ============ Ino On-Chain Registry ============
 // Core program for chapter unlocks, milestone tracking, and support recording.

@@ -139,7 +139,7 @@ export default function WelcomeScreen() {
     try {
       await AppSettings.setLegalAccepted(true);
       await AppSettings.setLegalAcceptedAt(new Date().toISOString());
-      router.replace('/(tabs)');
+      router.replace('/(tabs)/home');
     } finally {
       setSubmitting(false);
     }

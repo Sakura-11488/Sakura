@@ -2,13 +2,14 @@ import { supabase } from "./supabase";
 import { PublicKey, Transaction } from "@solana/web3.js";
 import {
     getAssociatedTokenAddress,
-    createTransferInstruction,
+    createTransferCheckedInstruction,
     createAssociatedTokenAccountInstruction,
-    TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import {
     SAKURA_MINT,
+    SAKURA_DECIMALS,
+    SAKURA_TOKEN_PROGRAM_ID,
     SAKURA_TREASURY_ADMIN,
     getConnection,
     sakuraToSmallestUnit,
@@ -408,28 +409,28 @@ export async function buildChapterPaymentTx(
     const creatorAmount = Math.floor(pricePerChapter * NOVEL_CREATOR_SPLIT);
     const treasuryAmount = pricePerChapter - creatorAmount;
 
-    const userAta = await getAssociatedTokenAddress(SAKURA_MINT, userWallet, true, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
-    const creatorAta = await getAssociatedTokenAddress(SAKURA_MINT, creatorPubkey, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
-    const treasuryAta = await getAssociatedTokenAddress(SAKURA_MINT, SAKURA_TREASURY_ADMIN, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const userAta = await getAssociatedTokenAddress(SAKURA_MINT, userWallet, true, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const creatorAta = await getAssociatedTokenAddress(SAKURA_MINT, creatorPubkey, false, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+    const treasuryAta = await getAssociatedTokenAddress(SAKURA_MINT, SAKURA_TREASURY_ADMIN, false, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
 
     const tx = new Transaction();
 
     const userAtaInfo = await connection.getAccountInfo(userAta);
     if (!userAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(userWallet, userAta, userWallet, SAKURA_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
+        tx.add(createAssociatedTokenAccountInstruction(userWallet, userAta, userWallet, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
     }
 
     const creatorAtaInfo = await connection.getAccountInfo(creatorAta);
     if (!creatorAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(userWallet, creatorAta, creatorPubkey, SAKURA_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
+        tx.add(createAssociatedTokenAccountInstruction(userWallet, creatorAta, creatorPubkey, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
     }
     const treasuryAtaInfo = await connection.getAccountInfo(treasuryAta);
     if (!treasuryAtaInfo) {
-        tx.add(createAssociatedTokenAccountInstruction(userWallet, treasuryAta, SAKURA_TREASURY_ADMIN, SAKURA_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
+        tx.add(createAssociatedTokenAccountInstruction(userWallet, treasuryAta, SAKURA_TREASURY_ADMIN, SAKURA_MINT, SAKURA_TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID));
     }
 
-    tx.add(createTransferInstruction(userAta, creatorAta, userWallet, BigInt(sakuraToSmallestUnit(creatorAmount)), [], TOKEN_PROGRAM_ID));
-    tx.add(createTransferInstruction(userAta, treasuryAta, userWallet, BigInt(sakuraToSmallestUnit(treasuryAmount)), [], TOKEN_PROGRAM_ID));
+    tx.add(createTransferCheckedInstruction(userAta, SAKURA_MINT, creatorAta, userWallet, BigInt(sakuraToSmallestUnit(creatorAmount)), SAKURA_DECIMALS, [], SAKURA_TOKEN_PROGRAM_ID));
+    tx.add(createTransferCheckedInstruction(userAta, SAKURA_MINT, treasuryAta, userWallet, BigInt(sakuraToSmallestUnit(treasuryAmount)), SAKURA_DECIMALS, [], SAKURA_TOKEN_PROGRAM_ID));
 
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
     tx.recentBlockhash = blockhash;

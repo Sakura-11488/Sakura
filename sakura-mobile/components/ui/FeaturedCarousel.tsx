@@ -1,5 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Dimensions, TouchableOpacity } from 'react-native';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { View, Text, StyleSheet, useWindowDimensions, Platform, TouchableOpacity } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedScrollHandler,
@@ -11,6 +11,7 @@ import Animated, {
   withDelay,
   withTiming,
   runOnJS,
+  type SharedValue,
 } from 'react-native-reanimated';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
@@ -18,15 +19,32 @@ import { playTap } from '@/lib/sound';
 import { useRouter } from 'expo-router';
 import { Radius, FontSize, FontWeight, Fonts, Shadow } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { MAX_CAROUSEL_CARD_WIDTH, contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
-const CARD_W = W * 0.58;
-const CARD_H = CARD_W * 1.50;
 const INFO_H = 72;
-const FULL_CARD_H = CARD_H + INFO_H;
 const GAP = 16;
-const SNAP = CARD_W + GAP;
-const PAD = (W - CARD_W) / 2;
+
+type CarouselMetrics = {
+  CARD_W: number;
+  CARD_H: number;
+  SNAP: number;
+  PAD: number;
+};
+
+function useCarouselMetrics(): CarouselMetrics {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const w = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const CARD_W =
+      Platform.OS === 'web'
+        ? Math.min(w * 0.38, MAX_CAROUSEL_CARD_WIDTH)
+        : w * 0.58;
+    const CARD_H = CARD_W * 1.5;
+    const SNAP = CARD_W + GAP;
+    const PAD = (w - CARD_W) / 2;
+    return { CARD_W, CARD_H, SNAP, PAD };
+  }, [windowW]);
+}
 
 export interface CarouselItem {
   id: string;
@@ -45,11 +63,74 @@ function Card({
   item,
   index,
   scrollX,
+  metrics,
 }: {
   item: CarouselItem;
   index: number;
-  scrollX: Animated.SharedValue<number>;
+  scrollX: SharedValue<number>;
+  metrics: CarouselMetrics;
 }) {
+  const { CARD_W, CARD_H, SNAP } = metrics;
+  const cardStyles = useMemo(
+    () =>
+      StyleSheet.create({
+        wrap: {
+          width: CARD_W,
+          borderRadius: Radius.lg,
+          ...Shadow.sm,
+        },
+        card: {
+          width: CARD_W,
+          borderRadius: Radius.lg,
+          overflow: 'hidden',
+        },
+        imgWrap: {
+          width: CARD_W,
+          height: CARD_H,
+          overflow: 'hidden',
+          borderTopLeftRadius: Radius.lg,
+          borderTopRightRadius: Radius.lg,
+          padding: 8,
+        },
+        img: {
+          width: '100%',
+          height: '100%',
+          borderRadius: Radius.sm,
+          overflow: 'hidden',
+        },
+        shine: {
+          position: 'absolute',
+          top: 0,
+          bottom: 0,
+          left: 0,
+          width: 70,
+        },
+        shineInner: {
+          flex: 1,
+          backgroundColor: 'rgba(255,255,255,0.18)',
+        },
+        info: {
+          paddingHorizontal: 12,
+          paddingVertical: 12,
+          borderBottomLeftRadius: Radius.lg,
+          borderBottomRightRadius: Radius.lg,
+          height: INFO_H,
+          justifyContent: 'center',
+          gap: 3,
+        },
+        title: {
+          fontFamily: Fonts.display,
+          fontWeight: Fonts.displayWeight,
+          fontSize: 15,
+          letterSpacing: 0.2,
+        },
+        genres: {
+          fontFamily: Fonts.body,
+          fontSize: 12,
+        },
+      }),
+    [CARD_W, CARD_H],
+  );
   const router = useRouter();
   const { colors } = useTheme();
   const ir = [(index - 1) * SNAP, index * SNAP, (index + 1) * SNAP];
@@ -99,25 +180,25 @@ function Card({
   };
 
   return (
-    <Animated.View style={[s.wrap, { backgroundColor: colors.white }, cardStyle]}>
-      <TouchableOpacity onPress={handlePress} activeOpacity={0.97} style={[s.card, { backgroundColor: colors.white }]}>
-        <View style={[s.imgWrap, { backgroundColor: colors.white }]}>
+    <Animated.View style={[cardStyles.wrap, { backgroundColor: colors.white }, cardStyle]}>
+      <TouchableOpacity onPress={handlePress} activeOpacity={0.97} style={[cardStyles.card, { backgroundColor: colors.white }]}>
+        <View style={[cardStyles.imgWrap, { backgroundColor: colors.white }]}>
           <Image
             source={item.localCover || { uri: item.cover }}
-            style={s.img}
+            style={cardStyles.img}
             contentFit="cover"
             transition={350}
           />
-          <Animated.View style={[s.shine, shineStyle]} pointerEvents="none">
-            <View style={s.shineInner} />
+          <Animated.View style={[cardStyles.shine, shineStyle]} pointerEvents="none">
+            <View style={cardStyles.shineInner} />
           </Animated.View>
         </View>
 
-        <View style={[s.info, { backgroundColor: colors.white }]}>
-          <Text style={[s.title, { color: colors.text }]} numberOfLines={1}>
+        <View style={[cardStyles.info, { backgroundColor: colors.white }]}>
+          <Text style={[cardStyles.title, { color: colors.text }]} numberOfLines={1}>
             {item.title.toUpperCase()}
           </Text>
-          <Text style={[s.genres, { color: colors.textSecondary }]} numberOfLines={1}>
+          <Text style={[cardStyles.genres, { color: colors.textSecondary }]} numberOfLines={1}>
             {item.genres.join(', ')}
           </Text>
         </View>
@@ -128,34 +209,22 @@ function Card({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function FeaturedCarousel({ data }: { data: CarouselItem[] }) {
+  const metrics = useCarouselMetrics();
+  const { SNAP, PAD } = metrics;
   const scrollX      = useSharedValue(0);
   const listRef      = useRef<any>(null);
   const currentIdx   = useRef(0);
-  const [paused, setPaused] = useState(false);
   const [inited, setInited] = useState(false);
 
-  const pauseOn  = useCallback(() => setPaused(true),  []);
-  const pauseOff = useCallback((idx: number) => {
+  const updateCurrentIndex = useCallback((idx: number) => {
     currentIdx.current = idx;
-    setPaused(false);
   }, []);
-
-  useEffect(() => {
-    if (paused || data.length < 2) return;
-    const timer = setInterval(() => {
-      const next = (currentIdx.current + 1) % data.length;
-      currentIdx.current = next;
-      listRef.current?.scrollToOffset({ offset: next * SNAP, animated: true });
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [paused, data.length]);
 
   const handler = useAnimatedScrollHandler({
     onScroll:       (e) => { scrollX.value = e.contentOffset.x; },
-    onBeginDrag:    () => { runOnJS(pauseOn)(); },
     onMomentumEnd:  (e) => {
       const idx = Math.round(e.contentOffset.x / SNAP);
-      runOnJS(pauseOff)(idx);
+      runOnJS(updateCurrentIndex)(idx);
     },
   });
 
@@ -186,65 +255,8 @@ export default function FeaturedCarousel({ data }: { data: CarouselItem[] }) {
         }
       }}
       renderItem={({ item, index }) => (
-        <Card item={item} index={index} scrollX={scrollX} />
+        <Card item={item} index={index} scrollX={scrollX} metrics={metrics} />
       )}
     />
   );
 }
-
-const s = StyleSheet.create({
-  wrap: {
-    width: CARD_W,
-    borderRadius: Radius.lg,
-    ...Shadow.sm,
-  },
-  card: {
-    width: CARD_W,
-    borderRadius: Radius.lg,
-    overflow: 'hidden',
-  },
-  imgWrap: {
-    width: CARD_W,
-    height: CARD_H,
-    overflow: 'hidden',
-    borderTopLeftRadius: Radius.lg,
-    borderTopRightRadius: Radius.lg,
-    padding: 8,
-  },
-  img: {
-    width: '100%',
-    height: '100%',
-    borderRadius: Radius.sm,
-    overflow: 'hidden',
-  },
-  shine: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: 70,
-  },
-  shineInner: {
-    flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-  },
-  info: {
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderBottomLeftRadius: Radius.lg,
-    borderBottomRightRadius: Radius.lg,
-    height: INFO_H,
-    justifyContent: 'center',
-    gap: 3,
-  },
-  title: {
-    fontFamily: Fonts.display,
-    fontWeight: Fonts.displayWeight,
-    fontSize: 15,
-    letterSpacing: 0.2,
-  },
-  genres: {
-    fontFamily: Fonts.body,
-    fontSize: 12,
-  },
-});

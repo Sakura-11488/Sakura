@@ -8,7 +8,7 @@ import {
 } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
-  createTransferInstruction,
+  createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
   TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -16,6 +16,7 @@ import {
 import {
   SOLANA_RPC,
   SAKURA_MINT,
+  SAKURA_DECIMALS,
   sakuraToRaw,
   SAKURA_SEND_SOL_RESERVE,
 } from './config';
@@ -76,11 +77,13 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
   }
 
   tx.add(
-    createTransferInstruction(
+    createTransferCheckedInstruction(
       fromTokenAccount,
+      SAKURA_MINT,
       toAta,
       keypair.publicKey,
       rawAmount,
+      SAKURA_DECIMALS,
       [],
       TOKEN_2022_PROGRAM_ID,
     ),

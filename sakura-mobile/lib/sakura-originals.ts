@@ -1,5 +1,6 @@
-import { Image as RNImage } from 'react-native';
+import { Image as RNImage, Platform } from 'react-native';
 import { type AnimeInfo } from './anime';
+import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
 
 // ─── Media server (nip.io for iOS ATS compliance) ─────────────────────────────
 const MEDIA = 'http://165-232-83-159.nip.io';
@@ -18,7 +19,20 @@ export const DEGEGEN_COVER = require('../assets/images/degenfiles.jpeg');
 export const DEGEGEN_EP1_THUMB = require('../assets/images/degenfiles-ep1.jpeg');
 const DEGEGEN_REMOTE_COVER_URI = `${DEGEGEN_BASE}/cover.png?v=${DEGEGEN_ASSET_VERSION}`;
 const DEGEGEN_COVER_URI = DEGEGEN_REMOTE_COVER_URI;
-const DEGEGEN_EP1_THUMB_URI = RNImage.resolveAssetSource(DEGEGEN_EP1_THUMB).uri;
+
+function resolveBundledAssetUri(source: number | { uri: string }): string {
+  if (typeof source === 'object' && source !== null && 'uri' in source && typeof source.uri === 'string') {
+    return source.uri;
+  }
+  const resolve = (RNImage as typeof RNImage & { resolveAssetSource?: (asset: number) => { uri: string } })
+    .resolveAssetSource;
+  if (typeof resolve === 'function') {
+    return resolve(source as number).uri;
+  }
+  return `${DEGEGEN_BASE}/ep1-thumb.jpeg?v=${DEGEGEN_ASSET_VERSION}`;
+}
+
+const DEGEGEN_EP1_THUMB_URI = resolveBundledAssetUri(DEGEGEN_EP1_THUMB);
 
 // ─── ID registry ──────────────────────────────────────────────────────────────
 export const SAKURA_ORIGINAL_IDS = new Set(['psyopanime', '2heanime', 'burnie-senders', 'degegen-files']);
@@ -347,27 +361,42 @@ export async function fetchSakuraOriginalInfo(
 }
 
 // ─── Stream URL resolver ──────────────────────────────────────────────────────
+function proxyStreamUrlForWeb(url: string | null): string | null {
+  if (!url) return null;
+  if (Platform.OS !== 'web') return url;
+  return getWebMediaProxyUrl(url);
+}
+
 export function getSakuraOriginalStreamUrl(episodeId: string): string | null {
   const remoteUrl = remoteDegegenStreams.get(episodeId);
-  if (remoteUrl) return remoteUrl;
+  if (remoteUrl) return proxyStreamUrlForWeb(remoteUrl);
   if (episodeId.startsWith('psyop-')) {
     const ytId = episodeId.slice(6);
     if (!ytId) return null;
-    return `${PSYOP_BASE}/videos/${ytId}.mp4`;
+    return proxyStreamUrlForWeb(`${PSYOP_BASE}/videos/${ytId}.mp4`);
   }
   if (episodeId.startsWith('2he-')) {
     const slug = episodeId.slice(4);
     const ep = TWO_HE_EP_RAW.find(([s]) => s === slug);
-    if (ep) return `${TWO_HE_BASE}/videos/${ep[1]}`;
+    if (ep) return proxyStreamUrlForWeb(`${TWO_HE_BASE}/videos/${ep[1]}`);
   }
   if (episodeId === 'degegen-inverse-vibe') {
-    return `${DEGEGEN_BASE}/episodes/inverse-vibe.mp4`;
+    return proxyStreamUrlForWeb(`${DEGEGEN_BASE}/episodes/inverse-vibe.mp4`);
   }
   if (episodeId === 'degegen-sellor') {
-    return `${DEGEGEN_BASE}/episodes/sellor.mov`;
+    return proxyStreamUrlForWeb(`${DEGEGEN_BASE}/episodes/sellor.mov`);
   }
   if (episodeId === 'degegen-z-crash') {
-    return `${DEGEGEN_BASE}/episodes/z-crash.mov`;
+    return proxyStreamUrlForWeb(`${DEGEGEN_BASE}/episodes/z-crash.mov`);
+  }
+  return null;
+}
+
+export function getSakuraOriginalEmbedUrl(episodeId: string): string | null {
+  if (episodeId.startsWith('psyop-')) {
+    const ytId = episodeId.slice(6);
+    if (!ytId) return null;
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(ytId)}?playsinline=1&autoplay=1&rel=0&modestbranding=1`;
   }
   return null;
 }

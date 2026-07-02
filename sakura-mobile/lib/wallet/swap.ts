@@ -5,6 +5,8 @@ import { SAKURA_MINT, SAKURA_DECIMALS } from './config';
 const JUPITER_BASE = 'https://api.jup.ag/swap/v1';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const MAX_PRIORITY_FEE_LAMPORTS = 1_000_000;
+const DEFAULT_JUPITER_API_KEY = '36bac653-fbd8-481d-aa0d-2c91530f8ae3';
+const JUPITER_API_KEY = process.env.EXPO_PUBLIC_JUPITER_API_KEY?.trim() || DEFAULT_JUPITER_API_KEY;
 
 /** React Native has no Node `Buffer`; Jupiter returns base64-encoded transactions. */
 function base64ToBytes(base64: string): Uint8Array {
@@ -34,6 +36,27 @@ export interface SwapResult {
   error?: string;
 }
 
+function jupiterHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+  return headers;
+}
+
+function parseJupiterError(status: number, body: any, fallback: string): string {
+  const raw = body?.message || body?.error || fallback;
+  const message = typeof raw === 'string' ? raw : fallback;
+  if (status === 401 || status === 403) {
+    return 'Jupiter rejected the swap request. Please try again in a moment.';
+  }
+  if (status === 429) {
+    return 'Jupiter is rate-limiting swap requests. Please wait a moment and try again.';
+  }
+  if (/NO_ROUTES_FOUND|TOKEN_NOT_TRADABLE|MARKET_NOT_FOUND/i.test(message)) {
+    return 'No Jupiter route is currently available for buying SAKURA with SOL.';
+  }
+  return message;
+}
+
 function validateQuoteShape(quote: SwapQuote): void {
   const raw = quote._raw || {};
   if (raw.inputMint !== WSOL_MINT) {
@@ -61,23 +84,15 @@ function validateJupiterTransaction(tx: VersionedTransaction, quote: SwapQuote, 
   if (signers.length !== 1 || signers[0] !== keypair.publicKey.toBase58()) {
     throw new Error('Swap transaction requested an unexpected signer.');
   }
-
-  const staticKeys = new Set(message.staticAccountKeys.map((key) => key.toBase58()));
-  if (!staticKeys.has(SAKURA_MINT.toBase58())) {
-    throw new Error('Swap transaction is missing the SAKURA mint.');
-  }
-  if (!staticKeys.has(WSOL_MINT)) {
-    throw new Error('Swap transaction is missing the wrapped SOL mint.');
-  }
 }
 
 export async function getSakuraSwapQuote(amountSol: number): Promise<SwapQuote> {
   const lamports = Math.round(amountSol * 1e9);
   const url = `${JUPITER_BASE}/quote?inputMint=${WSOL_MINT}&outputMint=${SAKURA_MINT.toBase58()}&amount=${lamports}&slippageBps=100&restrictIntermediateTokens=true`;
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+  const res = await fetch(url, { headers: jupiterHeaders() });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.message || body.error || `Jupiter API error ${res.status}`);
+    throw new Error(parseJupiterError(res.status, body, `Jupiter API error ${res.status}`));
   }
   const data = await res.json();
   return {
@@ -98,7 +113,7 @@ export async function executeSakuraSwap(
 
     const swapRes = await fetch(`${JUPITER_BASE}/swap`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jupiterHeaders(),
       body: JSON.stringify({
         quoteResponse: quote._raw,
         userPublicKey: keypair.publicKey.toBase58(),
@@ -116,28 +131,67 @@ export async function executeSakuraSwap(
 
     if (!swapRes.ok) {
       const body = await swapRes.json().catch(() => ({}));
-      throw new Error(body.message || body.error || `Jupiter swap error ${swapRes.status}`);
+      throw new Error(parseJupiterError(swapRes.status, body, `Jupiter swap error ${swapRes.status}`));
     }
 
-    const { swapTransaction } = await swapRes.json();
+    const { swapTransaction, lastValidBlockHeight } = await swapRes.json();
     const tx = VersionedTransaction.deserialize(base64ToBytes(swapTransaction));
     validateJupiterTransaction(tx, quote, keypair);
 
     tx.sign([keypair]);
 
-    const latestBlockhash = await connection.getLatestBlockhash();
-    const txid = await connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false,
-      maxRetries: 2,
-    });
-    await connection.confirmTransaction({
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-      signature: txid,
-    }, 'confirmed');
+    const txid = await sendAndConfirmWithRetry(
+      tx.serialize(),
+      tx.message.recentBlockhash,
+      lastValidBlockHeight ?? (await connection.getLatestBlockhash()).lastValidBlockHeight,
+    );
 
     return { success: true, txid };
   } catch (e: any) {
     return { success: false, error: e.message ?? 'Unknown error' };
+  }
+}
+
+async function sendAndConfirmWithRetry(
+  rawTransaction: Uint8Array,
+  blockhash: string,
+  lastValidBlockHeight: number,
+): Promise<string> {
+  const connection = getConnection();
+  const signature = await connection.sendRawTransaction(rawTransaction, {
+    skipPreflight: true,
+    maxRetries: 0,
+  });
+  const startedAt = Date.now();
+  let lastRebroadcastAt = startedAt;
+
+  while (true) {
+    const status = await connection.getSignatureStatus(signature, { searchTransactionHistory: false });
+    const value = status.value;
+    if (value && (value.confirmationStatus === 'confirmed' || value.confirmationStatus === 'finalized')) {
+      if (value.err) throw new Error(`Swap failed on-chain: ${JSON.stringify(value.err)}`);
+      return signature;
+    }
+
+    const currentHeight = await connection.getBlockHeight('confirmed');
+    if (currentHeight > lastValidBlockHeight) {
+      throw new Error('The swap expired before confirming. Please try again.');
+    }
+
+    if (Date.now() - lastRebroadcastAt > 1500) {
+      try {
+        await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 0 });
+      } catch {
+        // Another leader may have already accepted the transaction.
+      }
+      lastRebroadcastAt = Date.now();
+    }
+
+    if (Date.now() - startedAt > 90_000) {
+      throw new Error('Swap confirmation timed out after 90s.');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    void blockhash;
   }
 }

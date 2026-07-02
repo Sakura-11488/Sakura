@@ -10,6 +10,7 @@ import {
   isSakuraChapterPath,
   isSakuraNovelPath,
 } from '@/lib/sakura-novels';
+import { fetchNovelHtml } from '@/lib/allnovel-html';
 
 const SITE = 'https://allnovel.org/';
 
@@ -77,16 +78,7 @@ async function fetchHtml(url: string, ttlMs = 10 * 60 * 1000): Promise<string> {
   return getOrSetCached<string>(
     `novel:html:${url}`,
     ttlMs,
-    async () => {
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        },
-      });
-      if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
-      return res.text();
-    },
+    async () => fetchNovelHtml(resolveUrl(url)),
     { staleIfError: true },
   );
 }

@@ -33,7 +33,9 @@ export default function SearchBar({ onSearchPress, onFocus, ...props }: Props) {
   const containerStyle = useAnimatedStyle(() => ({
     borderWidth: 1.8,
     borderColor: withTiming(focused.value ? '#E84545' : 'transparent', { duration: 200 }),
-    transform: [{ scale: withSpring(focused.value ? 1.012 : 1, { damping: 18, stiffness: 220 }) }],
+    transform: Platform.OS === 'web'
+      ? []
+      : [{ scale: withSpring(focused.value ? 1.012 : 1, { damping: 18, stiffness: 220 }) }],
   }));
 
   const iconScale = useAnimatedStyle(() => ({
@@ -52,7 +54,7 @@ export default function SearchBar({ onSearchPress, onFocus, ...props }: Props) {
     },
     input: {
       flex: 1,
-      fontSize: FontSize.sm,
+      fontSize: Platform.OS === 'web' ? 16 : FontSize.sm,
       color: colors.text,
     },
     iconBtn: { padding: 3 },

@@ -161,6 +161,47 @@ export function buildAnimePlayerShieldScript(): string {
 
       function run() {
         try { scrub(document); } catch (e) {}
+        try { scrubDuplicateCaptions(document); } catch (e) {}
+      }
+
+      function scrubDuplicateCaptions(root) {
+        if (!root || !root.querySelectorAll) return;
+        var captionSelectors = [
+          '.vjs-text-track-display',
+          '.plyr__captions',
+          '.jw-text-track-container',
+          '.subtitle-container',
+          '.captions',
+          '[class*="subtitle"]',
+          '[class*="caption"]',
+        ];
+        var nodes = [];
+        captionSelectors.forEach(function(sel) {
+          root.querySelectorAll(sel).forEach(function(el) {
+            if (nodes.indexOf(el) === -1) nodes.push(el);
+          });
+        });
+        if (nodes.length < 2) return;
+
+        var visible = nodes.filter(function(el) {
+          var style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+          var rect = el.getBoundingClientRect();
+          return rect.width > 40 && rect.height > 8;
+        });
+        if (visible.length < 2) return;
+
+        visible.sort(function(a, b) {
+          var ra = a.getBoundingClientRect();
+          var rb = b.getBoundingClientRect();
+          return (rb.width * rb.height) - (ra.width * ra.height);
+        });
+
+        for (var i = 1; i < visible.length; i++) {
+          visible[i].style.display = 'none';
+          visible[i].style.visibility = 'hidden';
+          visible[i].style.pointerEvents = 'none';
+        }
       }
 
       run();

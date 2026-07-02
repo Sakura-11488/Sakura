@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Sakura",
+    "slug": "sakura-web",
+    "version": "1.9.9",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "sakura",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-secure-store",
+      "expo-audio",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Sakura to upload cover art for your creator works."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Sakura to save your profile photo to your photo library.",
+          "savePhotosPermission": "Allow Sakura to save your profile photo to your photo library."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "baseUrl": "/app"
+    }
+  }
+}

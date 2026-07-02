@@ -24,7 +24,7 @@ import {
 } from '@/lib/reading-history';
 import { subscribeReadingProgress } from '@/lib/reader-progress';
 import { subscribeWatchProgress } from '@/lib/watch-progress';
-import { playTap, onTap } from '@/lib/sound';
+import { confirmDestructive } from '@/lib/confirm-alert';
 
 const TABS: Array<'All' | 'Anime' | 'Manga' | 'Novel'> = ['All', 'Anime', 'Manga', 'Novel'];
 
@@ -114,20 +114,12 @@ export default function ReadingHistoryScreen() {
   };
 
   const confirmClear = () => {
-    Alert.alert(
+    confirmDestructive(
       'Clear history?',
       'This removes your watch and read progress on this device.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: () => {
-            clearReadingHistory().then(refresh).catch(() => {});
-          },
-        },
-      ],
-    );
+    ).then((ok) => {
+      if (ok) clearReadingHistory().then(refresh).catch(() => {});
+    });
   };
 
   const styles = useMemo(

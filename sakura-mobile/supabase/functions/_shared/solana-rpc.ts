@@ -4,9 +4,12 @@ type RpcResult<T> = {
 };
 
 export function getSolanaRpcUrl(): string {
+  const heliusKey = Deno.env.get('HELIUS_API_KEY')?.trim() || Deno.env.get('EXPO_PUBLIC_HELIUS_API_KEY')?.trim();
   const url =
     Deno.env.get('SOLANA_RPC_URL')?.trim() ||
-    Deno.env.get('EXPO_PUBLIC_SOLANA_RPC_URL')?.trim() ||
+    Deno.env.get('SOLANA_RPC')?.trim() ||
+    Deno.env.get('EXPO_PUBLIC_SOLANA_RPC')?.trim() ||
+    (heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusKey}` : '') ||
     'https://api.mainnet-beta.solana.com';
   return url;
 }

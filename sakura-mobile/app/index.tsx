@@ -14,7 +14,7 @@ export default function Index() {
     AppSettings.getLegalAccepted()
       .then((accepted) => {
         if (!mounted) return;
-        router.replace(accepted ? '/(tabs)' : '/welcome');
+        router.replace(accepted ? '/(tabs)/home' : '/welcome');
       })
       .catch(() => {
         if (mounted) router.replace('/welcome');

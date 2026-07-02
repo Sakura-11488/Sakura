@@ -18,6 +18,7 @@ import { Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { getWalletWithBiometrics } from '@/lib/wallet/storage';
+import { getTradeSignLabel } from '@/lib/wallet/platform-labels';
 import {
   fetchPhoenixMarketState,
   fetchPhoenixTraderData,
@@ -421,7 +422,7 @@ export default function TradeScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={s.ctaText}>
-                    {side === 'long' ? 'Open Long' : 'Open Short'} · Sign with Biometrics
+                    {getTradeSignLabel(side)}
                   </Text>
                 )}
               </TouchableOpacity>

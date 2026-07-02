@@ -5,14 +5,15 @@ import {
   StyleSheet,
   Modal,
   TouchableOpacity,
+  Pressable,
   TextInput,
   ScrollView,
   ActivityIndicator,
   Alert,
   Clipboard,
   Linking,
+  Platform,
 } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
 import { PublicKey } from '@solana/web3.js';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import Animated, { FadeInRight, FadeOutLeft } from 'react-native-reanimated';
@@ -28,12 +29,14 @@ import {
   maxSendableSakura,
 } from '@/lib/wallet/balances';
 import { SAKURA_SEND_SOL_RESERVE } from '@/lib/wallet/config';
-import { buildTransakBuySolUrl } from '@/lib/wallet/transak';
 import { getSolanaNetworkLabel } from '@/lib/wallet/config';
 import QRCode from 'react-native-qrcode-svg';
 import { Radius, FontSize, FontWeight, Spacing, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { confirmDestructive } from '@/lib/confirm-alert';
 import { playTap, onTap } from '@/lib/sound';
+import { MAX_WALLET_MODAL_WIDTH } from '@/constants/layout';
+import { getSendAuthLabel, getSwapAuthLabel, getWalletProtectionCopy } from '@/lib/wallet/platform-labels';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const CopyIcon = () => (
@@ -143,7 +146,7 @@ function ReceiveSheet({ address, onClose }: { address: string; onClose: () => vo
     <View style={rs.wrap}>
       <Text style={rs.title}>Receive SOL / SAKURA</Text>
       <Text style={rs.sub}>
-        Share this address to receive SOL or SAKURA. Card purchases via Transak must send to this exact address.
+        Share this address to receive SOL or SAKURA. Send SOL to this exact Sakura wallet for network fees.
       </Text>
       <View style={rs.qrWrap}>
         <QRCode value={address} size={180} color={colors.text === '#F2F2F7' ? '#1A1A1A' : colors.text} backgroundColor="transparent" />
@@ -418,7 +421,7 @@ function SendSheet({
         {step === 'sending' ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={bs.btnText}>Send with Face ID / Biometrics</Text>
+          <Text style={bs.btnText}>{getSendAuthLabel()}</Text>
         )}
       </TouchableOpacity>
       <TouchableOpacity onPress={onClose} style={bs.cancelBtn} activeOpacity={0.7}>
@@ -444,29 +447,7 @@ function BuySakuraSheet({ solBalance, walletAddress, onClose, onComplete, onRefr
   const [step, setStep] = useState<SwapStep>('input');
   const [swapError, setSwapError] = useState('');
   const [txid, setTxid] = useState('');
-  const [transakLoading, setTransakLoading] = useState(false);
   const quoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const openTransak = async () => {
-    if (!walletAddress) {
-      setSwapError('Connect a wallet first.');
-      return;
-    }
-    setTransakLoading(true);
-    setSwapError('');
-    try {
-      await WebBrowser.openBrowserAsync(buildTransakBuySolUrl(walletAddress), {
-        presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
-      });
-      await onRefreshBalances();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Could not open Transak';
-      setSwapError(msg);
-    } finally {
-      setTransakLoading(false);
-    }
-  };
 
   const bs = useMemo(() => StyleSheet.create({
     wrap: { paddingBottom: 8, gap: 10 },
@@ -595,33 +576,20 @@ function BuySakuraSheet({ solBalance, walletAddress, onClose, onComplete, onRefr
       <View style={bs.wrap}>
         <Text style={bs.title}>Get SOL First</Text>
         <Text style={bs.sub}>
-          Buy SOL with your card on Transak. It will be sent to your Sakura wallet ({getSolanaNetworkLabel()}), then swap to SAKURA here.
+          Send SOL to your Sakura wallet on {getSolanaNetworkLabel()}, then refresh your balance and swap to SAKURA here.
         </Text>
         {walletAddress ? (
           <Text style={bs.balanceHint} numberOfLines={1}>
-            Destination: {walletAddress.slice(0, 6)}…{walletAddress.slice(-6)}
+            Sakura wallet: {walletAddress.slice(0, 6)}…{walletAddress.slice(-6)}
           </Text>
         ) : null}
         {swapError ? <Text style={bs.error}>{swapError}</Text> : null}
         <TouchableOpacity
-          onPress={openTransak}
-          style={[bs.btn, transakLoading && bs.btnDisabled]}
-          activeOpacity={0.85}
-          disabled={transakLoading || !walletAddress}
-        >
-          {transakLoading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={bs.btnText}>Buy SOL with Card ↗</Text>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
           onPress={onRefreshBalances}
           style={bs.cancelBtn}
           activeOpacity={0.7}
-          disabled={transakLoading}
         >
-          <Text style={[bs.cancelText, { color: '#E84545' }]}>Refresh balance after purchase</Text>
+          <Text style={[bs.cancelText, { color: '#E84545' }]}>Refresh balance after sending SOL</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onClose} style={bs.cancelBtn} activeOpacity={0.7}>
           <Text style={bs.cancelText}>Cancel</Text>
@@ -633,12 +601,11 @@ function BuySakuraSheet({ solBalance, walletAddress, onClose, onComplete, onRefr
   const isLoading = step === 'quoting' || step === 'swapping';
 
   return (
-    <View style={bs.wrap}>
+    <>
+      <View style={bs.wrap}>
       <Text style={bs.title}>Buy SAKURA</Text>
       <Text style={bs.sub}>Swap SOL → SAKURA via Jupiter ({getSolanaNetworkLabel()})</Text>
-      <TouchableOpacity onPress={openTransak} activeOpacity={0.7} disabled={transakLoading}>
-        <Text style={bs.link}>{transakLoading ? 'Opening Transak…' : 'Need more SOL? Buy with card ↗'}</Text>
-      </TouchableOpacity>
+      <Text style={bs.link}>Need more SOL? Send SOL to your Sakura wallet, then refresh.</Text>
 
       <View style={bs.inputRow}>
         <TextInput
@@ -683,30 +650,32 @@ function BuySakuraSheet({ solBalance, walletAddress, onClose, onComplete, onRefr
         {step === 'swapping' ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={bs.btnText}>Swap with Face ID / Biometrics</Text>
+          <Text style={bs.btnText}>{getSwapAuthLabel()}</Text>
         )}
       </TouchableOpacity>
       <TouchableOpacity onPress={onClose} style={bs.cancelBtn} activeOpacity={0.7}>
         <Text style={bs.cancelText}>Cancel</Text>
       </TouchableOpacity>
-    </View>
+      </View>
+    </>
   );
 }
 
 // ─── Tab ─────────────────────────────────────────────────────────────────────
 type Tab = 'wallet' | 'create' | 'import';
-type WalletSheetRoute = 'main' | 'receive' | 'send' | 'buy';
+export type WalletSheetRoute = 'main' | 'receive' | 'send' | 'buy';
 
 interface Props {
   visible: boolean;
   onClose: () => void;
+  initialRoute?: WalletSheetRoute;
 }
 
-export default function WalletModal({ visible, onClose }: Props) {
+export default function WalletModal({ visible, onClose, initialRoute }: Props) {
   const wallet = useWallet();
   const { colors } = useTheme();
   const sheetRef = useRef<BottomSheet>(null);
-  const snapPoints = useMemo(() => ['94%'], []);
+  const snapPoints = useMemo(() => (Platform.OS === 'web' ? ['90%', '98%'] : ['94%']), []);
   const [tab, setTab] = useState<Tab>(wallet.connected ? 'wallet' : 'create');
   const [route, setRoute] = useState<WalletSheetRoute>('main');
   const [importKey, setImportKey] = useState('');
@@ -717,7 +686,7 @@ export default function WalletModal({ visible, onClose }: Props) {
     return StyleSheet.create({
       sheetInner: {
         paddingHorizontal: 20,
-        paddingBottom: 28,
+        paddingBottom: Platform.OS === 'web' ? 108 : 28,
       },
       header: {
         flexDirection: 'row',
@@ -1004,11 +973,43 @@ export default function WalletModal({ visible, onClose }: Props) {
     });
   }, [colors]);
 
+  const webSheet = useMemo(() => StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.55)',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      ...(Platform.OS === 'web' ? { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, zIndex: 10000 } : {}),
+    },
+    card: {
+      width: '100%',
+      maxWidth: MAX_WALLET_MODAL_WIDTH,
+      maxHeight: '92vh',
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
+      overflow: 'hidden',
+    },
+    handle: {
+      alignSelf: 'center',
+      width: 44,
+      height: 5,
+      borderRadius: 3,
+      marginTop: 10,
+      marginBottom: 4,
+    },
+  }), []);
+
   useEffect(() => {
     if (visible) {
       setTab(wallet.connected ? 'wallet' : 'create');
-      setRoute('main');
+      setRoute(initialRoute ?? 'main');
     }
+  }, [visible, wallet.connected, initialRoute]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !visible || !wallet.connected) return;
+    const t = setTimeout(() => sheetRef.current?.snapToIndex(1), 120);
+    return () => clearTimeout(t);
   }, [visible, wallet.connected]);
 
   const handleCreate = async () => {
@@ -1035,22 +1036,15 @@ export default function WalletModal({ visible, onClose }: Props) {
 
   const handleDisconnect = () => {
     playTap();
-    Alert.alert(
+    confirmDestructive(
       'Disconnect Wallet',
       'This will remove your wallet from this device. Make sure you have your private key backed up.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: async () => {
-            await wallet.disconnect();
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            onClose();
-          },
-        },
-      ]
-    );
+    ).then(async (ok) => {
+      if (!ok) return;
+      await wallet.disconnect();
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      onClose();
+    });
   };
 
   const handleCopy = () => {
@@ -1089,7 +1083,274 @@ export default function WalletModal({ visible, onClose }: Props) {
         ? 'SEND'
         : 'GET SKR';
 
+  const scrollShowsIndicator = Platform.OS === 'web';
+
+  const renderSheetHeader = () => (
+    <View style={s.header}>
+      {route === 'main' ? (
+        <LottieView
+          source={require('@/assets/lottie/wallet.json')}
+          style={s.headerLottie}
+          autoPlay
+          loop
+          speed={0.6}
+          colorFilters={wallet.connected ? [{ keypath: '*', color: '#E84545' }] : []}
+        />
+      ) : (
+        <TouchableOpacity onPress={onTap(() => setRoute('main'))} style={s.backBtn} activeOpacity={0.7}>
+          <Text style={s.backText}>‹</Text>
+        </TouchableOpacity>
+      )}
+      <View style={{ flex: 1 }}>
+        <Text style={s.heading}>{routeTitle}</Text>
+        <Text style={s.headingSub}>
+          {route === 'main'
+            ? (wallet.connected ? 'Balances, sends, and top-ups' : 'Create or restore your Sakura account')
+            : 'Secure action'}
+        </Text>
+      </View>
+      <TouchableOpacity onPress={closeSheet} style={s.closeBtn} activeOpacity={0.7}>
+        <Text style={s.closeX}>✕</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderSheetInner = () => {
+    if (route === 'receive' && wallet.address) {
+      return (
+        <>
+          {renderSheetHeader()}
+          <ReceiveSheet address={wallet.address} onClose={onTap(() => setRoute('main'))} />
+        </>
+      );
+    }
+    if (route === 'send') {
+      return (
+        <>
+          {renderSheetHeader()}
+          <SendSheet
+            solBalance={wallet.solBalance}
+            sakuraBalance={wallet.sakuraBalance}
+            walletAddress={wallet.address}
+            onClose={onTap(() => setRoute('main'))}
+            onComplete={() => { playTap(); setRoute('main'); wallet.refreshBalances(); }}
+          />
+        </>
+      );
+    }
+    if (route === 'buy') {
+      return (
+        <>
+          {renderSheetHeader()}
+          <BuySakuraSheet
+            solBalance={wallet.solBalance}
+            walletAddress={wallet.address}
+            onClose={onTap(() => setRoute('main'))}
+            onComplete={() => { playTap(); setRoute('main'); wallet.refreshBalances(); }}
+            onRefreshBalances={wallet.refreshBalances}
+          />
+        </>
+      );
+    }
+    if (wallet.connected) {
+      return (
+        <>
+          {renderSheetHeader()}
+          <View style={s.connectedHero}>
+            <View style={s.connectedHeroTop}>
+              <Text style={s.connectTitle}>You're connected</Text>
+              <View style={s.connectedBadgeRow}>
+                <View style={s.connectedBadge}>
+                  <Text style={s.connectedBadgeText}>CONNECTED</Text>
+                </View>
+                <View style={s.networkBadge}>
+                  <Text style={s.networkBadgeText}>{getSolanaNetworkLabel()}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={s.connectSubtitle}>
+              Send, receive, and top up without leaving Sakura.
+            </Text>
+          </View>
+
+          <Text style={s.sectionLabel}>Account</Text>
+          <View style={s.addressRow}>
+            <Text style={s.addressText}>{wallet.shortAddress}</Text>
+            <TouchableOpacity onPress={handleCopy} style={s.copyBtn} activeOpacity={0.7}>
+              <CopyIcon />
+              <Text style={s.copyLabel}>{copied ? 'Copied!' : 'Copy'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={s.balanceRow}>
+            <BalanceCard
+              label="SOL Balance"
+              value={wallet.solBalance !== null ? `${wallet.solBalance.toFixed(4)} SOL` : '—'}
+              loading={wallet.loadingBalances}
+            />
+            <BalanceCard
+              label="SAKURA"
+              value={wallet.sakuraBalance !== null ? wallet.sakuraBalance.toLocaleString() : '—'}
+              sub="SAKURA"
+              loading={wallet.loadingBalances}
+            />
+          </View>
+
+          <TouchableOpacity onPress={wallet.refreshBalances} style={s.refreshBtn} activeOpacity={0.7}>
+            <RefreshIcon />
+            <Text style={s.refreshText}>Refresh Balances</Text>
+          </TouchableOpacity>
+
+          {Platform.OS !== 'web' ? (
+            <View style={s.balanceDebugWrap}>
+              <Text style={s.balanceDebugTitle}>Connection details</Text>
+              <Text style={s.balanceDebugLine}>RPC · {wallet.rpcLabel}</Text>
+              <Text style={s.balanceDebugLine}>SKR source · {wallet.sakuraBalanceSource}</Text>
+              {wallet.lastBalanceRefreshAt ? (
+                <Text style={s.balanceDebugLine}>
+                  Last refresh · {new Date(wallet.lastBalanceRefreshAt).toLocaleTimeString()}
+                </Text>
+              ) : null}
+              {wallet.balanceError ? (
+                <Text style={[s.balanceDebugLine, s.balanceDebugError]}>{wallet.balanceError}</Text>
+              ) : null}
+            </View>
+          ) : null}
+
+          <Text style={s.sectionLabel}>Quick Actions</Text>
+          <View style={s.actionsRow}>
+            <TouchableOpacity style={s.actionBtn} activeOpacity={0.8} onPress={onTap(() => setRoute('send'))}>
+              <Text style={s.actionBtnIcon}>↑</Text>
+              <Text style={s.actionBtnText}>Send</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.actionBtn} activeOpacity={0.8} onPress={onTap(() => setRoute('receive'))}>
+              <Text style={s.actionBtnIcon}>↓</Text>
+              <Text style={s.actionBtnText}>Receive</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.actionBtn, s.buyBtn]} activeOpacity={0.8} onPress={onTap(() => setRoute('buy'))}>
+              <StarIcon />
+              <Text style={[s.actionBtnText, { color: '#fff' }]}>Get SKR</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity onPress={handleDisconnect} style={s.disconnectBtn} activeOpacity={0.8}>
+            <Text style={s.disconnectText}>Sign out on this device</Text>
+          </TouchableOpacity>
+        </>
+      );
+    }
+
+    return (
+      <>
+        {renderSheetHeader()}
+        <View style={s.tabs}>
+          {(['create', 'import'] as Tab[]).map((t) => (
+            <TouchableOpacity
+              key={t}
+              onPress={() => { setTab(t); setError(null); }}
+              style={[s.tabBtn, tab === t && s.tabBtnActive]}
+              activeOpacity={0.8}
+            >
+              <Text style={[s.tabText, tab === t && s.tabTextActive]}>
+                {t === 'create' ? 'Create Wallet' : 'Import Existing'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {tab === 'create' ? (
+          <View style={s.tabContent}>
+            <View style={s.connectHero}>
+              <Text style={s.connectTitle}>Set up in seconds</Text>
+              <Text style={s.connectSubtitle}>
+                {getWalletProtectionCopy()}
+              </Text>
+              <View style={s.tipsRow}>
+                <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Stays on this device</Text></View>
+                <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Quick approval for purchases</Text></View>
+                <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Back up your account in Settings</Text></View>
+              </View>
+            </View>
+            <TouchableOpacity
+              onPress={handleCreate}
+              style={s.primaryBtn}
+              disabled={wallet.connecting}
+              activeOpacity={0.85}
+            >
+              {wallet.connecting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={s.primaryBtnText}>Create Wallet</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={s.tabContent}>
+            <View style={s.connectHero}>
+              <Text style={s.connectTitle}>Restore your account</Text>
+              <Text style={s.connectSubtitle}>
+                Paste your Base58 private key to connect the wallet you already use.
+              </Text>
+              <View style={s.warnBox}>
+                <Text style={s.warnText}>
+                  Security tip: only import keys from trusted backups. Never share your private key with anyone.
+                </Text>
+              </View>
+            </View>
+            <TextInput
+              value={importKey}
+              onChangeText={setImportKey}
+              style={s.keyInput}
+              placeholder="Enter your private key..."
+              placeholderTextColor={colors.textTertiary}
+              multiline
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              onPress={handleImport}
+              style={[s.primaryBtn, !importKey.trim() && s.btnDisabled]}
+              disabled={!importKey.trim() || wallet.connecting}
+              activeOpacity={0.85}
+            >
+              {wallet.connecting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={s.primaryBtnText}>Import Wallet</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+        {error && <Text style={s.error}>{error}</Text>}
+      </>
+    );
+  };
+
   if (!visible) return null;
+
+  const sheetBody = renderSheetInner();
+
+  if (Platform.OS === 'web') {
+    return (
+      <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
+        <View style={webSheet.backdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" />
+          <View style={[webSheet.card, { backgroundColor: colors.surface }]}>
+            <View style={[webSheet.handle, { backgroundColor: colors.border }]} />
+            <ScrollView
+              key={route}
+              contentContainerStyle={s.sheetInner}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {sheetBody}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
 
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
@@ -1106,230 +1367,19 @@ export default function WalletModal({ visible, onClose }: Props) {
           handleIndicatorStyle={{ backgroundColor: colors.border, width: 44, height: 5 }}
           keyboardBehavior="interactive"
         >
-          <View style={s.sheetInner}>
-            <View style={s.header}>
-              {route === 'main' ? (
-                <LottieView
-                  source={require('@/assets/lottie/wallet.json')}
-                  style={s.headerLottie}
-                  autoPlay
-                  loop
-                  speed={0.6}
-                  colorFilters={wallet.connected ? [{ keypath: '*', color: '#E84545' }] : []}
-                />
-              ) : (
-                <TouchableOpacity onPress={onTap(() => setRoute('main'))} style={s.backBtn} activeOpacity={0.7}>
-                  <Text style={s.backText}>‹</Text>
-                </TouchableOpacity>
-              )}
-              <View style={{ flex: 1 }}>
-                <Text style={s.heading}>{routeTitle}</Text>
-                <Text style={s.headingSub}>
-                  {route === 'main'
-                    ? (wallet.connected ? 'Balances, sends, and top-ups' : 'Create or restore your Sakura account')
-                    : 'Secure action'}
-                </Text>
-              </View>
-              <TouchableOpacity onPress={closeSheet} style={s.closeBtn} activeOpacity={0.7}>
-                <Text style={s.closeX}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
           <Animated.View
             key={route}
             entering={FadeInRight.duration(220)}
             exiting={FadeOutLeft.duration(170)}
+            style={{ flex: 1, minHeight: 0 }}
           >
-            {route === 'receive' && wallet.address ? (
-              <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
-                <ReceiveSheet address={wallet.address} onClose={onTap(() => setRoute('main'))} />
-              </BottomSheetScrollView>
-            ) : route === 'send' ? (
-              <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
-                <SendSheet
-                  solBalance={wallet.solBalance}
-                  sakuraBalance={wallet.sakuraBalance}
-                  walletAddress={wallet.address}
-                  onClose={onTap(() => setRoute('main'))}
-                  onComplete={() => { playTap(); setRoute('main'); wallet.refreshBalances(); }}
-                />
-              </BottomSheetScrollView>
-            ) : route === 'buy' ? (
-              <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
-                <BuySakuraSheet
-                  solBalance={wallet.solBalance}
-                  walletAddress={wallet.address}
-                  onClose={onTap(() => setRoute('main'))}
-                  onComplete={() => { playTap(); setRoute('main'); wallet.refreshBalances(); }}
-                  onRefreshBalances={wallet.refreshBalances}
-                />
-              </BottomSheetScrollView>
-            ) : wallet.connected ? (
-              <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
-                <View style={s.connectedHero}>
-                  <View style={s.connectedHeroTop}>
-                    <Text style={s.connectTitle}>You're connected</Text>
-                    <View style={s.connectedBadgeRow}>
-                      <View style={s.connectedBadge}>
-                        <Text style={s.connectedBadgeText}>CONNECTED</Text>
-                      </View>
-                      <View style={s.networkBadge}>
-                        <Text style={s.networkBadgeText}>{getSolanaNetworkLabel()}</Text>
-                      </View>
-                    </View>
-                  </View>
-                  <Text style={s.connectSubtitle}>
-                    Send, receive, and top up without leaving Sakura.
-                  </Text>
-                </View>
-
-                <Text style={s.sectionLabel}>Account</Text>
-                <View style={s.addressRow}>
-                  <Text style={s.addressText}>{wallet.shortAddress}</Text>
-                  <TouchableOpacity onPress={handleCopy} style={s.copyBtn} activeOpacity={0.7}>
-                    <CopyIcon />
-                    <Text style={s.copyLabel}>{copied ? 'Copied!' : 'Copy'}</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={s.balanceRow}>
-                  <BalanceCard
-                    label="SOL Balance"
-                    value={wallet.solBalance !== null ? `${wallet.solBalance.toFixed(4)} SOL` : '—'}
-                    loading={wallet.loadingBalances}
-                  />
-                  <BalanceCard
-                    label="SAKURA"
-                    value={wallet.sakuraBalance !== null ? wallet.sakuraBalance.toLocaleString() : '—'}
-                    sub="SAKURA"
-                    loading={wallet.loadingBalances}
-                  />
-                </View>
-
-                <TouchableOpacity onPress={wallet.refreshBalances} style={s.refreshBtn} activeOpacity={0.7}>
-                  <RefreshIcon />
-                  <Text style={s.refreshText}>Refresh Balances</Text>
-                </TouchableOpacity>
-
-                <View style={s.balanceDebugWrap}>
-                  <Text style={s.balanceDebugTitle}>Connection details</Text>
-                  <Text style={s.balanceDebugLine}>RPC · {wallet.rpcLabel}</Text>
-                  <Text style={s.balanceDebugLine}>SKR source · {wallet.sakuraBalanceSource}</Text>
-                  {wallet.lastBalanceRefreshAt ? (
-                    <Text style={s.balanceDebugLine}>
-                      Last refresh · {new Date(wallet.lastBalanceRefreshAt).toLocaleTimeString()}
-                    </Text>
-                  ) : null}
-                  {wallet.balanceError ? (
-                    <Text style={[s.balanceDebugLine, s.balanceDebugError]}>{wallet.balanceError}</Text>
-                  ) : null}
-                </View>
-
-                <Text style={s.sectionLabel}>Quick Actions</Text>
-                <View style={s.actionsRow}>
-                  <TouchableOpacity style={s.actionBtn} activeOpacity={0.8} onPress={onTap(() => setRoute('send'))}>
-                    <Text style={s.actionBtnIcon}>↑</Text>
-                    <Text style={s.actionBtnText}>Send</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={s.actionBtn} activeOpacity={0.8} onPress={onTap(() => setRoute('receive'))}>
-                    <Text style={s.actionBtnIcon}>↓</Text>
-                    <Text style={s.actionBtnText}>Receive</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[s.actionBtn, s.buyBtn]} activeOpacity={0.8} onPress={onTap(() => setRoute('buy'))}>
-                    <StarIcon />
-                    <Text style={[s.actionBtnText, { color: '#fff' }]}>Get SKR</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <TouchableOpacity onPress={handleDisconnect} style={s.disconnectBtn} activeOpacity={0.8}>
-                  <Text style={s.disconnectText}>Sign out on this device</Text>
-                </TouchableOpacity>
-              </BottomSheetScrollView>
-            ) : (
-              <BottomSheetScrollView contentContainerStyle={s.sheetInner} showsVerticalScrollIndicator={false}>
-                <View style={s.tabs}>
-                  {(['create', 'import'] as Tab[]).map((t) => (
-                    <TouchableOpacity
-                      key={t}
-                      onPress={() => { setTab(t); setError(null); }}
-                      style={[s.tabBtn, tab === t && s.tabBtnActive]}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={[s.tabText, tab === t && s.tabTextActive]}>
-                        {t === 'create' ? 'Create Wallet' : 'Import Existing'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {tab === 'create' ? (
-                  <View style={s.tabContent}>
-                    <View style={s.connectHero}>
-                      <Text style={s.connectTitle}>Set up in seconds</Text>
-                      <Text style={s.connectSubtitle}>
-                        A private Sakura account on this device, protected by Face ID or your passcode.
-                      </Text>
-                      <View style={s.tipsRow}>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Stays on this device</Text></View>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Quick approval for purchases</Text></View>
-                        <View style={s.tipItem}><View style={s.tipDot} /><Text style={s.tipText}>Back up your account in Settings</Text></View>
-                      </View>
-                    </View>
-                    <TouchableOpacity
-                      onPress={handleCreate}
-                      style={s.primaryBtn}
-                      disabled={wallet.connecting}
-                      activeOpacity={0.85}
-                    >
-                      {wallet.connecting ? (
-                        <ActivityIndicator color="#fff" />
-                      ) : (
-                        <Text style={s.primaryBtnText}>Create Wallet</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={s.tabContent}>
-                    <View style={s.connectHero}>
-                      <Text style={s.connectTitle}>Restore your account</Text>
-                      <Text style={s.connectSubtitle}>
-                        Paste your Base58 private key to connect the wallet you already use.
-                      </Text>
-                      <View style={s.warnBox}>
-                        <Text style={s.warnText}>
-                          Security tip: only import keys from trusted backups. Never share your private key with anyone.
-                        </Text>
-                      </View>
-                    </View>
-                    <TextInput
-                      value={importKey}
-                      onChangeText={setImportKey}
-                      style={s.keyInput}
-                      placeholder="Enter your private key..."
-                      placeholderTextColor={colors.textTertiary}
-                      multiline
-                      secureTextEntry
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    <TouchableOpacity
-                      onPress={handleImport}
-                      style={[s.primaryBtn, !importKey.trim() && s.btnDisabled]}
-                      disabled={!importKey.trim() || wallet.connecting}
-                      activeOpacity={0.85}
-                    >
-                      {wallet.connecting ? (
-                        <ActivityIndicator color="#fff" />
-                      ) : (
-                        <Text style={s.primaryBtnText}>Import Wallet</Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                )}
-                {error && <Text style={s.error}>{error}</Text>}
-              </BottomSheetScrollView>
-            )}
+            <BottomSheetScrollView
+              contentContainerStyle={s.sheetInner}
+              showsVerticalScrollIndicator={scrollShowsIndicator}
+              keyboardShouldPersistTaps="handled"
+            >
+              {sheetBody}
+            </BottomSheetScrollView>
           </Animated.View>
         </BottomSheet>
       </View>

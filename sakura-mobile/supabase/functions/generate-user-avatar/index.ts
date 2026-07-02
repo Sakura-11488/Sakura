@@ -249,15 +249,33 @@ Deno.serve(async (req) => {
 
     const { data: usedPayment } = await supabase
       .from('user_avatar_generations')
-      .select('id, wallet_address, status')
+      .select('id, wallet_address, status, public_url, metadata_uri, mint_address, mint_tx_signature, payment_tx_signature, payment_amount_sakura, taste_snapshot, mode')
       .eq('payment_tx_signature', paymentTxSignature)
       .maybeSingle();
 
+    let retryGenerationId: string | null = null;
     if (usedPayment && !paymentBypass) {
       if (usedPayment.wallet_address === walletAddress && usedPayment.status === 'ready') {
-        return jsonResponse(409, { error: 'This payment was already used for a mint.', id: usedPayment.id }, cors);
+        return jsonResponse(200, {
+          id: usedPayment.id,
+          status: 'ready',
+          public_url: usedPayment.public_url,
+          metadata_uri: usedPayment.metadata_uri,
+          mint_address: usedPayment.mint_address,
+          mint_tx_signature: usedPayment.mint_tx_signature,
+          payment_tx_signature: usedPayment.payment_tx_signature,
+          payment_amount_sakura: usedPayment.payment_amount_sakura,
+          taste_snapshot: usedPayment.taste_snapshot,
+          mode: usedPayment.mode,
+        }, cors);
       }
-      return jsonResponse(400, { error: 'Payment transaction already claimed.' }, cors);
+      if (usedPayment.wallet_address === walletAddress && usedPayment.status === 'failed') {
+        retryGenerationId = usedPayment.id as string;
+      } else if (usedPayment.wallet_address === walletAddress && (usedPayment.status === 'processing' || usedPayment.status === 'queued')) {
+        return jsonResponse(409, { error: 'This avatar forge is already processing.', id: usedPayment.id }, cors);
+      } else {
+        return jsonResponse(400, { error: 'Payment transaction already claimed.' }, cors);
+      }
     }
 
     if (!paymentBypass) {
@@ -274,20 +292,34 @@ Deno.serve(async (req) => {
     const taste = await buildTasteSnapshot(supabase, walletAddress);
     const prompt = buildAvatarPrompt({ mode, taste, userHint });
 
-    const { data: generation, error: insertError } = await supabase
-      .from('user_avatar_generations')
-      .insert({
-        wallet_address: walletAddress,
-        mode,
-        status: 'processing',
-        taste_snapshot: taste,
-        prompt_snapshot: prompt,
-        model: MODEL,
-        payment_tx_signature: paymentTxSignature,
-        payment_amount_sakura: chargedSakura,
-      })
-      .select('id')
-      .single();
+    const generationWrite = {
+      wallet_address: walletAddress,
+      mode,
+      status: 'processing',
+      taste_snapshot: taste,
+      prompt_snapshot: prompt,
+      model: MODEL,
+      payment_tx_signature: paymentTxSignature,
+      payment_amount_sakura: chargedSakura,
+      error_message: null,
+      completed_at: null,
+    };
+
+    const generationQuery = retryGenerationId
+      ? supabase
+          .from('user_avatar_generations')
+          .update(generationWrite)
+          .eq('id', retryGenerationId)
+          .eq('wallet_address', walletAddress)
+          .select('id')
+          .single()
+      : supabase
+          .from('user_avatar_generations')
+          .insert(generationWrite)
+          .select('id')
+          .single();
+
+    const { data: generation, error: insertError } = await generationQuery;
 
     if (insertError || !generation) {
       return jsonResponse(500, { error: insertError?.message || 'Could not start mint.' }, cors);

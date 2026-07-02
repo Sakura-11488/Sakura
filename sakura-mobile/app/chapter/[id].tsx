@@ -10,7 +10,7 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { toPageUrl } from '@/lib/manga';
+import { fetchMangaChapterPages } from '@/lib/manga';
 import { fetchComicPages } from '@/lib/comics';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
@@ -23,7 +23,6 @@ import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const PAGE_HEIGHT = SCREEN_WIDTH * 1.5;
-const ATSU_BASE = 'https://atsu.moe';
 const THUMB_W = 44;
 const THUMB_H = 60;
 const THUMB_GAP = 8;
@@ -188,23 +187,9 @@ export default function ChapterReader() {
       }
 
       try {
-        const res = await fetch(
-          `${ATSU_BASE}/api/read/chapter?mangaId=${encodeURIComponent(mangaId)}&chapterId=${encodeURIComponent(chapterId)}`,
-          { headers: { Accept: 'application/json', Referer: ATSU_BASE } },
-        );
-        const json = await res.json();
-        const raw: unknown[] = json.readChapter?.pages || [];
+        const urls = await fetchMangaChapterPages(mangaId, chapterId);
         if (!cancelled) {
-          setPages(
-            raw
-              .map((page, i) => {
-                const row = page as { image?: string };
-                const rawImg = row?.image ?? page;
-                const url = typeof rawImg === 'string' ? toPageUrl(rawImg) : '';
-                return { id: `page-${i}`, url };
-              })
-              .filter((page) => page.url),
-          );
+          setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
         }
       } catch {
         if (!cancelled) setPages([]);

@@ -26,7 +26,9 @@ $functions = @(
   'follow-creator',
   'notify-sakura-transfer',
   'creator-work-mint-verify',
-  'upload-profile-avatar'
+  'upload-profile-avatar',
+  'web-content-proxy',
+  'web-media-proxy'
 )
 
 foreach ($fn in $functions) {

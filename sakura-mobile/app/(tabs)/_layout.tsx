@@ -1,13 +1,15 @@
 import { Tabs } from 'expo-router';
 import CustomTabBar from '@/components/layout/CustomTabBar';
+import WebAppShell from '@/components/layout/WebAppShell';
 
 export default function TabsLayout() {
   return (
-    <Tabs
+    <WebAppShell>
+    <Tabs      initialRouteName="home"
       tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
-      <Tabs.Screen name="index"    options={{ title: 'Home' }}     />
+      <Tabs.Screen name="home"     options={{ title: 'Home' }}     />
       <Tabs.Screen name="anime"    options={{ title: 'Anime' }}    />
       <Tabs.Screen name="search"   options={{ title: 'Search' }}   />
       <Tabs.Screen name="novel"    options={{ title: 'Novel' }}    />
@@ -17,5 +19,6 @@ export default function TabsLayout() {
       {/* settings is navigated to from profile — not shown in tab bar */}
       <Tabs.Screen name="settings" options={{ title: 'Settings', tabBarButton: () => null }} />
     </Tabs>
+    </WebAppShell>
   );
 }

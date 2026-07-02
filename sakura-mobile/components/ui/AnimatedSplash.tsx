@@ -1,12 +1,10 @@
-import React, { useEffect } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, Dimensions, Platform } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
   withDelay,
-  withRepeat,
-  withSequence,
   runOnJS,
   Easing,
 } from 'react-native-reanimated';
@@ -16,7 +14,6 @@ import { useTheme } from '@/lib/theme';
 
 const { width: W, height: H } = Dimensions.get('window');
 
-// ─── Single cherry-blossom petal ──────────────────────────────────────────────
 function Petal({
   delay,
   startX,
@@ -66,7 +63,6 @@ function Petal({
   return (
     <Animated.View style={style}>
       <Svg width={size} height={size * 1.3} viewBox="0 0 20 26">
-        {/* teardrop petal shape */}
         <G>
           <Path
             d="M10 0 C16 4 18 12 10 26 C2 12 4 4 10 0Z"
@@ -83,18 +79,13 @@ function Petal({
   );
 }
 
-// ─── Main animated splash ──────────────────────────────────────────────────────
 interface Props {
   onFinish: () => void;
 }
 
 export default function AnimatedSplash({ onFinish }: Props) {
   const { colors } = useTheme();
-
-  useEffect(() => {
-    const t = setTimeout(onFinish, 4500);
-    return () => clearTimeout(t);
-  }, []);
+  const [blockTouches, setBlockTouches] = useState(true);
 
   const logoY = useSharedValue(22);
   const logoScale = useSharedValue(0.92);
@@ -103,7 +94,20 @@ export default function AnimatedSplash({ onFinish }: Props) {
   const exitScale = useSharedValue(1);
 
   useEffect(() => {
-    // Logo enters smoothly (no bounce)
+    const t = setTimeout(onFinish, 4500);
+    return () => clearTimeout(t);
+  }, [onFinish]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') {
+      setBlockTouches(false);
+      return;
+    }
+    const unlock = setTimeout(() => setBlockTouches(false), 1800);
+    return () => clearTimeout(unlock);
+  }, []);
+
+  useEffect(() => {
     logoOpacity.value = withDelay(120, withTiming(1, { duration: 380, easing: Easing.out(Easing.cubic) }));
     logoY.value = withDelay(120, withTiming(0, { duration: 420, easing: Easing.out(Easing.cubic) }));
     logoScale.value = withDelay(
@@ -111,7 +115,6 @@ export default function AnimatedSplash({ onFinish }: Props) {
       withTiming(1, { duration: 420, easing: Easing.out(Easing.cubic) })
     );
 
-    // Exit — scale up + fade out
     exitOpacity.value = withDelay(2200, withTiming(0, { duration: 650 }, (done) => {
       if (done) runOnJS(onFinish)();
     }));
@@ -119,7 +122,7 @@ export default function AnimatedSplash({ onFinish }: Props) {
       2200,
       withTiming(1.08, { duration: 650, easing: Easing.in(Easing.quad) })
     );
-  }, []);
+  }, [onFinish]);
 
   const logoStyle = useAnimatedStyle(() => ({
     opacity: logoOpacity.value,
@@ -141,13 +144,14 @@ export default function AnimatedSplash({ onFinish }: Props) {
   ];
 
   return (
-    <Animated.View style={[StyleSheet.absoluteFill, s.container, { backgroundColor: colors.background }, containerStyle]}>
-      {/* Petals layer (behind logo) */}
+    <Animated.View
+      pointerEvents={blockTouches ? 'auto' : 'none'}
+      style={[StyleSheet.absoluteFill, s.container, { backgroundColor: colors.background }, containerStyle]}
+    >
       {PETALS.map((p, i) => (
         <Petal key={i} {...p} />
       ))}
 
-      {/* Logo */}
       <Animated.View style={logoStyle}>
         <Image
           source={require('@/assets/images/sakura-textlogo.png')}

@@ -1,7 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { Platform } from 'react-native';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { requestWebTransactionAuth } from './web-transaction-auth';
 
 const KEY_SECRET = 'sakura_wallet_secret';
 const KEY_PUBKEY = 'sakura_wallet_pubkey';
@@ -49,6 +51,10 @@ export async function getStoredPublicKey(): Promise<string | null> {
 }
 
 export async function getWalletWithBiometrics(): Promise<Keypair | null> {
+  if (Platform.OS === 'web') {
+    await requestWebTransactionAuth('Unlock your Sakura wallet for this transaction.');
+  }
+
   let secret = await SecureStore.getItemAsync(KEY_SECRET, secretStoreOptions());
   if (!secret) {
     // One-time migration for wallets saved before requireAuthentication was enabled.

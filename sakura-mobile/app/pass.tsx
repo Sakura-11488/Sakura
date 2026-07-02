@@ -16,6 +16,7 @@ import { Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { getWalletWithBiometrics } from '@/lib/wallet/storage';
+import { getTransactionAuthLabel } from '@/lib/wallet/platform-labels';
 import {
   MONTHLY_PASS_PRICE,
   PASS_DURATION_DAYS,
@@ -371,7 +372,7 @@ export default function PassScreen() {
                     ? 'Connect account'
                     : !hasEnoughSakura
                       ? 'Get SKR'
-                      : 'Confirm with Face ID'}
+                      : getTransactionAuthLabel('purchase')}
                 </Text>
               )}
             </TouchableOpacity>

@@ -174,6 +174,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const disconnect = useCallback(async () => {
     await removeWallet();
     clearAppSessionKeypair();
+    clearWalletAuthSession();
     setPublicKey(null);
     setAddress(null);
     setConnected(false);

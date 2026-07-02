@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   Dimensions,
+  useWindowDimensions,
   RefreshControl,
   ActionSheetIOS,
   Platform,
@@ -45,18 +46,29 @@ import ContinueWatchingRow from '@/components/ui/ContinueWatchingRow';
 import EmptyState from '@/components/ui/EmptyState';
 import { getContinueWatching, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 
-const { width: W } = Dimensions.get('window');
+import { MAX_HERO_HEIGHT_WEB, contentWidth } from '@/constants/layout';
 
 const CARD_W = 108;
 const CARD_H = CARD_W * 1.44;
-const HERO_H = W * 0.62;
+
+function useLayoutMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const HERO_H = Platform.OS === 'web' ? Math.min(W * 0.62, MAX_HERO_HEIGHT_WEB) : W * 0.62;
+    return { W, HERO_H };
+  }, [windowW]);
+}
 
 const OC_W = 152;
 const OC_H = OC_W * 1.48;
 
 function useAnimeStyles() {
   const { colors } = useTheme();
+  const { W, HERO_H } = useLayoutMetrics();
   return useMemo(() => ({
+    W,
+    HERO_H,
     s: StyleSheet.create({
       root: { flex: 1, backgroundColor: colors.background },
       searchWrap: {
@@ -340,7 +352,7 @@ function useAnimeStyles() {
       scroll: { paddingHorizontal: Spacing.md, paddingBottom: 4 },
     }),
     colors,
-  }), [colors]);
+  }), [colors, W, HERO_H]);
 }
 
 function useDebounce(value: string, delay: number) {
@@ -372,6 +384,7 @@ function SkeletonCard({ width = CARD_W, height = CARD_H }: { width?: number; hei
 
 function SkeletonHero() {
   const { colors } = useTheme();
+  const { W, HERO_H } = useLayoutMetrics();
   const opacity = useSharedValue(0.3);
   useEffect(() => {
     opacity.value = withRepeat(
@@ -492,7 +505,7 @@ function AnimeCard({ anime, onPress }: { anime: AnimeResult; onPress: () => void
 
 // ─── Grid card (2-col search/genre results) ───────────────────────────────────
 function GridCard({ anime, onPress }: { anime: AnimeResult; onPress: () => void }) {
-  const { grid } = useAnimeStyles();
+  const { grid, W } = useAnimeStyles();
   const w = (W - Spacing.md * 2 - 10) / 2;
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={[grid.wrap, { width: w }]}>
@@ -538,7 +551,7 @@ export default function AnimeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const scrollRef = useRef<any>(null);
-  const { s, colors, oc, row } = useAnimeStyles();
+  const { s, colors, oc, row, W } = useAnimeStyles();
   useScrollToTop(scrollRef);
 
   const [airing, setAiring] = useState<AnimeResult[]>([]);

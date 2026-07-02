@@ -62,3 +62,9 @@ verify_jwt = false
 
 [functions.upload-profile-avatar]
 verify_jwt = false
+
+[functions.web-content-proxy]
+verify_jwt = false
+
+[functions.web-media-proxy]
+verify_jwt = false

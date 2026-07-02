@@ -1,6 +1,7 @@
 import { getOrSetCached } from '@/lib/cache';
 import type { ContentItem } from '@/components/ui/ContentCard';
 import type { MangaDetail, MangaChapter } from '@/lib/manga';
+import { comicsProxyFetch } from '@/lib/comics-proxy-fetch';
 
 /**
  * Sakura Comics source (XOXO Comics-backed) for the Expo app.
@@ -49,10 +50,7 @@ type ProxyChaptersResponse = { chapters?: ProxyChapter[]; issues?: ProxyChapter[
 type ProxyPagesResponse = { pages?: string[]; images?: string[] };
 
 async function requestProxy<T>(path: string): Promise<T> {
-  const url = `${COMICS_PROXY_BASE}${path}`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`Comics proxy HTTP ${res.status} for ${path}`);
-  return (await res.json()) as T;
+  return comicsProxyFetch<T>(path);
 }
 
 /**

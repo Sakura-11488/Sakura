@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   StyleSheet,
   Platform,
   Dimensions,
+  useWindowDimensions,
+  type ViewStyle,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -23,6 +25,7 @@ import { Colors, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useUnreadMessages } from '@/lib/unread-messages-context';
 import { playSwitch } from '@/lib/sound';
+import { MAX_TAB_BAR_WIDTH } from '@/constants/layout';
 
 type BottomTabBarProps = {
   state: { index: number; routes: { name: string }[] };
@@ -53,7 +56,7 @@ const ProfileIcon = ({ active }: { active: boolean }) =>
   <FontAwesome6 name="user-large"  size={20} color={active ? (USE_GLASS ? '#fff' : '#fff') : Colors.textSecondary} />;
 
 const TABS = [
-  { name: 'index',    label: 'Home',   Icon: HomeIcon    },
+  { name: 'home',     label: 'Home',   Icon: HomeIcon    },
   { name: 'anime',    label: 'Watch',  Icon: AnimeIcon   },
   { name: 'search',   label: 'Search', Icon: SearchIcon  },
   { name: 'novel',    label: 'Novel',  Icon: NovelIcon   },
@@ -81,8 +84,20 @@ function GlassPill({ active }: { active: boolean }) {
 export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const { colors } = useTheme();
   const { unreadCount } = useUnreadMessages();
+  const { width: windowW } = useWindowDimensions();
 
-  if (['settings', 'library'].includes(state.routes[state.index]?.name)) return null;
+  const wrapperStyle = useMemo((): ViewStyle => {
+    if (Platform.OS !== 'web') return ts.wrapper;
+    const barW = Math.min(windowW - 28, MAX_TAB_BAR_WIDTH);
+    return {
+      position: 'absolute',
+      bottom: 22,
+      left: (windowW - barW) / 2,
+      width: barW,
+    };
+  }, [windowW]);
+
+  const hideBar = ['settings', 'library'].includes(state.routes[state.index]?.name);
 
   const idx = state.index;
   const prevIdx = useRef(idx);
@@ -218,10 +233,12 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
     );
   });
 
+  if (hideBar) return null;
+
   // ── Glass tab bar (iOS 26+) ──────────────────────────────────────────────
   if (USE_GLASS) {
     return (
-      <View style={ts.wrapper} pointerEvents="box-none">
+      <View style={wrapperStyle} pointerEvents="box-none">
         <View style={ts.glassCard}>
           <GlassContainer spacing={10} style={ts.bar}>
             {/* Full-bar background glass */}
@@ -235,7 +252,7 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
 
   // ── Blur / solid fallback (iOS < 26, Android) ────────────────────────────
   return (
-    <View style={ts.wrapper}>
+    <View style={wrapperStyle}>
       <View style={[ts.floatCard, { backgroundColor: colors.tabBarBg, borderColor: colors.tabBarBorder }]}>
         {Platform.OS === 'ios' ? (
           <BlurView intensity={70} tint={colors.blurTint} style={ts.bar}>

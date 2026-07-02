@@ -17,12 +17,19 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { Fonts, FontSize, Radius } from '@/constants/theme';
 import {
+  buildStreamEmbedUrl,
   fetchAnimeInfo,
   fetchEpisodeSources,
   getAnimeStreamUserAgent,
   type AnimeInfo,
   type AnimeEpisode,
+  type StreamingSource,
 } from '@/lib/anime';
+import {
+  getEpisodePlaybackHint,
+  shouldPreferDirectPlayback,
+  type SubtitleMode,
+} from '@/lib/anime-playback-overrides';
 import {
   buildAnimePlayerShieldScript,
   shouldAllowAnimePlayerNavigation,
@@ -36,6 +43,7 @@ import {
   RESUME_MIN,
 } from '@/lib/watch-progress';
 import { getOfflinePlaybackUri } from '@/lib/anime-offline';
+import WebVideoPlayer, { type WebVideoPlayerHandle } from '@/components/anime/WebVideoPlayer';
 
 const D = {
   bg: '#000000',
@@ -72,13 +80,19 @@ export default function AnimeWatch() {
   const [webReady, setWebReady] = useState(false);
   const forceOffline = offline === '1';
   const isAndroid = Platform.OS === 'android';
+  const isWeb = Platform.OS === 'web';
 
   // Native HLS streaming (Android-preferred): play the m3u8 directly through
   // expo-video (Media3/ExoPlayer) with CDN headers, falling back to the web
   // embed if the native player errors. iOS keeps using the embed (AVPlayer
   // returns 403 on these CDN HLS URLs).
   const [streamSource, setStreamSource] =
-    useState<{ uri: string; headers?: Record<string, string> } | null>(null);
+    useState<{ uri: string; headers?: Record<string, string>; isM3U8?: boolean } | null>(null);
+  const [allSources, setAllSources] = useState<NonNullable<StreamingSource['allSources']>>([]);
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>('off');
+  const playbackHeadersRef = useRef<Record<string, string> | undefined>(undefined);
+  const webVideoRef = useRef<WebVideoPlayerHandle | null>(null);
   const [embedFallbackUrl, setEmbedFallbackUrl] = useState<string | null>(null);
   const [skipMarkers, setSkipMarkers] = useState<{
     intro?: { start: number; end: number };
@@ -102,7 +116,16 @@ export default function AnimeWatch() {
     animeRef.current = anime;
   }, [anime]);
 
-  const epNum = ep?.match(/^hi-\d+-(\d+)$/)?.[1] ?? ep ?? '1';
+  const epNum =
+    ep?.match(/^hi-\d+-(\d+)$/)?.[1] ??
+    ep?.match(/^mal-\d+-(\d+)$/)?.[1] ??
+    ep ??
+    '1';
+  const epNumInt = parseInt(epNum, 10) || 1;
+  const playbackHint = useMemo(
+    () => getEpisodePlaybackHint(String(id), epNumInt),
+    [id, epNumInt],
+  );
   const streamUA = useMemo(() => getAnimeStreamUserAgent(), []);
 
   const currentEpisodeIndex = anime?.episodes.findIndex((e) => e.id === ep) ?? -1;
@@ -197,7 +220,18 @@ export default function AnimeWatch() {
     return '';
   }, [localUri, streamSource]);
 
-  const nativePlayer = useVideoPlayer(nativeSource, (player) => {
+  const webStreamUri = useMemo(() => {
+    if (!nativeSource) return '';
+    if (typeof nativeSource === 'string') return nativeSource;
+    return nativeSource.uri;
+  }, [nativeSource]);
+
+  const webStreamHeaders = useMemo(() => {
+    if (!nativeSource || typeof nativeSource === 'string') return undefined;
+    return nativeSource.headers;
+  }, [nativeSource]);
+
+  const nativePlayer = useVideoPlayer(isWeb ? '' : nativeSource, (player) => {
     player.loop = false;
     player.timeUpdateEventInterval = 1;
   });
@@ -241,6 +275,9 @@ export default function AnimeWatch() {
     setLocalUri(null);
     setStreamSource(null);
     setEmbedFallbackUrl(null);
+    setAllSources([]);
+    setSourceIndex(0);
+    playbackHeadersRef.current = undefined;
     setSkipMarkers({});
     setCurrentTimeSec(0);
     setWebReady(false);
@@ -268,13 +305,28 @@ export default function AnimeWatch() {
       }
 
       // Sakura Originals — stream directly via native video player
-      const { fetchSakuraOriginalInfo, isSakuraOriginal, resolveSakuraOriginalStreamUrl } = await import('@/lib/sakura-originals');
+      const {
+        fetchSakuraOriginalInfo,
+        getSakuraOriginalEmbedUrl,
+        isSakuraOriginal,
+        resolveSakuraOriginalStreamUrl,
+      } = await import('@/lib/sakura-originals');
       if (isSakuraOriginal(String(id))) {
+        const info = await fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 });
+        if (info) setAnime(info);
+
+        const embed = isWeb ? getSakuraOriginalEmbedUrl(ep) : null;
         const mp4 = await resolveSakuraOriginalStreamUrl(ep, { force: retryCount > 0 });
         if (mp4) {
+          setEmbedFallbackUrl(embed);
           setLocalUri(mp4);
-          const info = await fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 });
-          if (info) setAnime(info);
+          setLoading(false);
+          return;
+        }
+
+        if (embed) {
+          setEmbedFallbackUrl(null);
+          setEmbedUrl(embed);
           setLoading(false);
           return;
         }
@@ -300,9 +352,29 @@ export default function AnimeWatch() {
       if (cancelled) return;
       if (info) setAnime(info);
 
-      let src = await fetchEpisodeSources(ep, category, id).catch(() => null);
+      let src = await fetchEpisodeSources(ep, category, id, {
+        force: retryCount > 0 || !!playbackHint?.forceFreshSource,
+      }).catch(() => null);
       if (!src?.embedUrl && !src?.url && retryCount === 0) {
-        src = await fetchEpisodeSources(ep, category === 'sub' ? 'dub' : 'sub', id).catch(() => null);
+        src = await fetchEpisodeSources(
+          ep,
+          category === 'sub' ? 'dub' : 'sub',
+          id,
+          { force: !!playbackHint?.forceFreshSource },
+        ).catch(() => null);
+      }
+      if (!src?.embedUrl && !src?.url) {
+        const directMal = ep.match(/^mal-(\d+)-(\d+)$/);
+        if (directMal) {
+          const [, malId, directEpNum] = directMal;
+          src = {
+            url: '',
+            isM3U8: false,
+            embedUrl: buildStreamEmbedUrl(malId, directEpNum, category),
+            category,
+            availableCategories: ['sub', 'dub'],
+          };
+        }
       }
       if (cancelled) return;
 
@@ -311,17 +383,34 @@ export default function AnimeWatch() {
           setAvailableCategories(src.availableCategories);
         }
         setSkipMarkers({ intro: src.intro, outro: src.outro });
+        playbackHeadersRef.current = src.requestHeaders;
+        setAllSources(src.allSources ?? []);
+        setSourceIndex(0);
+        if (playbackHint?.subtitleMode) {
+          setSubtitleMode(playbackHint.subtitleMode);
+        }
 
-        // Prefer native ExoPlayer HLS on Android (with CDN headers); keep the
-        // embed as a fallback if the native player errors.
-        const canNative = isAndroid && !nativeFailedRef.current && !!src.url && src.isM3U8 !== false;
-        if (canNative) {
+        const preferDirect = shouldPreferDirectPlayback(playbackHint, isWeb);
+        const canNative =
+          isAndroid && !nativeFailedRef.current && !!src.url && src.isM3U8 !== false;
+
+        if ((preferDirect || canNative) && src.url) {
           setEmbedFallbackUrl(src.embedUrl || null);
-          setStreamSource({ uri: src.url, headers: src.requestHeaders });
+          setStreamSource({
+            uri: src.url,
+            headers: src.requestHeaders,
+            isM3U8: src.isM3U8,
+          });
         } else if (src.embedUrl) {
+          setEmbedFallbackUrl(null);
           setEmbedUrl(src.embedUrl);
         } else if (src.url) {
-          setStreamSource({ uri: src.url, headers: src.requestHeaders });
+          setEmbedFallbackUrl(null);
+          setStreamSource({
+            uri: src.url,
+            headers: src.requestHeaders,
+            isM3U8: src.isM3U8,
+          });
         }
       } else {
         setError(
@@ -335,7 +424,7 @@ export default function AnimeWatch() {
     return () => {
       cancelled = true;
     };
-  }, [id, ep, category, retryCount, forceOffline, isAndroid]);
+  }, [id, ep, category, retryCount, forceOffline, isAndroid, isWeb, playbackHint]);
 
   useEffect(() => {
     if (!nativeSource || !anime || !progressEpisode) return;
@@ -400,17 +489,53 @@ export default function AnimeWatch() {
 
   // Fall back to the web embed if native HLS playback errors (e.g. CDN 403).
   useEffect(() => {
-    if (!streamSource) return;
+    if (!streamSource || isWeb) return;
     const sub = nativePlayer.addListener('statusChange', ({ status }) => {
-      if (status === 'error' && !nativeFailedRef.current) {
-        nativeFailedRef.current = true;
-        setStreamSource(null);
-        resumeSeekDoneRef.current = false;
-        if (embedFallbackUrl) setEmbedUrl(embedFallbackUrl);
+      if (status !== 'error' || nativeFailedRef.current) return;
+
+      const next = allSources[sourceIndex + 1];
+      if (next?.url) {
+        setSourceIndex((i) => i + 1);
+        setStreamSource({
+          uri: next.url,
+          headers: playbackHeadersRef.current,
+          isM3U8: next.isM3U8,
+        });
+        return;
       }
+
+      nativeFailedRef.current = true;
+      setStreamSource(null);
+      resumeSeekDoneRef.current = false;
+      if (embedFallbackUrl) setEmbedUrl(embedFallbackUrl);
     });
     return () => sub.remove();
-  }, [streamSource, embedFallbackUrl, nativePlayer]);
+  }, [streamSource, embedFallbackUrl, nativePlayer, allSources, sourceIndex, isWeb]);
+
+  const tryNextAlternateSource = useCallback((): boolean => {
+    const next = allSources[sourceIndex + 1];
+    if (!next?.url) return false;
+    setSourceIndex((i) => i + 1);
+    setStreamSource({
+      uri: next.url,
+      headers: playbackHeadersRef.current,
+      isM3U8: next.isM3U8,
+    });
+    setWebReady(false);
+    nativeFailedRef.current = false;
+    return true;
+  }, [allSources, sourceIndex]);
+
+  const handleDirectPlaybackFailure = useCallback(() => {
+    if (tryNextAlternateSource()) return;
+    if (embedFallbackUrl) {
+      setLocalUri(null);
+      setStreamSource(null);
+      setEmbedUrl(embedFallbackUrl);
+      return;
+    }
+    setError('Playback failed. Try Retry or switch sub/dub.');
+  }, [tryNextAlternateSource, embedFallbackUrl]);
 
   useEffect(() => {
     if (!nativeSource || !anime || !progressEpisode) return;
@@ -593,7 +718,12 @@ export default function AnimeWatch() {
   const skipIntro = () => {
     if (!skipMarkers.intro) return;
     playTap();
-    nativePlayer.currentTime = skipMarkers.intro.end;
+    const target = skipMarkers.intro.end;
+    if (isWeb && streamSource) {
+      webVideoRef.current?.seekTo(target);
+    } else {
+      nativePlayer.currentTime = target;
+    }
   };
 
   const skipOutro = () => {
@@ -601,25 +731,31 @@ export default function AnimeWatch() {
     if (nextEpisode) {
       goToNext();
     } else if (skipMarkers.outro) {
-      nativePlayer.currentTime = skipMarkers.outro.end;
+      const target = skipMarkers.outro.end;
+      if (isWeb && streamSource) {
+        webVideoRef.current?.seekTo(target);
+      } else {
+        nativePlayer.currentTime = target;
+      }
     }
   };
 
-  const showWebPlayer = !!embedUrl && !nativeSource && !error;
-  const showNativePlayer = !!nativeSource && !error;
-  const showPlayer = showWebPlayer || showNativePlayer;
-  const showLoader = loading || (showWebPlayer && !webReady);
+  const showWebEmbedPlayer = !!embedUrl && !nativeSource && !error;
+  const showWebDirectPlayer = isWeb && !!nativeSource && !error;
+  const showNativePlayer = !!nativeSource && !error && !isWeb;
+  const showPlayer = showWebEmbedPlayer || showWebDirectPlayer || showNativePlayer;
+  const showLoader = loading || (showWebEmbedPlayer && !webReady);
   const showCategoryToggle =
-    (showWebPlayer || !!streamSource) && availableCategories.length > 1;
+    (showWebEmbedPlayer || showWebDirectPlayer || !!streamSource) && availableCategories.length > 1;
 
-  // Intro/outro skip is only driven by the native player's clock.
+  const canShowSkipButtons = showNativePlayer || showWebDirectPlayer;
   const introActive =
-    showNativePlayer &&
+    canShowSkipButtons &&
     !!skipMarkers.intro &&
     currentTimeSec >= skipMarkers.intro.start &&
     currentTimeSec < skipMarkers.intro.end - 0.5;
   const outroActive =
-    showNativePlayer &&
+    canShowSkipButtons &&
     !!skipMarkers.outro &&
     currentTimeSec >= skipMarkers.outro.start &&
     currentTimeSec < skipMarkers.outro.end - 0.5;
@@ -629,6 +765,29 @@ export default function AnimeWatch() {
       <StatusBar hidden barStyle="light-content" backgroundColor={D.bg} />
 
       <View style={s.playerWrap} onTouchStart={revealControls}>
+      {showWebDirectPlayer && (
+        <WebVideoPlayer
+          ref={webVideoRef}
+          uri={webStreamUri}
+          headers={webStreamHeaders}
+          isM3U8={streamSource?.isM3U8}
+          subtitleMode={subtitleMode}
+          style={s.player}
+          startAt={pendingResumeSecondsRef.current > 1 ? pendingResumeSecondsRef.current : undefined}
+          onReady={() => setWebReady(true)}
+          onError={handleDirectPlaybackFailure}
+          onTimeUpdate={(currentTime, duration) => {
+            setCurrentTimeSec(currentTime);
+            if (duration <= 0 || !anime || !progressEpisode) return;
+            const next = Math.min(1, Math.max(0, currentTime / duration));
+            if (Math.abs(next - progressRef.current) < 0.008 && next < 0.98) return;
+            progressRef.current = next;
+            pendingResumeSecondsRef.current = currentTime;
+            void persistProgress(next, anime, progressEpisode, false, currentTime);
+          }}
+        />
+      )}
+
       {showNativePlayer && (
         <VideoView
           player={nativePlayer}
@@ -684,7 +843,7 @@ export default function AnimeWatch() {
         </View>
       )}
 
-      {showWebPlayer && (
+      {showWebEmbedPlayer && (
         <WebView
           key={`${embedUrl}-${category}`}
           source={{ uri: embedUrl }}
@@ -758,7 +917,7 @@ export default function AnimeWatch() {
 
       {(introActive || outroActive) && (
         <View
-          style={[s.skipWrap, { bottom: insets.bottom + (showNativePlayer ? 104 : 70) }]}
+          style={[s.skipWrap, { bottom: insets.bottom + (canShowSkipButtons ? 104 : 70) }]}
           pointerEvents="box-none"
         >
           <TouchableOpacity

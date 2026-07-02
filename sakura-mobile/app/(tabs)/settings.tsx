@@ -13,7 +13,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import Constants from 'expo-constants';
 import { useTheme, AppColors } from '@/lib/theme';
 import { AppSettings } from '@/lib/settings';
-import { onTap } from '@/lib/sound';
+import { confirmDestructive } from '@/lib/confirm-alert';
 import {
   getNotificationPermissionStatus,
   openNotificationSettings,
@@ -23,6 +23,7 @@ import {
 } from '@/lib/notifications';
 import { syncPushRegistration, updatePushPrefsOnServer } from '@/lib/push-tokens';
 import { getWalletWithBiometrics } from '@/lib/wallet/storage';
+import { getExportKeyCopy } from '@/lib/wallet/platform-labels';
 import { getProfile, upsertProfile } from '@/lib/supabase';
 import { useWallet } from '@/lib/wallet/context';
 import { clearApiCache, getApiCacheSizeBytes } from '@/lib/cache';
@@ -33,6 +34,7 @@ import { clearAllOfflineEpisodes } from '@/lib/anime-offline';
 import { clearAllOfflineManga } from '@/lib/manga-offline';
 import { clearAllOfflineNovel } from '@/lib/novel-offline';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
+import { onTap } from '@/lib/sound';
 import bs58 from 'bs58';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -108,6 +110,17 @@ async function clearCache(): Promise<void> {
     const files = await FileSystem.readDirectoryAsync(dir);
     await Promise.all(files.map((f) => FileSystem.deleteAsync(dir + f, { idempotent: true })));
   } catch { }
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    throw new Error('Clipboard is not available in this browser.');
+  }
+  Clipboard.setString(text);
 }
 
 // ─── Re-usable building blocks ────────────────────────────────────────────────
@@ -255,34 +268,39 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     (async () => {
-      const [pe, pep, pec, ppp, pmm, ap, rd, rm, ds, pnl, em, cs] = await Promise.all([
-        AppSettings.getPushEnabled(),
-        AppSettings.getPushEpisodes(),
-        AppSettings.getPushChapters(),
-        AppSettings.getPushPass(),
-        AppSettings.getPushMarketing(),
-        AppSettings.getAutoplay(),
-        AppSettings.getReadDirection(),
-        AppSettings.getMangaReadingMode(),
-        AppSettings.getDataSaver(),
-        AppSettings.getPnlTracker(),
-        AppSettings.getEmail(),
-        getCacheSize(),
-      ]);
-      if (pe) {
-        const status = await getNotificationPermissionStatus();
-        const granted = status === 'granted';
-        setPushEnabled(granted);
-        if (!granted) await AppSettings.setPushEnabled(false);
+      try {
+        const [pe, pep, pec, ppp, pmm, ap, rd, rm, ds, pnl, em, cs] = await Promise.all([
+          AppSettings.getPushEnabled(),
+          AppSettings.getPushEpisodes(),
+          AppSettings.getPushChapters(),
+          AppSettings.getPushPass(),
+          AppSettings.getPushMarketing(),
+          AppSettings.getAutoplay(),
+          AppSettings.getReadDirection(),
+          AppSettings.getMangaReadingMode(),
+          AppSettings.getDataSaver(),
+          AppSettings.getPnlTracker(),
+          AppSettings.getEmail(),
+          getCacheSize(),
+        ]);
+        if (Platform.OS !== 'web' && pe) {
+          const status = await getNotificationPermissionStatus();
+          const granted = status === 'granted';
+          setPushEnabled(granted);
+          if (!granted) await AppSettings.setPushEnabled(false);
+        }
+        setPushEpisodes(pep); setPushChapters(pec); setPushPass(ppp); setPushMarketing(pmm);
+        setAutoplay(ap); setReadDir(rd); setReadingMode(rm);
+        setDataSaver(ds); setPnlTracker(pnl); setEmail(em); setCacheSize(cs);
+      } catch {
+        // keep defaults if any storage read fails on web
       }
-      setPushEpisodes(pep); setPushChapters(pec); setPushPass(ppp); setPushMarketing(pmm);
-      setAutoplay(ap); setReadDir(rd); setReadingMode(rm);
-      setDataSaver(ds); setPnlTracker(pnl); setEmail(em); setCacheSize(cs);
     })();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
+      if (Platform.OS === 'web') return;
       let cancelled = false;
       (async () => {
         const enabledLocally = await AppSettings.getPushEnabled();
@@ -316,6 +334,7 @@ export default function SettingsScreen() {
   }, [address]);
 
   const handlePushToggle = useCallback(async (next: boolean) => {
+    if (Platform.OS === 'web') return;
     setTogglingPush(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
@@ -381,7 +400,7 @@ export default function SettingsScreen() {
       const kp = await getWalletWithBiometrics();
       if (!kp) throw new Error('Could not unlock account');
       const secret = bs58.encode(kp.secretKey);
-      Clipboard.setString(secret);
+      await copyToClipboard(secret);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert('Private Key Copied', 'Your private key has been copied to the clipboard.\n\nNEVER share this with anyone.');
     } catch (e: any) {
@@ -393,30 +412,23 @@ export default function SettingsScreen() {
   }, []);
 
   const handleDisconnect = useCallback(() => {
-    Alert.alert(
+    confirmDestructive(
       'Sign Out',
       'This removes your account from this device. Make sure your private key is backed up.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Disconnect', style: 'destructive', onPress: async () => { await disconnect(); } },
-      ],
-    );
+    ).then(async (ok) => {
+      if (ok) await disconnect();
+    });
   }, [disconnect]);
 
   const handleClearCache = useCallback(() => {
-    Alert.alert('Clear Cache', `Clear ${cacheSize} of cached data?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear', style: 'destructive',
-        onPress: async () => {
-          setClearingCache(true);
-          await clearCache();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          setCacheSize(await getCacheSize());
-          setClearingCache(false);
-        },
-      },
-    ]);
+    confirmDestructive('Clear Cache', `Clear ${cacheSize} of cached data?`).then(async (ok) => {
+      if (!ok) return;
+      setClearingCache(true);
+      await clearCache();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setCacheSize(await getCacheSize());
+      setClearingCache(false);
+    });
   }, [cacheSize]);
 
   const version = Constants.expoConfig?.version ?? '1.9.0';
@@ -464,7 +476,7 @@ export default function SettingsScreen() {
                 <TapRow
                   badge={<Badge bg="#FF9500"><I.Key c="#fff" /></Badge>}
                   label="Export Private Key"
-                  sub="Copies your key to clipboard after Face ID"
+                  sub={getExportKeyCopy()}
                   onPress={exportLoading ? undefined : handleExportKey}
                   colors={colors}
                   right={exportLoading ? <ActivityIndicator size="small" color={colors.textSecondary} /> : undefined}
@@ -599,10 +611,10 @@ export default function SettingsScreen() {
             <ToggleRow
               badge={<Badge bg={colors.primary}><I.Bell c="#fff" /></Badge>}
               label="Push Notifications"
-              sub={pushEnabled ? 'Enabled' : 'Tap to allow notifications'}
+              sub={Platform.OS === 'web' ? 'Not available on web' : pushEnabled ? 'Enabled' : 'Tap to allow notifications'}
               value={pushEnabled}
-              onToggle={togglingPush ? () => { } : handlePushToggle}
-              disabled={togglingPush}
+              onToggle={Platform.OS === 'web' || togglingPush ? () => { } : handlePushToggle}
+              disabled={Platform.OS === 'web' || togglingPush}
               colors={colors}
             />
             <Divider colors={colors} />
@@ -615,7 +627,7 @@ export default function SettingsScreen() {
                 await AppSettings.setPushEpisodes(v);
                 await updatePushPrefsOnServer(address, { notifyEpisodes: v }).catch(() => { });
               }}
-              disabled={!pushEnabled}
+              disabled={Platform.OS === 'web' || !pushEnabled}
               colors={colors}
             />
             <Divider colors={colors} />
@@ -628,7 +640,7 @@ export default function SettingsScreen() {
                 await AppSettings.setPushChapters(v);
                 await updatePushPrefsOnServer(address, { notifyChapters: v }).catch(() => { });
               }}
-              disabled={!pushEnabled}
+              disabled={Platform.OS === 'web' || !pushEnabled}
               colors={colors}
             />
             <Divider colors={colors} />
@@ -642,7 +654,7 @@ export default function SettingsScreen() {
                 await AppSettings.setPushPass(v);
                 await updatePushPrefsOnServer(address, { notifyPass: v }).catch(() => { });
               }}
-              disabled={!pushEnabled}
+              disabled={Platform.OS === 'web' || !pushEnabled}
               colors={colors}
             />
             <Divider colors={colors} />
@@ -656,7 +668,7 @@ export default function SettingsScreen() {
                 await AppSettings.setPushMarketing(v);
                 await updatePushPrefsOnServer(address, { notifyMarketing: v }).catch(() => { });
               }}
-              disabled={!pushEnabled}
+              disabled={Platform.OS === 'web' || !pushEnabled}
               colors={colors}
             />
           </Group>

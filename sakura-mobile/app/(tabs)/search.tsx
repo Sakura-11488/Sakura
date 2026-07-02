@@ -10,8 +10,9 @@ import {
   Dimensions,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
-import { useScrollToTop } from 'expo-router';
+import { useScrollToTop, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
@@ -64,6 +65,7 @@ export default function SearchTabScreen() {
   const { address, unlockForAppSession } = useWallet();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<any>(null);
+  const inputRef = useRef<TextInput>(null);
   useScrollToTop(scrollRef);
 
   const [query, setQuery] = useState('');
@@ -180,6 +182,19 @@ export default function SearchTabScreen() {
     };
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setQuery('');
+        setFilter('All');
+        setResults([]);
+        setLoading(false);
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        inputRef.current?.blur();
+      };
+    }, []),
+  );
+
   const filteredResults = useMemo(() => {
     if (filter === 'All') return results;
     if (filter === 'Users') return results.filter((r) => r.type === 'user');
@@ -259,7 +274,7 @@ export default function SearchTabScreen() {
         },
         input: {
           flex: 1,
-          fontSize: FontSize.md,
+          fontSize: Platform.OS === 'web' ? 16 : FontSize.md,
           color: colors.text,
           fontFamily: Fonts.body,
         },
@@ -361,6 +376,7 @@ export default function SearchTabScreen() {
         <Animated.View entering={FadeInDown.duration(260)} style={s.searchWrap}>
           <SearchIcon color={colors.textTertiary} />
           <TextInput
+            ref={inputRef}
             value={query}
             onChangeText={onChangeQuery}
             placeholder="Series, creators, users, and more"

@@ -121,7 +121,7 @@ export async function resolveSakuraTokenAccount(
   }
 
   if (!best) {
-    throw new Error('No SAKURA token account with enough balance for this payment.');
+    throw new Error('No funded SAKURA token account was found. Buy SKR first, then refresh your wallet balance before sending or forging.');
   }
   return best.pubkey;
 }

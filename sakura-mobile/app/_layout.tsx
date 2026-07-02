@@ -14,6 +14,9 @@ import {
   Nunito_800ExtraBold,
 } from '@expo-google-fonts/nunito';
 import { WalletProvider } from '@/lib/wallet/context';
+import { WebTransactionAuthProvider } from '@/lib/wallet/web-transaction-auth';
+import HttpImageShim from '@/components/web/HttpImageShim';
+import { Platform } from 'react-native';
 import { UnreadMessagesProvider } from '@/lib/unread-messages-context';
 import { ThemeProvider, useTheme } from '@/lib/theme';
 import { I18nProvider } from '@/lib/i18n';
@@ -26,6 +29,10 @@ import OtaUpdateBridge from '@/components/OtaUpdateBridge';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
 import { TransferCelebrationProvider } from '@/lib/wallet/transfer-celebration';
+
+export const unstable_settings = {
+  initialRouteName: 'index',
+};
 
 SplashScreen.preventAutoHideAsync();
 
@@ -84,7 +91,7 @@ function LiveActivityDeepLinkBridge() {
 }
 
 export default function RootLayout() {
-  const [showSplash, setShowSplash] = useState(true);
+  const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
 
   const [fontsLoaded, fontError] = useFonts({
     Nunito_400Regular,
@@ -108,6 +115,7 @@ export default function RootLayout() {
         <ThemeProvider>
         <I18nProvider>
         <WalletProvider>
+          <WebTransactionAuthProvider>
           <UnreadMessagesProvider>
           <TransferCelebrationProvider>
           <ThemedStatusBar />
@@ -139,6 +147,10 @@ export default function RootLayout() {
             <Stack.Screen name="creator-dashboard" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-upload" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="creator-profile" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="creator-verification" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="creator-feed" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="creator-coin-launch" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="messages" options={{ animation: 'slide_from_right' }} />
           </Stack>
           <AnimeDownloadBridge />
           <OtaUpdateBridge />
@@ -146,11 +158,13 @@ export default function RootLayout() {
           <PriceAlertBridge />
           <FloatingTradeWidget />
           <FallingLeaves />
+          {Platform.OS === 'web' ? <HttpImageShim /> : null}
           {showSplash && (
             <AnimatedSplash onFinish={() => setShowSplash(false)} />
           )}
           </TransferCelebrationProvider>
           </UnreadMessagesProvider>
+          </WebTransactionAuthProvider>
         </WalletProvider>
         </I18nProvider>
         </ThemeProvider>
