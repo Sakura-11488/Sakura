@@ -39,11 +39,18 @@ module.exports = {
                 COMICS_SCRAPER_PORT: "3100",
                 COMICS_UPSTREAM_BASE: "https://xoxocomic.com",
                 COMICS_CACHE_MAX: "1000",
-                COMICS_CACHE_TTL_MS: String(15 * 60 * 1000),
+                // Comics change rarely; cache an hour to cut repeat proxy hits
+                // (every miss is a metered request that competes for the tight
+                // ZenRows concurrency budget).
+                COMICS_CACHE_TTL_MS: String(60 * 60 * 1000),
                 // Rendered CF-bypass requests take longer than a raw fetch, so
                 // allow more time for the first (uncached) hit on each path.
                 COMICS_REQUEST_TIMEOUT_MS: "45000",
                 COMICS_IMAGE_TIMEOUT_MS: "30000",
+                // Max concurrent requests to the ZenRows proxy. The free tier is
+                // ~1; raise this if you upgrade the plan. Excess requests queue,
+                // and 429s are retried with backoff.
+                COMICS_PROXY_CONCURRENCY: "2",
                 COMICS_FETCH_PROXY_TEMPLATE: fetchProxyTemplate,
                 COMICS_IMAGE_PROXY_TEMPLATE: imageProxyTemplate,
             },

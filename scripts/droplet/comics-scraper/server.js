@@ -127,12 +127,83 @@ async function cacheWrap(key, producer) {
     return value;
 }
 
-async function fetchHtml(url, { retries = 2 } = {}) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-        const res = await undiciFetch(proxiedPageUrl(url), {
-            signal: controller.signal,
+// ---------------------------------------------------------------------------
+// Proxy concurrency limiter + retry.
+//
+// ZenRows (and most CF-bypass APIs) cap *concurrent* requests per plan; the
+// free tier is effectively 1. The app loads a home screen by firing many
+// requests at once — a search per category row, popular, plus dozens of cover
+// images — so without throttling most hit HTTP 429 (AUTH006 "concurrency limit
+// reached") and come back blank. We funnel every proxied request through a
+// small semaphore so we never exceed the plan limit, and retry 429 / transient
+// 403-challenge / 5xx with exponential backoff + jitter. Raise
+// COMICS_PROXY_CONCURRENCY if you upgrade the plan.
+const PROXY_CONCURRENCY = Math.max(1, Number(process.env.COMICS_PROXY_CONCURRENCY || 1));
+const PROXY_MAX_RETRIES = Math.max(0, Number(process.env.COMICS_PROXY_MAX_RETRIES || 4));
+const PROXY_BACKOFF_BASE_MS = Number(process.env.COMICS_PROXY_BACKOFF_MS || 600);
+
+let activeProxyRequests = 0;
+const proxyWaiters = [];
+
+function acquireProxySlot() {
+    if (activeProxyRequests < PROXY_CONCURRENCY) {
+        activeProxyRequests += 1;
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => proxyWaiters.push(resolve));
+}
+
+function releaseProxySlot() {
+    const next = proxyWaiters.shift();
+    if (next) next();
+    else activeProxyRequests -= 1;
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch through the metered proxy honouring the account-wide concurrency limit,
+ * retrying transient failures (429 concurrency, 403 unsolved challenge, 5xx,
+ * network aborts) with exponential backoff. The per-attempt timeout only starts
+ * once a slot is acquired, so time spent queued doesn't count against it.
+ * Returns the successful Response; throws (with `.status`) once retries are
+ * exhausted. `label` is a proxy-free string for error messages/logs.
+ */
+async function proxyFetch(targetUrl, options, { timeoutMs = REQUEST_TIMEOUT_MS, label = "" } = {}) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= PROXY_MAX_RETRIES; attempt += 1) {
+        await acquireProxySlot();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await undiciFetch(targetUrl, { ...options, signal: controller.signal });
+            if (res.ok) return res;
+            const body = await res.text().catch(() => "");
+            const retryable = res.status === 429 || res.status === 403 || res.status >= 500;
+            lastErr = new Error(`Upstream HTTP ${res.status} for ${label}: ${body.slice(0, 200)}`);
+            lastErr.status = res.status;
+            if (!retryable) throw lastErr;
+        } catch (err) {
+            if (err.status && err.status !== 429 && err.status !== 403 && err.status < 500) throw err;
+            lastErr = err;
+        } finally {
+            clearTimeout(timer);
+            releaseProxySlot();
+        }
+        if (attempt < PROXY_MAX_RETRIES) {
+            const backoff = Math.min(10_000, PROXY_BACKOFF_BASE_MS * 2 ** attempt);
+            await sleep(backoff + Math.floor(Math.random() * 300));
+        }
+    }
+    throw lastErr || new Error(`Upstream failed for ${label}`);
+}
+
+async function fetchHtml(url) {
+    const res = await proxyFetch(
+        proxiedPageUrl(url),
+        {
             headers: {
                 "User-Agent": pickUserAgent(),
                 Accept: "text/html,application/xhtml+xml",
@@ -141,21 +212,11 @@ async function fetchHtml(url, { retries = 2 } = {}) {
                 Referer: UPSTREAM_BASE,
             },
             redirect: "follow",
-        });
-        if (!res.ok) {
-            const body = await res.text().catch(() => "");
-            // `url` (not the proxied form) keeps the key out of logs/responses.
-            throw new Error(`Upstream HTTP ${res.status} for ${url}: ${body.slice(0, 200)}`);
-        }
-        return await res.text();
-    } catch (err) {
-        if (retries > 0 && (err?.name === "AbortError" || String(err).includes("ECONNRESET"))) {
-            return fetchHtml(url, { retries: retries - 1 });
-        }
-        throw err;
-    } finally {
-        clearTimeout(timer);
-    }
+        },
+        // `url` (not the proxied form) keeps the key out of logs/responses.
+        { label: url },
+    );
+    return await res.text();
 }
 
 function absolute(path) {
@@ -694,25 +755,25 @@ app.get("/img", async (req, res) => {
     }
 
     // 2) Fetch through the (residential-IP) image proxy so we get past
-    //    Cloudflare, then trust the bytes (magic-sniffed) over the content-type,
-    //    since ZenRows returns proxied binaries as text/plain.
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), IMAGE_PROXY_TIMEOUT_MS);
+    //    Cloudflare — via the shared concurrency limiter + retry so bursts of
+    //    cover requests don't trip the ZenRows 429 concurrency cap — then trust
+    //    the bytes (magic-sniffed) over the content-type, since ZenRows returns
+    //    proxied binaries as text/plain.
     try {
-        const upstream = await undiciFetch(proxiedImageUrl(target.toString()), {
-            method: "GET",
-            signal: controller.signal,
-            headers: {
-                "User-Agent": pickUserAgent(),
-                Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                Referer: UPSTREAM_BASE,
+        const upstream = await proxyFetch(
+            proxiedImageUrl(target.toString()),
+            {
+                method: "GET",
+                headers: {
+                    "User-Agent": pickUserAgent(),
+                    Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    Referer: UPSTREAM_BASE,
+                },
+                redirect: "follow",
             },
-            redirect: "follow",
-        });
-        if (!upstream.ok) {
-            return res.status(404).type("text/plain").send("not an image");
-        }
+            { timeoutMs: IMAGE_PROXY_TIMEOUT_MS, label: target.toString() },
+        );
         const buf = Buffer.from(await upstream.arrayBuffer());
         const ct = sniffImageType(buf);
         if (!ct) {
@@ -730,9 +791,10 @@ app.get("/img", async (req, res) => {
         });
         serve(buf, ct);
     } catch (err) {
-        res.status(502).type("text/plain").send(String(err?.message || err).slice(0, 200));
-    } finally {
-        clearTimeout(timer);
+        // 429/exhausted-retries and dead images both land here; 404 keeps the
+        // client's <img> fallback simple.
+        const status = err?.status === 429 ? 503 : 404;
+        res.status(status).type("text/plain").send(String(err?.message || err).slice(0, 200));
     }
 });
 
