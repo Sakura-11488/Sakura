@@ -197,9 +197,27 @@ function findMegaplayDataId(html: string): string | null {
   return (
     html.match(/data-id\s*=\s*"(\d+)"/i)?.[1] ||
     html.match(/data-id\s*=\s*'(\d+)'/i)?.[1] ||
+    html.match(/data-video-id\s*=\s*"(\d+)"/i)?.[1] ||
+    html.match(/data-video-id\s*=\s*'(\d+)'/i)?.[1] ||
+    html.match(/\/stream\/getSourcesNew\?id=(\d+)/i)?.[1] ||
     html.match(/\/stream\/getSources\?id=(\d+)/i)?.[1] ||
+    html.match(/getSourcesNew\?id=(\d+)/i)?.[1] ||
     null
   );
+}
+
+function findMegaplayM3u8InHtml(html: string): string | null {
+  const patterns = [
+    /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i,
+    /(https?:\/\/[^\s"'<>]*nekostream[^\s"'<>]*)/i,
+    /file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i,
+    /"file"\s*:\s*"([^"]+\.m3u8[^"]*)"/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) return match[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+  }
+  return null;
 }
 
 function pickMegaplayFile(data: unknown): string | null {
@@ -233,27 +251,34 @@ async function fetchMegaplaySourceFromEmbed(
   }
 
   const dataId = findMegaplayDataId(html);
-  if (!dataId) return null;
-
   const origin = new URL(playerUrl).origin;
-  const endpoints = [
-    `${origin}/stream/getSources?id=${encodeURIComponent(dataId)}`,
-    `${origin}/getSources?id=${encodeURIComponent(dataId)}`,
-    `${origin}/ajax/getSources?id=${encodeURIComponent(dataId)}`,
-    `${origin}/stream/sources?id=${encodeURIComponent(dataId)}`,
-  ];
 
   let payload: Record<string, unknown> | null = null;
-  for (const endpoint of endpoints) {
-    try {
-      payload = await fetchUpstreamJson(endpoint, playerUrl, origin);
-      if (pickMegaplayFile(payload)) break;
-    } catch {
-      // try the next known Megaplay source endpoint
+  if (dataId) {
+    const endpoints = [
+      `${origin}/stream/getSourcesNew?id=${encodeURIComponent(dataId)}`,
+      `${origin}/stream/getSources?id=${encodeURIComponent(dataId)}`,
+      `${origin}/getSourcesNew?id=${encodeURIComponent(dataId)}`,
+      `${origin}/getSources?id=${encodeURIComponent(dataId)}`,
+      `${origin}/ajax/getSourcesNew?id=${encodeURIComponent(dataId)}`,
+      `${origin}/ajax/getSources?id=${encodeURIComponent(dataId)}`,
+      `${origin}/stream/sources?id=${encodeURIComponent(dataId)}`,
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        payload = await fetchUpstreamJson(endpoint, playerUrl, origin);
+        if (pickMegaplayFile(payload)) break;
+      } catch {
+        // try the next known Megaplay source endpoint
+      }
     }
   }
 
-  const url = pickMegaplayFile(payload);
+  let url = pickMegaplayFile(payload);
+  if (!url) {
+    url = findMegaplayM3u8InHtml(html);
+  }
   if (!url) return null;
 
   const intro = (payload?.intro || (payload?.data as any)?.intro) as { start: number; end: number } | undefined;
@@ -1140,6 +1165,19 @@ export async function fetchEpisodeSources(
     if (malParts) {
       const [, directMalId, directEpNum] = malParts;
       const categories: Array<'sub' | 'dub'> = category === 'dub' ? ['dub', 'sub'] : ['sub', 'dub'];
+
+      const resolved = await resolveStreamingByMalId(directMalId).catch(() => null);
+      if (resolved?.slug) {
+        for (const cat of categories) {
+          try {
+            const src = await fetchM3u8Source(resolved.slug, directEpNum, cat, directMalId);
+            if (src?.url) return src;
+          } catch {
+            // try alternate category or Megaplay fallback
+          }
+        }
+      }
+
       for (const cat of categories) {
         const src = await fetchDirectMalSource(directMalId, directEpNum, cat).catch(() => null);
         if (src?.url || src?.embedUrl) return src;

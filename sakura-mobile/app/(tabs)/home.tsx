@@ -7,6 +7,7 @@ import {
   RefreshControl,
   Dimensions,
   TouchableOpacity,
+  useWindowDimensions,
 } from 'react-native';
 import { useScrollToTop, useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -45,7 +46,15 @@ import {
   fetchTrendingComics,
   searchComics,
 } from '@/lib/comics';
+import {
+  fetchTrendingHentai,
+  searchHentai,
+} from '@/lib/hentai';
+import { useContentPrefs } from '@/lib/content-prefs';
+import { isWideWeb } from '@/constants/layout';
 import { SAKURA_ORIGINALS } from '@/lib/sakura-originals';
+import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
+import StreakLevelCard from '@/components/gamification/StreakLevelCard';
 import FeaturedCarousel, { type CarouselItem } from '@/components/ui/FeaturedCarousel';
 
 const { width: W } = Dimensions.get('window');
@@ -195,8 +204,15 @@ const origCard = StyleSheet.create({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const { colors } = useTheme();
+  const { allowAdult } = useContentPrefs();
+  const { width: windowW } = useWindowDimensions();
+  // On desktop web the logo + wallet live in the sidebar, so drop the in-content header.
+  const wideWeb = isWideWeb(windowW);
   const [category, setCategory] = useState('Manga');
   const [loading, setLoading] = useState(true);
+  // Full-screen skeleton only on the very first load; switching category keeps the
+  // existing content on screen (no jarring flash) while the new rows stream in.
+  const hasLoadedOnce = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [featured, setFeatured] = useState<CarouselItem[]>([]);
   const [trending, setTrending] = useState<ContentItem[]>([]);
@@ -215,18 +231,42 @@ export default function HomeScreen() {
   const scrollY = useSharedValue(0);
 
   const isComics = category === 'Comics';
+  const isHentai = category === '18+';
+  const categories = useMemo(
+    () => (allowAdult ? ['Manga', 'Comics', '18+'] : ['Manga', 'Comics']),
+    [allowAdult],
+  );
+
+  // Expand a home row into the full-grid browse screen, carrying the row's
+  // source + query so it shows *that* section's content (not the manga
+  // catalogue). `q` drives genre rows (search); `kind` drives catalogue rows.
+  const browseSource = isHentai ? 'hentai' : isComics ? 'comics' : 'manga';
+  const goBrowse = useCallback(
+    (title: string, opts: { q?: string; kind?: string }) =>
+      router.push({
+        pathname: '/browse',
+        params: { title, source: browseSource, ...opts },
+      } as any),
+    [router, browseSource],
+  );
+
+  // If the user turns off 18+ while the 18+ tab is selected, fall back to Manga.
+  useEffect(() => {
+    if (!allowAdult && category === '18+') setCategory('Manga');
+  }, [allowAdult, category]);
 
   const loadData = useCallback(async () => {
     try {
-      if (isComics) {
-        const list = await fetchTrendingComics(40);
+      if (isComics || isHentai) {
+        const source = isHentai ? 'hentai' : 'comics';
+        const list = isHentai ? await fetchTrendingHentai(40) : await fetchTrendingComics(40);
         const toCarousel = (c: ContentItem): CarouselItem => ({
           id: c.id,
           title: c.title,
           cover: c.cover,
           genres: [],
           type: 'manga',
-          source: 'comics',
+          source,
         });
         setFeatured(list.slice(0, 20).map(toCarousel));
         setTrending(list.slice(7, 15));
@@ -248,10 +288,11 @@ export default function HomeScreen() {
     } catch {
       // keep previous data / fallback to empty
     } finally {
+      hasLoadedOnce.current = true;
       setLoading(false);
       setRefreshing(false);
     }
-  }, [isComics]);
+  }, [isComics, isHentai]);
 
   useEffect(() => {
     setLoading(true);
@@ -264,6 +305,19 @@ export default function HomeScreen() {
   useEffect(() => {
     if (loading) return;
     (async () => {
+      if (isHentai) {
+        const [vanilla, romance, fullColor, yuri] = await Promise.all([
+          searchHentai('vanilla', 12),
+          searchHentai('romance', 12),
+          searchHentai('full color', 12),
+          searchHentai('yuri', 12),
+        ]);
+        setActionPacked(vanilla);
+        setRomance(romance);
+        setBoredmBusters(fullColor);
+        setComedy(yuri);
+        return;
+      }
       if (isComics) {
         const [action, hero, scifi, horror] = await Promise.all([
           searchComics('action', 12),
@@ -288,7 +342,7 @@ export default function HomeScreen() {
       setBoredmBusters(bored.map((i) => toContentItem(i)));
       setComedy(com.map((i) => toContentItem(i)));
     })();
-  }, [loading, isComics]);
+  }, [loading, isComics, isHentai]);
 
   const refreshContinueWatching = useCallback(() => {
     getContinueWatching(10).then(setContinueAnime);
@@ -363,7 +417,7 @@ export default function HomeScreen() {
     },
   }), [colors]);
 
-  if (loading) return <HomeScreenSkeleton />;
+  if (loading && !hasLoadedOnce.current) return <HomeScreenSkeleton />;
 
   return (
     <View style={s.root}>
@@ -374,11 +428,13 @@ export default function HomeScreen() {
       />
 
       <SafeAreaView style={s.safe} edges={['top']}>
-        <Animated.View style={[s.headerBar, headerBarStyle]}>
-          <Animated.View entering={FadeInDown.duration(380)}>
-            <Header />
+        {!wideWeb && (
+          <Animated.View style={[s.headerBar, headerBarStyle]}>
+            <Animated.View entering={FadeInDown.duration(380)}>
+              <Header />
+            </Animated.View>
           </Animated.View>
-        </Animated.View>
+        )}
 
         <Animated.ScrollView
           ref={scrollRef}
@@ -393,12 +449,21 @@ export default function HomeScreen() {
         >
           {/* Category tabs */}
           <Animated.View entering={FadeInDown.delay(80).duration(400)} style={s.tabsWrap}>
-            <CategoryTabs selected={category} onSelect={setCategory} />
+            <CategoryTabs
+              key={categories.join('|')}
+              selected={category}
+              onSelect={setCategory}
+              categories={categories}
+            />
           </Animated.View>
 
           {/* Featured carousel — originals + trending manga */}
           <Animated.View entering={FadeInDown.delay(120).duration(500).springify()}>
             <FeaturedCarousel data={featured} />
+          </Animated.View>
+
+          <Animated.View entering={FadeInDown.delay(150).duration(400)} style={s.sectionGap}>
+            <StreakLevelCard />
           </Animated.View>
 
           {continueAnime.length > 0 && (
@@ -425,13 +490,21 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {/* Community uploads — only in the Manga catalog (creator works are
+              novel/manga/anime; novels + anime live on their own tabs). */}
+          {!isComics && !isHentai && (
+            <View style={s.sectionGap}>
+              <CreatorWorksRow kind="manga" />
+            </View>
+          )}
+
           {/* New Releases */}
           {newReleases.length > 0 && (
             <View style={s.sectionGap}>
               <HorizSection
                 data={newReleases}
                 title="New Releases"
-                onSeeAll={() => router.push('/new-releases' as any)}
+                onSeeAll={() => goBrowse('New Releases', { kind: 'new' })}
               />
             </View>
           )}
@@ -439,35 +512,57 @@ export default function HomeScreen() {
           {/* Today's Pick For You */}
           {todaysPick.length > 0 && (
             <View style={s.sectionGap}>
-              <HorizSection data={todaysPick} title="Today's Pick For You" />
+              <HorizSection
+                data={todaysPick}
+                title="Today's Pick For You"
+                onSeeAll={() => goBrowse("Today's Pick For You", { kind: 'todays' })}
+              />
             </View>
           )}
 
           {/* Action Packed */}
           {actionPacked.length > 0 && (
             <View style={s.sectionGap}>
-              <HorizSection data={actionPacked} title="Action Packed" />
+              {(() => {
+                const t = isHentai ? 'Vanilla' : 'Action Packed';
+                const q = isHentai ? 'vanilla' : 'action';
+                return (
+                  <HorizSection data={actionPacked} title={t} onSeeAll={() => goBrowse(t, { q })} />
+                );
+              })()}
             </View>
           )}
 
           {/* Romance / Superheroes */}
           {romance.length > 0 && (
             <View style={s.sectionGap}>
-              <HorizSection data={romance} title={isComics ? 'Superheroes' : 'Romance'} />
+              {(() => {
+                const t = isHentai ? 'Romance' : isComics ? 'Superheroes' : 'Romance';
+                const q = isHentai ? 'romance' : isComics ? 'superhero' : 'romance';
+                return <HorizSection data={romance} title={t} onSeeAll={() => goBrowse(t, { q })} />;
+              })()}
             </View>
           )}
 
           {/* Boredom Busters / Sci-Fi */}
           {boredmBusters.length > 0 && (
             <View style={s.sectionGap}>
-              <HorizSection data={boredmBusters} title={isComics ? 'Sci-Fi & Space' : 'Boredom Busters'} />
+              {(() => {
+                const t = isHentai ? 'Full Color' : isComics ? 'Sci-Fi & Space' : 'Boredom Busters';
+                const q = isHentai ? 'full color' : isComics ? 'sci-fi' : 'slice of life';
+                return <HorizSection data={boredmBusters} title={t} onSeeAll={() => goBrowse(t, { q })} />;
+              })()}
             </View>
           )}
 
           {/* Get Into Comedy / Horror */}
           {comedy.length > 0 && (
             <View style={s.sectionGap}>
-              <HorizSection data={comedy} title={isComics ? 'Horror & Thriller' : 'Get Into Comedy'} />
+              {(() => {
+                const t = isHentai ? 'Yuri' : isComics ? 'Horror & Thriller' : 'Get Into Comedy';
+                const q = isHentai ? 'yuri' : isComics ? 'horror' : 'comedy';
+                return <HorizSection data={comedy} title={t} onSeeAll={() => goBrowse(t, { q })} />;
+              })()}
             </View>
           )}
 

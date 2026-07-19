@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import {
   formatBytes,
   getOfflineStorageBytes as getAnimeBytes,
   listOfflineEpisodes,
+  reconcileInterruptedEpisodes,
   pauseAnimeEpisodeDownload,
   resumeAnimeEpisodeDownload,
   downloadAnimeEpisode,
@@ -28,6 +29,7 @@ import {
   deleteOfflineMangaChapter,
   getOfflineMangaStorageBytes,
   listOfflineMangaChapters,
+  reconcileInterruptedMangaChapters,
   pauseMangaChapterDownload,
   resumeMangaChapterDownload,
   downloadMangaChapter,
@@ -37,17 +39,30 @@ import {
   deleteOfflineNovelChapter,
   getOfflineNovelStorageBytes,
   listOfflineNovelChapters,
+  reconcileInterruptedNovelChapters,
   pauseNovelBatchDownload,
   resumeNovelBatchDownload,
+  downloadNovelChapter,
   getNovelBatchState,
   type OfflineNovelChapter,
 } from '@/lib/novel-offline';
+import {
+  listScrapedOfflineChapters,
+  getScrapedOfflineStorageBytes,
+  reconcileInterruptedScrapedChapters,
+  deleteScrapedOfflineChapter,
+  downloadScrapedChapter,
+  pauseScrapedChapterDownload,
+  resumeScrapedChapterDownload,
+  type OfflineScrapedChapter,
+} from '@/lib/scraped-offline';
 import { playTap, onTap } from '@/lib/sound';
 
 type DownloadRow =
   | { kind: 'anime'; data: OfflineEpisode }
   | { kind: 'manga'; data: OfflineMangaChapter }
-  | { kind: 'novel'; data: OfflineNovelChapter };
+  | { kind: 'novel'; data: OfflineNovelChapter }
+  | { kind: 'scraped'; data: OfflineScrapedChapter };
 
 function BackIcon({ color }: { color: string }) {
   return (
@@ -68,11 +83,13 @@ export default function DownloadsScreen() {
       listOfflineEpisodes(),
       listOfflineMangaChapters(),
       listOfflineNovelChapters(),
+      listScrapedOfflineChapters(),
       getAnimeBytes(),
       getOfflineMangaStorageBytes(),
       getOfflineNovelStorageBytes(),
-    ]).then(([anime, manga, novel, ab, mb, nb]) => {
-      const total = ab + mb + nb;
+      getScrapedOfflineStorageBytes(),
+    ]).then(([anime, manga, novel, scraped, ab, mb, nb, sb]) => {
+      const total = ab + mb + nb + sb;
       setStorageLabel(formatBytes(total));
 
       const next: { title: string; data: DownloadRow[] }[] = [];
@@ -94,9 +111,35 @@ export default function DownloadsScreen() {
           data: novel.map((data) => ({ kind: 'novel' as const, data })),
         });
       }
+      const comics = scraped.filter((c) => c.source === 'comics');
+      const hentai = scraped.filter((c) => c.source === 'hentai');
+      if (comics.length) {
+        next.push({
+          title: 'Comics',
+          data: comics.map((data) => ({ kind: 'scraped' as const, data })),
+        });
+      }
+      if (hentai.length) {
+        next.push({
+          title: '18+',
+          data: hentai.map((data) => ({ kind: 'scraped' as const, data })),
+        });
+      }
       setSections(next);
     });
   }, []);
+
+  // Once per app run, flip any download left mid-flight by a previous session
+  // (killed app, crash) from "downloading" to a resumable state so it stops
+  // showing a spinner that never advances.
+  useEffect(() => {
+    Promise.all([
+      reconcileInterruptedEpisodes(),
+      reconcileInterruptedMangaChapters(),
+      reconcileInterruptedNovelChapters(),
+      reconcileInterruptedScrapedChapters(),
+    ]).then(refresh);
+  }, [refresh]);
 
   useFocusEffect(
     useCallback(() => {
@@ -161,6 +204,7 @@ export default function DownloadsScreen() {
           textTransform: 'uppercase',
         },
         deleteBtn: { padding: 8 },
+        rowActions: { flexDirection: 'row', alignItems: 'center' },
         deleteText: { color: colors.red, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
         empty: {
           flex: 1,
@@ -187,6 +231,8 @@ export default function DownloadsScreen() {
             deleteOfflineEpisode(row.data.animeId, row.data.episodeId).then(refresh);
           } else if (row.kind === 'manga') {
             deleteOfflineMangaChapter(row.data.mangaId, row.data.chapterId).then(refresh);
+          } else if (row.kind === 'scraped') {
+            deleteScrapedOfflineChapter(row.data.source, row.data.mangaId, row.data.chapterId).then(refresh);
           } else {
             deleteOfflineNovelChapter(row.data.novelPath, row.data.chapterPath).then(refresh);
           }
@@ -211,6 +257,20 @@ export default function DownloadsScreen() {
         params: {
           id: `${row.data.mangaId}~${row.data.chapterId}`,
           offline: '1',
+          title: row.data.title,
+          cover: row.data.cover,
+          chapter: row.data.chapterTitle,
+        },
+      });
+      return;
+    }
+    if (row.kind === 'scraped') {
+      router.push({
+        pathname: '/chapter/[id]',
+        params: {
+          id: `${row.data.mangaId}~${row.data.chapterId}`,
+          offline: '1',
+          source: row.data.source,
           title: row.data.title,
           cover: row.data.cover,
           chapter: row.data.chapterTitle,
@@ -272,12 +332,79 @@ export default function DownloadsScreen() {
       }
       return;
     }
+    if (row.kind === 'scraped') {
+      const { source, mangaId, chapterId, chapterNumber, chapterTitle, title, cover } = row.data;
+      if (row.data.status === 'downloading') {
+        pauseScrapedChapterDownload(source, mangaId, chapterId);
+        return;
+      }
+      if (row.data.status === 'paused') {
+        resumeScrapedChapterDownload(source, mangaId, chapterId);
+        void downloadScrapedChapter({
+          source,
+          contentId: mangaId,
+          chapterId,
+          chapterNumber,
+          chapterTitle,
+          title,
+          cover,
+        }).then(refresh);
+      }
+      return;
+    }
     if (row.data.status === 'downloading' || row.data.status === 'paused') {
       const batch = getNovelBatchState(row.data.novelPath);
       if (batch) {
         if (row.data.status === 'downloading') pauseNovelBatchDownload(row.data.novelPath);
         else resumeNovelBatchDownload(row.data.novelPath);
       }
+    }
+  };
+
+  const handleRetry = (row: DownloadRow) => {
+    playTap();
+    if (row.kind === 'anime') {
+      const { animeId, episodeId, episodeNumber, episodeTitle, title, cover, episodeThumbnail } = row.data;
+      void downloadAnimeEpisode({
+        animeId,
+        episodeId,
+        episodeNumber,
+        episodeTitle,
+        title,
+        cover,
+        episodeThumbnail,
+      }).then(refresh);
+    } else if (row.kind === 'manga') {
+      const { mangaId, chapterId, chapterNumber, chapterTitle, title, cover } = row.data;
+      void downloadMangaChapter({
+        mangaId,
+        chapterId,
+        chapterNumber,
+        chapterTitle,
+        title,
+        cover,
+      }).then(refresh);
+    } else if (row.kind === 'scraped') {
+      const { source, mangaId, chapterId, chapterNumber, chapterTitle, title, cover } = row.data;
+      void downloadScrapedChapter({
+        source,
+        contentId: mangaId,
+        chapterId,
+        chapterNumber,
+        chapterTitle,
+        title,
+        cover,
+      }).then(refresh);
+    } else {
+      const { novelPath, chapterPath, chapterNumber, chapterTitle, title, cover } = row.data;
+      void downloadNovelChapter({
+        novelPath,
+        chapterPath,
+        chapterNumber,
+        chapterTitle,
+        title,
+        cover,
+      }).then(refresh);
     }
   };
 
@@ -300,7 +427,7 @@ export default function DownloadsScreen() {
     const meta =
       row.kind === 'anime'
         ? `Ep ${row.data.episodeNumber} · ${row.data.episodeTitle}`
-        : row.kind === 'manga'
+        : row.kind === 'manga' || row.kind === 'scraped'
           ? `Ch ${row.data.chapterNumber} · ${row.data.chapterTitle}`
           : row.data.chapterTitle;
 
@@ -330,6 +457,15 @@ export default function DownloadsScreen() {
               {row.data.status === 'paused' ? 'Resume' : 'Pause'}
             </Text>
           </TouchableOpacity>
+        ) : row.data.status === 'error' ? (
+          <View style={styles.rowActions}>
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => handleRetry(row)}>
+              <Text style={[styles.deleteText, { color: colors.primary }]}>Retry</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
             <Text style={styles.deleteText}>Delete</Text>
@@ -367,7 +503,9 @@ export default function DownloadsScreen() {
               ? `a-${item.data.animeId}-${item.data.episodeId}`
               : item.kind === 'manga'
                 ? `m-${item.data.mangaId}-${item.data.chapterId}`
-                : `n-${item.data.novelPath}-${item.data.chapterPath}`
+                : item.kind === 'scraped'
+                  ? `s-${item.data.source}-${item.data.mangaId}-${item.data.chapterId}`
+                  : `n-${item.data.novelPath}-${item.data.chapterPath}`
           }
           contentContainerStyle={styles.list}
           renderSectionHeader={({ section: { title } }) => (

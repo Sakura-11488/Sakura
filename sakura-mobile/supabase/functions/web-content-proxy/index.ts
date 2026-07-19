@@ -1,7 +1,7 @@
 import { corsHeaders, jsonResponse } from '../_shared/wallet-auth.ts';
 
 type ProxyBody = {
-  source?: 'atsu' | 'comics' | 'consumet' | 'novel' | 'upstream';
+  source?: 'atsu' | 'comics' | 'hentai' | 'consumet' | 'novel' | 'upstream';
   path?: string;
   /** Full URL for upstream source (allowlisted hosts only). */
   url?: string;
@@ -15,7 +15,11 @@ type ProxyBody = {
 
 const cors = corsHeaders('POST, OPTIONS');
 const ATSU_BASE = 'https://atsu.moe';
+// Droplet host duplicated here (Deno can't import app lib). Canonical:
+// sakura-mobile/lib/content-hosts.ts. Override via COMICS_PROXY_BASE /
+// HENTAI_PROXY_BASE / CONSUMET_BASE secrets.
 const DEFAULT_COMICS_BASE = 'http://165.232.83.159/comics/v1';
+const DEFAULT_HENTAI_BASE = 'http://165.232.83.159/hentai/v1';
 const DEFAULT_CONSUMET_BASE = 'http://165-232-83-159.nip.io:3000';
 const NOVEL_BASE = 'https://allnovel.org';
 
@@ -37,6 +41,10 @@ const HIANIME_UA =
 
 function comicsBase(): string {
   return (Deno.env.get('COMICS_PROXY_BASE') || DEFAULT_COMICS_BASE).replace(/\/+$/, '');
+}
+
+function hentaiBase(): string {
+  return (Deno.env.get('HENTAI_PROXY_BASE') || DEFAULT_HENTAI_BASE).replace(/\/+$/, '');
 }
 
 function consumetBase(): string {
@@ -99,6 +107,10 @@ Deno.serve(async (req) => {
       const path = payload.path?.trim() ?? '';
       if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);
       targetUrl = buildUrl(comicsBase(), path, payload.query);
+    } else if (source === 'hentai') {
+      const path = payload.path?.trim() ?? '';
+      if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);
+      targetUrl = buildUrl(hentaiBase(), path, payload.query);
     } else if (source === 'consumet') {
       const path = payload.path?.trim() ?? '';
       if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);

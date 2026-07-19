@@ -20,6 +20,7 @@ import { Platform } from 'react-native';
 import { UnreadMessagesProvider } from '@/lib/unread-messages-context';
 import { ThemeProvider, useTheme } from '@/lib/theme';
 import { I18nProvider } from '@/lib/i18n';
+import { ContentPrefsProvider } from '@/lib/content-prefs';
 import AnimatedSplash from '@/components/ui/AnimatedSplash';
 import FallingLeaves from '@/components/ui/FallingLeaves';
 import AnimeDownloadBridge from '@/components/anime/AnimeDownloadBridge';
@@ -114,6 +115,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <ThemeProvider>
         <I18nProvider>
+        <ContentPrefsProvider>
         <WalletProvider>
           <WebTransactionAuthProvider>
           <UnreadMessagesProvider>
@@ -166,6 +168,7 @@ export default function RootLayout() {
           </UnreadMessagesProvider>
           </WebTransactionAuthProvider>
         </WalletProvider>
+        </ContentPrefsProvider>
         </I18nProvider>
         </ThemeProvider>
       </SafeAreaProvider>

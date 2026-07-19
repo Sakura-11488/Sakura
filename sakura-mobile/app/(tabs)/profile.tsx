@@ -720,6 +720,18 @@ export default function ProfileScreen() {
             colors={colors}
           />
           <MenuRow
+            label="Quests & Rewards"
+            icon={<IconBadge bg="#FF375F"><HistoryIcon color="#fff" /></IconBadge>}
+            onPress={onTap(() => router.push('/quests' as any))}
+            colors={colors}
+          />
+          <MenuRow
+            label="Fan-Art Studio"
+            icon={<IconBadge bg="#8A2BE2"><LibraryIcon color="#fff" /></IconBadge>}
+            onPress={onTap(() => router.push('/fan-art' as any))}
+            colors={colors}
+          />
+          <MenuRow
             label="Settings"
             icon={<IconBadge bg={colors.surfaceTertiary}><SettingsIcon color="#fff" /></IconBadge>}
             onPress={onTap(() => router.push('/settings'))}

@@ -12,10 +12,13 @@ import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { fetchMangaChapterPages } from '@/lib/manga';
 import { fetchComicPages } from '@/lib/comics';
+import { fetchHentaiPages } from '@/lib/hentai';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
 import { setMangaReadProgress } from '@/lib/reader-progress';
+import { recordReadingEvent } from '@/lib/gamification';
 import { getOfflineMangaPageUris } from '@/lib/manga-offline';
+import { getScrapedOfflinePageUris } from '@/lib/scraped-offline';
 import EmptyState from '@/components/ui/EmptyState';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
@@ -58,7 +61,10 @@ export default function ChapterReader() {
     gated?: string;
   }>();
   const isComics = source === 'comics';
-  const isGated = gated === '1' && !isComics;
+  const isHentai = source === 'hentai';
+  // External droplet-scraped sources: no offline downloads, no pass-gating.
+  const isExternal = isComics || isHentai;
+  const isGated = gated === '1' && !isExternal;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { address } = useWallet();
@@ -162,7 +168,7 @@ export default function ChapterReader() {
     let cancelled = false;
 
     (async () => {
-      if (offline === '1' && !isComics) {
+      if (offline === '1' && !isExternal) {
         const local = await getOfflineMangaPageUris(mangaId, chapterId);
         if (cancelled) return;
         if (local?.length) {
@@ -172,9 +178,20 @@ export default function ChapterReader() {
         }
       }
 
-      if (isComics) {
+      if (isExternal) {
+        if (offline === '1') {
+          const local = await getScrapedOfflinePageUris(isHentai ? 'hentai' : 'comics', mangaId, chapterId);
+          if (cancelled) return;
+          if (local?.length) {
+            setPages(local.map((uri, i) => ({ id: `page-${i}`, url: uri })));
+            setLoading(false);
+            return;
+          }
+        }
         try {
-          const urls = await fetchComicPages(mangaId, chapterId);
+          const urls = isHentai
+            ? await fetchHentaiPages(mangaId, chapterId)
+            : await fetchComicPages(mangaId, chapterId);
           if (!cancelled) {
             setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
           }
@@ -201,12 +218,15 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, chapterId, offline, isComics, isGated, hasAccess]);
+  }, [mangaId, chapterId, offline, isExternal, isHentai, isGated, hasAccess]);
 
   const uiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
 
   useEffect(() => {
     if (loading || renderedPages.length === 0) return;
+    // 18+ reading is never surfaced in Continue Reading or lock-screen activity
+    // (it would leak past the settings toggle and the reopen path has no source).
+    if (isHentai) return;
     const pageNumber = currentPage + 1;
     const total = renderedPages.length;
     upsertReadingActivity(
@@ -219,7 +239,7 @@ export default function ChapterReader() {
       },
       id ? `sakura://chapter/${id}?p=${pageNumber}` : undefined,
     );
-  }, [chapterId, currentPage, id, loading, renderedPages.length]);
+  }, [chapterId, currentPage, id, loading, renderedPages.length, isHentai]);
 
   useEffect(() => {
     didInitialScroll.current = false;
@@ -287,6 +307,8 @@ export default function ChapterReader() {
 
   useEffect(() => {
     if (!mangaId || !chapterId || renderedPages.length === 0) return;
+    // 18+ reading progress is never persisted (keeps it out of Continue Reading).
+    if (isHentai) return;
     const page = currentPage + 1;
     if (page < 2 && renderedPages.length > 3) return;
     const t = setTimeout(() => {
@@ -309,10 +331,14 @@ export default function ChapterReader() {
     mangaTitle,
     mangaCover,
     chapterLabel,
+    isHentai,
   ]);
 
   useEffect(() => {
     return () => {
+      // Never persist 18+ progress or touch the shared reading-activity record
+      // (clearing it here would wipe a legitimate manga/comic session).
+      if (isHentai) return;
       if (mangaId && chapterId && renderedPages.length > 0) {
         void setMangaReadProgress({
           mangaId,
@@ -327,6 +353,35 @@ export default function ChapterReader() {
       endReadingActivity();
     };
   }, []);
+
+  // ── Reading gamification: report the read on exit (dwell + completion). ──
+  const gamStartRef = useRef(Date.now());
+  const gamPageRef = useRef(0);
+  const gamTotalRef = useRef(0);
+  useEffect(() => {
+    gamStartRef.current = Date.now();
+  }, [chapterId]);
+  useEffect(() => {
+    gamPageRef.current = currentPage + 1;
+    gamTotalRef.current = renderedPages.length;
+  });
+  useEffect(() => {
+    return () => {
+      if (isHentai || !mangaId || !chapterId) return;
+      const total = gamTotalRef.current;
+      if (total <= 0) return;
+      const progress = Math.min(1, gamPageRef.current / total);
+      void recordReadingEvent({
+        kind: 'manga',
+        contentId: mangaId,
+        chapterId,
+        seriesId: mangaId,
+        progress,
+        dwellMs: Date.now() - gamStartRef.current,
+        completed: progress >= 0.9,
+      });
+    };
+  }, [mangaId, chapterId, isHentai]);
 
   const toggleUI = () => {
     const next = !uiVisible;

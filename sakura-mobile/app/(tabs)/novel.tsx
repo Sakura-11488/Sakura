@@ -51,6 +51,7 @@ import {
   type ContinueReadingItem,
 } from '@/lib/reader-progress';
 import ContinueReadingRow from '@/components/ui/ContinueReadingRow';
+import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 import EmptyState from '@/components/ui/EmptyState';
 import { useFocusEffect } from 'expo-router';
 
@@ -807,6 +808,8 @@ export default function NovelScreen() {
               <ContinueReadingRow items={continueNovels} title="Continue Reading" />
             </Animated.View>
           )}
+
+          {!isSearching && <CreatorWorksRow kind="novel" />}
 
           {/* Genre chips */}
           {!isSearching && (

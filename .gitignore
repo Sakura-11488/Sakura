@@ -84,3 +84,8 @@ scripts/run-manga-source-bakeoff.mjs
 scripts/deploy-treasury.ps1
 *.bin
 /main.js
+
+# Session build/sync artifacts (never commit)
+.psyop-*
+release-build*.log
+sakura-mobile/.export-sync-smoke/

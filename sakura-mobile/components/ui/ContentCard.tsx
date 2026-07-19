@@ -11,6 +11,11 @@ import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useRouter } from 'expo-router';
 import { Colors, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
+import { useTheme } from '@/lib/theme';
+
+// Neutral placeholder shown while a poster loads — kills the white flash that a
+// blank <Image> would otherwise show in dark mode. Reused from the anime screens.
+const POSTER_BLURHASH = 'L02?U100~A~qIURjofWB~qxuRjWB';
 
 export interface ContentItem {
   id: string;
@@ -18,7 +23,7 @@ export interface ContentItem {
   cover: string;
   type: 'anime' | 'manga' | 'novel';
   /** For manga-type items, which backing source to read from. Defaults to atsu manga. */
-  source?: 'manga' | 'comics';
+  source?: 'manga' | 'comics' | 'hentai';
   badge?: string;
   score?: number;
 }
@@ -26,8 +31,9 @@ export interface ContentItem {
 const CARD_W = 112;
 const CARD_H = CARD_W * 1.46;
 
-export default function ContentCard({ item }: { item: ContentItem }) {
+function ContentCard({ item }: { item: ContentItem }) {
   const router = useRouter();
+  const { colors } = useTheme();
   const scale = useSharedValue(1);
   const shadow = useSharedValue(0.06);
 
@@ -48,15 +54,15 @@ export default function ContentCard({ item }: { item: ContentItem }) {
   const handlePress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     playTap();
-    if (item.type === 'manga' && item.source === 'comics') {
-      router.push({ pathname: '/manga/[id]', params: { id: item.id, source: 'comics' } } as any);
+    if (item.type === 'manga' && item.source && item.source !== 'manga') {
+      router.push({ pathname: '/manga/[id]', params: { id: item.id, source: item.source } } as any);
       return;
     }
     router.push(`/${item.type}/${item.id}` as any);
   };
 
   return (
-    <Animated.View style={[s.wrap, style, Shadow.md]}>
+    <Animated.View style={[s.wrap, { backgroundColor: colors.surface }, style, Shadow.md]}>
       <TouchableOpacity
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
@@ -64,7 +70,16 @@ export default function ContentCard({ item }: { item: ContentItem }) {
         activeOpacity={1}
         style={s.card}
       >
-        <Image source={{ uri: item.cover }} style={s.img} contentFit="cover" transition={300} />
+        <Image
+          source={{ uri: item.cover }}
+          style={[s.img, { backgroundColor: colors.surface }]}
+          contentFit="cover"
+          transition={220}
+          cachePolicy="memory-disk"
+          recyclingKey={item.id}
+          placeholder={{ blurhash: POSTER_BLURHASH }}
+          placeholderContentFit="cover"
+        />
 
         {item.badge && (
           <View style={s.badge}>
@@ -97,7 +112,6 @@ const s = StyleSheet.create({
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 12,
-    backgroundColor: Colors.white,
   },
   card: {
     width: CARD_W,
@@ -149,3 +163,7 @@ const s = StyleSheet.create({
   star: { color: Colors.gold, fontSize: 10 },
   score: { color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold },
 });
+
+// Memoized: these render in long horizontal rails and grids that re-render on
+// scroll/category changes; the item identity is stable so re-renders are skipped.
+export default React.memo(ContentCard);

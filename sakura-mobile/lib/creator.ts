@@ -209,6 +209,71 @@ export async function getWorkReleases(workId: string): Promise<CreatorRelease[]>
   return (data ?? []) as CreatorRelease[];
 }
 
+/**
+ * Public catalog: the most recent published works of a given kind, across all
+ * creators. Powers the "From Sakura Creators" rows on the Novels/Manga/Anime
+ * tabs.
+ */
+export async function listPublishedWorks(
+  kind: CreatorWorkKind,
+  limit = 30,
+): Promise<CreatorWork[]> {
+  const { data, error } = await supabase
+    .from('creator_works')
+    .select('*')
+    .eq('kind', kind)
+    .eq('publication_status', 'published')
+    .eq('visibility', 'public')
+    .order('published_at', { ascending: false, nullsFirst: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as CreatorWork[];
+}
+
+export interface WorkReadRelease {
+  id: string;
+  sequence_number: number;
+  title: string;
+  summary: string;
+  content_type: string;
+  body_text: string;
+  published_at: string | null;
+  media: { pages?: string[]; videoPath?: string | null; posterPath?: string | null };
+}
+
+export interface WorkReadPayload {
+  work: {
+    id: string;
+    creator_wallet: string;
+    kind: CreatorWorkKind;
+    title: string;
+    slug: string | null;
+    description: string;
+    genres: string[];
+    series_status: string;
+    published_at: string | null;
+    cover_url: string | null;
+  };
+  releases: WorkReadRelease[];
+}
+
+/**
+ * Load a public creator work for reading: work + published releases + per-kind
+ * media URLs (novel body_text inline, signed manga page URLs, droplet anime
+ * video paths). Served by the read-work-media edge function (service role, so
+ * private manga pages can be signed).
+ */
+export async function fetchWorkForReading(workId: string): Promise<WorkReadPayload> {
+  const { data, error } = await supabase.functions.invoke('read-work-media', {
+    body: { work_id: workId },
+  });
+  if (error) throw new Error(error.message || 'Could not load this work.');
+  if (data && typeof data === 'object' && 'error' in data && (data as { error?: string }).error) {
+    throw new Error(String((data as { error: string }).error));
+  }
+  return data as WorkReadPayload;
+}
+
 function contentTypeForKind(kind: CreatorWorkKind): ReleaseContentType {
   if (kind === 'manga') return 'manga_chapter';
   if (kind === 'anime') return 'anime_episode';
@@ -299,46 +364,10 @@ export function publicCoverUrl(bucket: string, objectPath: string): string {
   return `${base}/storage/v1/object/public/${bucket}/${objectPath}`;
 }
 
-export async function uploadWorkCover(input: {
-  walletAddress: string;
-  workId: string;
-  localUri: string;
-  mimeType?: string;
-}): Promise<string | null> {
-  const ext = input.mimeType?.includes('png') ? 'png' : 'jpg';
-  const objectPath = `${input.walletAddress}/${input.workId}/cover.${ext}`;
-
-  const base64 = await FileSystem.readAsStringAsync(input.localUri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const binary = globalThis.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-  const { error: uploadErr } = await supabase.storage
-    .from('creator-covers')
-    .upload(objectPath, bytes, {
-      contentType: input.mimeType || `image/${ext}`,
-      upsert: true,
-    });
-
-  if (uploadErr) {
-    console.warn('Cover upload failed:', uploadErr.message);
-    return null;
-  }
-
-  const coverUrl = publicCoverUrl('creator-covers', objectPath);
-  const { error: metaErr } = await supabase
-    .from('creator_works')
-    .update({
-      release_metadata: { cover_url: coverUrl, cover_path: objectPath },
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', input.workId);
-  if (metaErr) throw metaErr;
-
-  return coverUrl;
-}
+// NOTE: cover uploads now go through the `upload-work-media` edge function
+// (see uploadWorkImage in lib/creator-media.ts). A direct client storage write
+// + creator_works UPDATE is blocked by RLS (the app has no Supabase session),
+// so the old uploadWorkCover has been removed.
 
 export function workCoverUrl(work: CreatorWork): string | null {
   const meta = work.release_metadata || {};

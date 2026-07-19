@@ -68,3 +68,6 @@ verify_jwt = false
 
 [functions.web-media-proxy]
 verify_jwt = false
+
+[functions.upload-work-media]
+verify_jwt = false

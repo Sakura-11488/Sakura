@@ -43,10 +43,20 @@ import {
   MangaDetail as MangaData,
   MangaChapter,
 } from '@/lib/manga';
-import { fetchComicDetail, fetchComicChapters } from '@/lib/comics';
+import { fetchComicDetail, fetchComicChapters, fetchComicPages } from '@/lib/comics';
+import { fetchHentaiDetail, fetchHentaiChapters, fetchHentaiPages } from '@/lib/hentai';
+import {
+  downloadScrapedChapter,
+  getScrapedOfflineMap,
+  subscribeScrapedOffline,
+  pauseScrapedChapterDownload,
+  resumeScrapedChapterDownload,
+  type ScrapedSource,
+} from '@/lib/scraped-offline';
 import {
   downloadMangaChapter,
   downloadAllMangaChapters,
+  fetchChapterPageUrls,
   getOfflineMapForManga,
   getMangaBatchState,
   getOfflineMangaPageUris,
@@ -58,6 +68,7 @@ import {
   subscribeMangaBatch,
   type OfflineMangaChapter,
 } from '@/lib/manga-offline';
+import { saveImagesZip } from '@/lib/web-download';
 import { playTap, onTap } from '@/lib/sound';
 import {
   getMangaReadProgress,
@@ -426,6 +437,11 @@ export default function MangaDetail() {
   const { colors } = useTheme();
   const mangaId = String(id || '');
   const isComics = source === 'comics';
+  const isHentai = source === 'hentai';
+  // Both comics and hentai are external droplet-scraped sources that reuse this
+  // screen but skip manga-only features (offline downloads, pass-gating,
+  // chapter-thumbnail fetches).
+  const isExternal = isComics || isHentai;
 
   const [manga, setManga] = useState<MangaData | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
@@ -447,10 +463,22 @@ export default function MangaDetail() {
 
   useEffect(() => {
     if (!mangaId) return;
+    const detailFetch = isHentai
+      ? fetchHentaiDetail(mangaId)
+      : isComics
+        ? fetchComicDetail(mangaId)
+        : fetchMangaDetail(mangaId);
+    const chaptersFetch = isHentai
+      ? fetchHentaiChapters(mangaId)
+      : isComics
+        ? fetchComicChapters(mangaId)
+        : fetchMangaChapters(mangaId);
     Promise.all([
-      isComics ? fetchComicDetail(mangaId) : fetchMangaDetail(mangaId),
-      isComics ? fetchComicChapters(mangaId) : fetchMangaChapters(mangaId),
-      Library.isSaved(mangaId, 'manga'),
+      detailFetch,
+      chaptersFetch,
+      // Hentai is never saved to the library (shared 'manga' namespace + no
+      // source-aware library rows), so don't bother checking saved state.
+      isHentai ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga'),
     ]).then(([detail, chs, isSaved]) => {
       setManga(detail);
       setChapters(chs.sort((a, b) => a.number - b.number));
@@ -470,18 +498,24 @@ export default function MangaDetail() {
   }, [mangaId]);
 
   const refreshOffline = useCallback(() => {
-    if (!mangaId || isComics) return;
-    getOfflineMapForManga(mangaId).then(setOfflineMap);
-  }, [mangaId, isComics]);
+    if (!mangaId) return;
+    if (isComics || isHentai) {
+      getScrapedOfflineMap(isHentai ? 'hentai' : 'comics', mangaId).then(setOfflineMap);
+    } else {
+      getOfflineMapForManga(mangaId).then(setOfflineMap);
+    }
+  }, [mangaId, isComics, isHentai]);
 
   useEffect(() => {
-    if (!mangaId || isComics) return;
+    if (!mangaId) return;
     refreshOffline();
-    return subscribeOfflineManga(refreshOffline);
-  }, [mangaId, isComics, refreshOffline]);
+    return isComics || isHentai
+      ? subscribeScrapedOffline(refreshOffline)
+      : subscribeOfflineManga(refreshOffline);
+  }, [mangaId, isComics, isHentai, refreshOffline]);
 
   useEffect(() => {
-    if (!mangaId || isComics) return;
+    if (!mangaId || isExternal) return;
     const refreshBatch = () => {
       const state = getMangaBatchState(mangaId);
       setBatchPaused(!!state?.paused);
@@ -515,13 +549,13 @@ export default function MangaDetail() {
   // Latest chapters of an ongoing series sit behind the monthly pass. Comics
   // are never gated (separate catalogue, no editorial ongoing signal).
   const gatedChapterIds = useMemo(
-    () => (isComics ? new Set<string>() : getGatedChapterIds(manga?.status, chapters)),
-    [isComics, manga?.status, chapters],
+    () => (isExternal ? new Set<string>() : getGatedChapterIds(manga?.status, chapters)),
+    [isExternal, manga?.status, chapters],
   );
 
   const openMangaChapter = useCallback((ch: MangaChapter, resume = false) => {
     if (!manga) return;
-    const off = isComics ? undefined : offlineMap[ch.id];
+    const off = offlineMap[ch.id];
     router.push({
       pathname: '/chapter/[id]',
       params: {
@@ -529,64 +563,86 @@ export default function MangaDetail() {
         title: manga.title,
         cover: (manga as { image?: string }).image || manga.cover || '',
         chapter: ch.title,
-        ...(isComics ? { source: 'comics' } : {}),
+        ...(isExternal ? { source } : {}),
         ...(gatedChapterIds.has(ch.id) ? { gated: '1' } : {}),
         ...(resume && mangaProgress ? { p: String(mangaProgress.page) } : {}),
         ...(off?.status === 'ready' ? { offline: '1' } : {}),
       },
     });
-  }, [manga, mangaId, offlineMap, mangaProgress, router, isComics, gatedChapterIds]);
+  }, [manga, mangaId, offlineMap, mangaProgress, router, isExternal, source, gatedChapterIds]);
 
   const handleDownloadChapter = useCallback(async (ch: MangaChapter) => {
     if (!manga) return;
     playTap();
+    // Web has no offline store — fetch the chapter's pages and save them as a
+    // single .zip download (works for manga, comics, and 18+ alike).
+    if (Platform.OS === 'web') {
+      setToast('Preparing pages…');
+      try {
+        const urls = isHentai
+          ? await fetchHentaiPages(mangaId, ch.id)
+          : isComics
+            ? await fetchComicPages(mangaId, ch.id)
+            : await fetchChapterPageUrls(mangaId, ch.id);
+        if (!urls.length) throw new Error('No pages found for this chapter.');
+        const saved = await saveImagesZip(`${manga.title} - Ch ${ch.number}`, urls);
+        setToast(`Saved ${saved} pages to your device`);
+      } catch (e) {
+        setToast(e instanceof Error ? e.message : 'Download failed');
+      }
+      return;
+    }
     const existing = offlineMap[ch.id];
     if (existing?.status === 'ready') {
       setToast('Chapter already downloaded');
       return;
     }
+    const cover = (manga as { image?: string }).image || manga.cover || '';
+    // Comics/18+ persist through the scraped-offline store; regular manga through
+    // manga-offline. Both expose the same status shape so the row UI is shared.
+    const scrapedSource: ScrapedSource | null = isHentai ? 'hentai' : isComics ? 'comics' : null;
+
     if (existing?.status === 'downloading') {
-      pauseMangaChapterDownload(mangaId, ch.id);
+      if (scrapedSource) pauseScrapedChapterDownload(scrapedSource, mangaId, ch.id);
+      else pauseMangaChapterDownload(mangaId, ch.id);
       setToast('Download paused');
       return;
     }
+
     if (existing?.status === 'paused') {
-      resumeMangaChapterDownload(mangaId, ch.id);
+      if (scrapedSource) resumeScrapedChapterDownload(scrapedSource, mangaId, ch.id);
+      else resumeMangaChapterDownload(mangaId, ch.id);
       setToast('Resuming download…');
-      try {
-        const result = await downloadMangaChapter({
-          mangaId,
-          chapterId: ch.id,
-          chapterNumber: ch.number,
-          chapterTitle: ch.title,
-          title: manga.title,
-          cover: manga.image || manga.cover || '',
-        });
-        setToast(result.paused ? 'Download paused' : 'Chapter downloaded');
-        refreshOffline();
-      } catch (e) {
-        setToast(e instanceof Error ? e.message : 'Download failed');
-        refreshOffline();
-      }
-      return;
+    } else {
+      setToast('Downloading chapter…');
     }
-    setToast('Downloading chapter…');
+
     try {
-      const result = await downloadMangaChapter({
-        mangaId,
-        chapterId: ch.id,
-        chapterNumber: ch.number,
-        chapterTitle: ch.title,
-        title: manga.title,
-        cover: manga.image || manga.cover || '',
-      });
+      const result = scrapedSource
+        ? await downloadScrapedChapter({
+            source: scrapedSource,
+            contentId: mangaId,
+            chapterId: ch.id,
+            chapterNumber: ch.number,
+            chapterTitle: ch.title,
+            title: manga.title,
+            cover,
+          })
+        : await downloadMangaChapter({
+            mangaId,
+            chapterId: ch.id,
+            chapterNumber: ch.number,
+            chapterTitle: ch.title,
+            title: manga.title,
+            cover,
+          });
       setToast(result.paused ? 'Download paused' : 'Chapter downloaded');
       refreshOffline();
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'Download failed');
       refreshOffline();
     }
-  }, [manga, mangaId, offlineMap, refreshOffline]);
+  }, [manga, mangaId, offlineMap, refreshOffline, isComics, isHentai]);
 
   const runBatchDownload = useCallback(async () => {
     if (!manga || chapters.length === 0) return;
@@ -954,8 +1010,8 @@ export default function MangaDetail() {
         onDownload={handleDownloadChapter}
         onOpen={openMangaChapter}
         isResume={canContinueManga && ch.id === resumeChapterId}
-        hideDownload={isComics}
-        disableThumbFetch={isComics}
+        hideDownload={false}
+        disableThumbFetch={isExternal}
         locked={gatedChapterIds.has(ch.id)}
       />
     ),
@@ -967,7 +1023,7 @@ export default function MangaDetail() {
       openMangaChapter,
       canContinueManga,
       resumeChapterId,
-      isComics,
+      isExternal,
       gatedChapterIds,
     ],
   );
@@ -1037,13 +1093,15 @@ export default function MangaDetail() {
             <TouchableOpacity style={s.navBtn} onPress={handleShare} activeOpacity={0.8}>
               <ShareIcon />
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[s.navBtn, saved && s.navBtnSaved]}
-              onPress={handleSave}
-              activeOpacity={1}
-            >
-              <BookmarkIcon saved={saved} />
-            </TouchableOpacity>
+            {!isHentai && (
+              <TouchableOpacity
+                style={[s.navBtn, saved && s.navBtnSaved]}
+                onPress={handleSave}
+                activeOpacity={1}
+              >
+                <BookmarkIcon saved={saved} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </View>
@@ -1068,13 +1126,15 @@ export default function MangaDetail() {
           <TouchableOpacity style={s.navBtn} onPress={handleShare} activeOpacity={0.8}>
             <ShareIcon />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[s.navBtn, saved && s.navBtnSaved]}
-            onPress={handleSave}
-            activeOpacity={1}
-          >
-            <BookmarkIcon saved={saved} />
-          </TouchableOpacity>
+          {!isHentai && (
+            <TouchableOpacity
+              style={[s.navBtn, saved && s.navBtnSaved]}
+              onPress={handleSave}
+              activeOpacity={1}
+            >
+              <BookmarkIcon saved={saved} />
+            </TouchableOpacity>
+          )}
         </View>
       </Animated.View>
 
@@ -1246,7 +1306,7 @@ export default function MangaDetail() {
                 openMangaChapter(playChapter, canContinueManga && !!resumeChapter)
               }
             />
-            {chapters.length > 0 && !isComics && (
+            {chapters.length > 0 && !isExternal && Platform.OS !== 'web' && (
               <TouchableOpacity
                 style={s.dlOutlineBtn}
                 activeOpacity={0.85}

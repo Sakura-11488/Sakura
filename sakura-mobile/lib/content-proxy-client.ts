@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
+import { isDropletHost } from './content-hosts';
 
-export type ContentProxySource = 'atsu' | 'comics' | 'consumet' | 'novel' | 'upstream';
+export type ContentProxySource = 'atsu' | 'comics' | 'hentai' | 'consumet' | 'novel' | 'upstream';
 
 export type ContentProxyRequest = {
   source: ContentProxySource;
@@ -50,8 +51,6 @@ export async function invokeContentProxy<T>(req: ContentProxyRequest): Promise<T
   return data as T;
 }
 
-const MEDIA_HOST = '165-232-83-159.nip.io';
-
 /** Rewrite Sakura media-server HTTP URLs to an HTTPS media proxy (web only). */
 export function getWebMediaProxyUrl(mediaPathOrUrl: string): string {
   const sameOriginProxy = typeof window !== 'undefined' ? '/api/media-proxy/' : '';
@@ -63,7 +62,7 @@ export function getWebMediaProxyUrl(mediaPathOrUrl: string): string {
   if (mediaPathOrUrl.startsWith('http://') || mediaPathOrUrl.startsWith('https://')) {
     try {
       const parsed = new URL(mediaPathOrUrl);
-      if (parsed.hostname === MEDIA_HOST || parsed.hostname === '165.232.83.159') {
+      if (isDropletHost(parsed.hostname)) {
         path = parsed.pathname + parsed.search;
       } else {
         return mediaPathOrUrl;
@@ -80,8 +79,7 @@ export function getWebMediaProxyUrl(mediaPathOrUrl: string): string {
 
 export function isSakuraMediaUrl(url: string): boolean {
   try {
-    const host = new URL(url).hostname;
-    return host === MEDIA_HOST || host === '165.232.83.159';
+    return isDropletHost(new URL(url).hostname);
   } catch {
     return false;
   }

@@ -1,6 +1,8 @@
 import { corsHeaders } from '../_shared/wallet-auth.ts';
 
 const cors = corsHeaders('GET, HEAD, OPTIONS');
+// Droplet host duplicated here (Deno can't import app lib). Canonical:
+// sakura-mobile/lib/content-hosts.ts. Override via SAKURA_MEDIA_BASE secret.
 const MEDIA_BASE = 'http://165-232-83-159.nip.io';
 const ALLOWED_HOSTS = new Set(['165-232-83-159.nip.io', '165.232.83.159']);
 

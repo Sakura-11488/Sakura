@@ -1,7 +1,10 @@
+import { Platform } from 'react-native';
 import { getOrSetCached } from '@/lib/cache';
 import type { ContentItem } from '@/components/ui/ContentCard';
 import type { MangaDetail, MangaChapter } from '@/lib/manga';
 import { comicsProxyFetch } from '@/lib/comics-proxy-fetch';
+import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
+import { COMICS_PROXY_DEFAULT } from '@/lib/content-hosts';
 
 /**
  * Sakura Comics source (XOXO Comics-backed) for the Expo app.
@@ -15,7 +18,7 @@ import { comicsProxyFetch } from '@/lib/comics-proxy-fetch';
  */
 
 export const COMICS_PROXY_BASE = (
-  process.env.EXPO_PUBLIC_COMICS_PROXY || 'http://165.232.83.159/comics/v1'
+  process.env.EXPO_PUBLIC_COMICS_PROXY || COMICS_PROXY_DEFAULT
 ).replace(/\/+$/, '');
 
 type ProxyListItem = {
@@ -61,9 +64,15 @@ async function requestProxy<T>(path: string): Promise<T> {
 export function proxyComicImage(url?: string | null): string {
   if (!url) return '';
   if (url.startsWith('data:')) return url;
-  if (!/^https?:\/\//i.test(url)) return url;
-  if (url.startsWith(`${COMICS_PROXY_BASE}/img?`)) return url;
-  return `${COMICS_PROXY_BASE}/img?u=${encodeURIComponent(url)}`;
+  // Normalize protocol-relative (//host/…) URLs to https before wrapping.
+  const abs = url.startsWith('//') ? `https:${url}` : url;
+  if (!/^https?:\/\//i.test(abs)) return url;
+  const proxied = abs.startsWith(`${COMICS_PROXY_BASE}/img?`)
+    ? abs
+    : `${COMICS_PROXY_BASE}/img?u=${encodeURIComponent(abs)}`;
+  // Droplet is HTTP-only; on the HTTPS web build route through the same-origin
+  // media proxy to avoid mixed-content blocking. Native is unaffected.
+  return Platform.OS === 'web' ? getWebMediaProxyUrl(proxied) : proxied;
 }
 
 function mapListItem(item: ProxyListItem): ContentItem {

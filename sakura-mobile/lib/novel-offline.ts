@@ -153,6 +153,41 @@ export async function listOfflineNovelChapters(): Promise<OfflineNovelChapter[]>
   return Object.values(mem.chapters).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+const MODULE_LOAD_TIME = Date.now();
+let reconciledInterrupted = false;
+
+/**
+ * On launch, any chapter still `downloading` is a leftover from a killed session.
+ * Novel chapters download fast and have no paused state, so mark them `error`
+ * with a resumable message — the Downloads screen offers retry on error rows.
+ * Runs once per process; only touches rows last updated before this session.
+ */
+export async function reconcileInterruptedNovelChapters(): Promise<void> {
+  if (reconciledInterrupted) return;
+  reconciledInterrupted = true;
+  try {
+    await ensureLoaded();
+    let changed = false;
+    for (const row of Object.values(mem.chapters)) {
+      if (row.status === 'downloading' && row.updatedAt < MODULE_LOAD_TIME) {
+        mem.chapters[chapterKey(row.novelPath, row.chapterPath)] = {
+          ...row,
+          status: 'error',
+          error: 'Interrupted — tap to retry.',
+          updatedAt: Date.now(),
+        };
+        changed = true;
+      }
+    }
+    if (changed) {
+      await persist();
+      notify();
+    }
+  } catch {
+    // best-effort
+  }
+}
+
 export async function deleteOfflineNovelChapter(novelPath: string, chapterPath: string) {
   await ensureLoaded();
   try {

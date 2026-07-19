@@ -2,7 +2,9 @@ import type { AnimeResult, AnimeInfo } from "./anime";
 
 export const PSYOP_ID = "psyopanime";
 
-export const PSYOP_SERVER = "http://165.232.83.159/psyopanime";
+import { DROPLET_IP } from "../../sakura-mobile/lib/content-hosts";
+
+export const PSYOP_SERVER = `http://${DROPLET_IP}/psyopanime`;
 
 function ep(number: number, ytId: string, title: string): { id: string; number: number; title: string; image: string } {
     return {
@@ -57,6 +59,51 @@ export const PSYOP_EPISODES: AnimeInfo["episodes"] = [
     ep(41, "t4RcNosDlmo", "WW3 - IRGC"),
     ep(42, "dmPmpPu5I4E", "Canada\u2019s MMIWG2SLGBTQQIA+"),
     ep(43, "zXlBHNZx_RA", "Untitled 2026 Series - Transformation"),
+    ep(44, "9z36buKz_IE", "Joe Biden is canceled"),
+    ep(45, "MTkCHlty-j4", "Southern Poverty Law Center Scam"),
+    ep(46, "orrYe2SDuN8", "Southern Poverty Law Center Orientation Meeting"),
+    ep(47, "ciijNrFFLl4", "BREAKING - SHOTS FIRED AT WHCA DINNER"),
+    ep(48, "J19z12LGBec", "WHCA UPDATE"),
+    ep(49, "zqS6SRCgaBQ", "World War 11"),
+    ep(50, "_6W-Cjkhy1M", "Hentaivirus"),
+    ep(51, "MF03-Pj92gw", "Mixtape 10/10"),
+    ep(52, "LkyFrj904JY", "WW3 Episode 5 preview"),
+    ep(53, "P9_dPX3_MMA", "What are you fighting for?"),
+    ep(54, "Ax-5qViMdRQ", "Enemies of Disclosure preview"),
+    ep(55, "1oNINhwUlSg", "Bitcoin Crash May 2026"),
+    ep(56, "37WQna24yBw", "Breaking!  Strait of Hormuz will open"),
+    ep(57, "2kDEAPvD_2Y", "Shots reported outside of the White House"),
+    ep(58, "i6Epuqc6Ikw", "WW3 Episode 5"),
+    ep(59, "K93Q_p_fGpQ", "World War 3 episodes 1-5 supercut"),
+    ep(60, "qZR7FdCdAIA", "Henry Nowak"),
+    ep(61, "4W1xeCAiOx0", "World War 3 episode 6 preview"),
+    ep(62, "vGJASDZZE98", "Asmongold VS"),
+    ep(63, "aCPQpsYdI0w", "Trump walks out of interview"),
+    ep(64, "1HD3ofBFk7c", "Iran shoots down US Helicopter"),
+    ep(65, "iaGut06MrKk", "Belfast"),
+    ep(66, "9fAFOljBvJk", "UFO Disclosure"),
+    ep(67, "2qOLJt01va8", "Knicks win game 4"),
+    ep(68, "ZWjlSl4sNCc", "Pentagon shut down"),
+    ep(69, "-ZHzAlzCkzE", "News Network - coming soon"),
+    ep(70, "mopJqNAVNTI", "Space X IPO"),
+    ep(71, "LftIVGEqwP8", "Knicks in 5"),
+    ep(72, "HDRxe4R3kdM", "PsyopQueen 2026 trailer"),
+    ep(73, "kdQvai0KeP0", "Psyopqueen OVA preview"),
+    ep(74, "mc8Sc52Zc5o", "UK bans social media"),
+    ep(75, "5nnhalquFbU", "UFC Terror plot"),
+    ep(76, "hdLxHtHKycM", "Grooming Gang Inquiry"),
+    ep(77, "mg6kDSEaiMA", "UFO series"),
+    ep(78, "Qy63BFlC6Q8", "Enemies of Disclosure: Narrative War"),
+    ep(79, "C5-OPZ23fvk", "Supergirl Movie Review"),
+    ep(80, "84Y-CmsH2EE", "Supergirl VS Doomsday tech demo"),
+    ep(81, "AEY58qovEmU", "Socialist Summer"),
+    ep(82, "kqjLIvWP7Dc", "Technical Demo 2"),
+    ep(83, "pO3pTn4u5tU", "Michael Saylor sells bitcoin"),
+    ep(84, "pPluqbSoWhU", "Venezuela Earthquake"),
+    ep(85, "KGlKVkJkxM0", "News Update"),
+    ep(86, "w-LFecX6D5A", "Enemies of Disclosure preview"),
+    ep(87, "xhGbwW-gd4g", "Russia attacks Kyiv, Ukraine"),
+    ep(88, "YyKwPvbQzPQ", "News Network - Episode 1"),
 ];
 
 export const PSYOP_SEARCH_RESULT: AnimeResult = {

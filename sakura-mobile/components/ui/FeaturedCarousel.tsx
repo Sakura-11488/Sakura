@@ -55,7 +55,7 @@ export interface CarouselItem {
   genres: string[];
   type: 'anime' | 'manga' | 'novel';
   /** For manga-type items, which backing source to read from. Defaults to atsu manga. */
-  source?: 'manga' | 'comics';
+  source?: 'manga' | 'comics' | 'hentai';
 }
 
 // ─── Card ─────────────────────────────────────────────────────────────────────
@@ -172,8 +172,8 @@ function Card({
   const handlePress = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     playTap();
-    if (item.type === 'manga' && item.source === 'comics') {
-      router.push({ pathname: '/manga/[id]', params: { id: item.id, source: 'comics' } } as any);
+    if (item.type === 'manga' && item.source && item.source !== 'manga') {
+      router.push({ pathname: '/manga/[id]', params: { id: item.id, source: item.source } } as any);
       return;
     }
     router.push(`/${item.type}/${item.id}` as any);

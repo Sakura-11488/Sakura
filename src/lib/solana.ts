@@ -1,5 +1,22 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+// Canonical on-chain addresses live in sakura-mobile (single source of truth).
+// addresses.ts is dependency-free strings, safe to import across trees.
+import {
+    SAKURA_MINT_ADDRESS,
+    SAKURA_DECIMALS as SAKURA_DECIMALS_CANONICAL,
+    INO_PROGRAM_ADDRESS,
+    FEE_ROUTER_PROGRAM_ADDRESS,
+    PERCOLATOR_INSURANCE_VAULT_ADDRESS,
+    INSURANCE_SPLIT,
+    BURN_SPLIT,
+    SAKURA_TREASURY_PROGRAM_ADDRESS,
+    SAKURA_TREASURY_ADMIN_ADDRESS,
+    MONTHLY_PASS_PRICE as MONTHLY_PASS_PRICE_CANONICAL,
+    PASS_DURATION_DAYS as PASS_DURATION_DAYS_CANONICAL,
+} from "../../sakura-mobile/lib/wallet/addresses";
+
+export { INSURANCE_SPLIT, BURN_SPLIT };
 
 // ============ Network Config ============
 export const SOLANA_NETWORK = "mainnet-beta";
@@ -15,56 +32,42 @@ export const RPC_ENDPOINT = HELIUS_KEY
     : "https://api.mainnet-beta.solana.com";
 
 // ============ $SAKURA Token Config (Token-2022) ============
-export const SAKURA_MINT = new PublicKey(
-    "EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump"
-);
-// On-chain mint reports decimals = 6 (Token-2022, pump.fun launch). The
-// previous value of 9 silently scaled balances by 1000x and caused Jupiter
-// swap quotes to come back ~1000x too large. Verified via getAsset and
-// getAccountInfo on mainnet.
-export const SAKURA_DECIMALS = 6;
+export const SAKURA_MINT = new PublicKey(SAKURA_MINT_ADDRESS);
+export const SAKURA_DECIMALS = SAKURA_DECIMALS_CANONICAL;
 export const SAKURA_TOKEN_PROGRAM_ID = TOKEN_2022_PROGRAM_ID;
 
 // ============ Ino On-Chain Registry ============
 // Core program for chapter unlocks, milestone tracking, and support recording.
 // See: https://github.com/millw14/ino-sakura-registry
-export const INO_PROGRAM_ID = new PublicKey(
-    "E9ju12He2mnBRaneM4xdtUXECDPXdpQQbU6HtSKb6Hpf"
-);
+export const INO_PROGRAM_ID = new PublicKey(INO_PROGRAM_ADDRESS);
 
 // ============ Pass Config ============
 // Monthly pass purchase triggers unlock_chapter + claim_milestone on Ino
-export const MONTHLY_PASS_PRICE = 100;
-export const PASS_DURATION_DAYS = 30;
+export const MONTHLY_PASS_PRICE = MONTHLY_PASS_PRICE_CANONICAL;
+export const PASS_DURATION_DAYS = PASS_DURATION_DAYS_CANONICAL;
 export const PASS_COLLECTION_NAME = "Sakura Monthly Pass";
 
 // ============ Fee Router (Ino-integrated split) ============
 // Payments are routed through the Ino registry for milestone recording,
 // then the FeeRouter handles the token split: 50% insurance vault, 50% burn.
-export const FEE_ROUTER_PROGRAM_ID = new PublicKey(
-    "FNoE2JUhn981hBDyBMvWJYkw9DThhtYwWoPbw6wgz1rg"
-);
+export const FEE_ROUTER_PROGRAM_ID = new PublicKey(FEE_ROUTER_PROGRAM_ADDRESS);
 
 export const PERCOLATOR_INSURANCE_VAULT = new PublicKey(
-    "63juJmvm1XHCHveWv9WdanxqJX6tD6DLFTZD7dvH12dc"
+    PERCOLATOR_INSURANCE_VAULT_ADDRESS
 );
-
-export const INSURANCE_SPLIT = 50;
-export const BURN_SPLIT = 50;
 
 // ============ Sakura Treasury ============
 // Ino record_support PDA authority. Tips and donations are recorded via
 // the Ino registry before the SPL transfer settles to this admin wallet.
 export const SAKURA_TREASURY_PROGRAM_ID = new PublicKey(
-    "5GBAvcfjpj5XU9Y1wkubdvear2VHk6r55Bf1WjehVuV6"
+    SAKURA_TREASURY_PROGRAM_ADDRESS
 );
-export const SAKURA_TREASURY_ADMIN = new PublicKey(
-    "5NcWtvtQ48QJcizEs9i8H7Ef3YmtmybnSkPQxA2fxFiF"
-);
+export const SAKURA_TREASURY_ADMIN = new PublicKey(SAKURA_TREASURY_ADMIN_ADDRESS);
 
 // ============ Jupiter API Config ============
-// Free key from https://portal.jup.ag — required for swap functionality
-export const JUPITER_API_KEY = "36bac653-fbd8-481d-aa0d-2c91530f8ae3";
+// Free key from https://portal.jup.ag — required for swap functionality.
+// Set NEXT_PUBLIC_JUPITER_API_KEY in .env; never commit the key.
+export const JUPITER_API_KEY = process.env.NEXT_PUBLIC_JUPITER_API_KEY?.trim() || "";
 
 
 // ============ Connection ============

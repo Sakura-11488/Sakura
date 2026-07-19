@@ -5,8 +5,8 @@ import { SAKURA_MINT, SAKURA_DECIMALS } from './config';
 const JUPITER_BASE = 'https://api.jup.ag/swap/v1';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const MAX_PRIORITY_FEE_LAMPORTS = 1_000_000;
-const DEFAULT_JUPITER_API_KEY = '36bac653-fbd8-481d-aa0d-2c91530f8ae3';
-const JUPITER_API_KEY = process.env.EXPO_PUBLIC_JUPITER_API_KEY?.trim() || DEFAULT_JUPITER_API_KEY;
+// Free key from https://portal.jup.ag — set EXPO_PUBLIC_JUPITER_API_KEY in .env; never commit the key.
+const JUPITER_API_KEY = process.env.EXPO_PUBLIC_JUPITER_API_KEY?.trim() || '';
 
 /** React Native has no Node `Buffer`; Jupiter returns base64-encoded transactions. */
 function base64ToBytes(base64: string): Uint8Array {
@@ -87,6 +87,9 @@ function validateJupiterTransaction(tx: VersionedTransaction, quote: SwapQuote, 
 }
 
 export async function getSakuraSwapQuote(amountSol: number): Promise<SwapQuote> {
+  if (!JUPITER_API_KEY) {
+    throw new Error('Jupiter API key not configured. Get a free key at portal.jup.ag and set EXPO_PUBLIC_JUPITER_API_KEY.');
+  }
   const lamports = Math.round(amountSol * 1e9);
   const url = `${JUPITER_BASE}/quote?inputMint=${WSOL_MINT}&outputMint=${SAKURA_MINT.toBase58()}&amount=${lamports}&slippageBps=100&restrictIntermediateTokens=true`;
   const res = await fetch(url, { headers: jupiterHeaders() });

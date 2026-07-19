@@ -1,17 +1,20 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
     getAssociatedTokenAddress,
-    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 
+// Defaults mirror sakura-mobile/lib/wallet/addresses.ts (canonical source).
+// backend builds standalone, so values are duplicated here behind env overrides.
 const SAKURA_MINT = new PublicKey(
     process.env.SAKURA_MINT || "EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump"
 );
 const SAKURA_TREASURY_ADMIN = new PublicKey(
     process.env.SAKURA_TREASURY_ADMIN || "5NcWtvtQ48QJcizEs9i8H7Ef3YmtmybnSkPQxA2fxFiF"
 );
-const SAKURA_DECIMALS = 9;
+// $SAKURA is a Token-2022 mint with 6 decimals (see src/lib/solana.ts)
+const SAKURA_DECIMALS = 6;
 const REQUIRED_FEE = 100_000; // 100,000 $SAKURA
 
 let mainnetConnection: Connection | null = null;
@@ -59,7 +62,7 @@ export async function verifyTradingFee(
             SAKURA_MINT,
             SAKURA_TREASURY_ADMIN,
             false,
-            TOKEN_PROGRAM_ID,
+            TOKEN_2022_PROGRAM_ID,
             ASSOCIATED_TOKEN_PROGRAM_ID
         );
 

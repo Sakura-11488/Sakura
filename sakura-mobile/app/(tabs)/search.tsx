@@ -26,18 +26,20 @@ import EmptyState from '@/components/ui/EmptyState';
 import { fetchTrendingManga, searchManga, toContentItem } from '@/lib/manga';
 import { searchAnime } from '@/lib/anime';
 import { searchNovels } from '@/lib/allnovel';
+import { searchHentai } from '@/lib/hentai';
 import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
 import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
+import { useContentPrefs } from '@/lib/content-prefs';
 
 const { width: W } = Dimensions.get('window');
-const FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
-type Filter = (typeof FILTERS)[number];
+const BASE_FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
+type Filter = (typeof BASE_FILTERS)[number] | '18+';
 
 type SearchResult = {
   key: string;
   title: string;
   cover: string;
-  type: 'manga' | 'anime' | 'novel' | 'user';
+  type: 'manga' | 'anime' | 'novel' | 'user' | 'hentai';
   meta: string;
   navTarget?: string;
   user?: UserSearchResult;
@@ -63,6 +65,11 @@ export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const { address, unlockForAppSession } = useWallet();
+  const { allowAdult } = useContentPrefs();
+  const filters = useMemo<Filter[]>(
+    () => (allowAdult ? [...BASE_FILTERS, '18+'] : [...BASE_FILTERS]),
+    [allowAdult],
+  );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<any>(null);
   const inputRef = useRef<TextInput>(null);
@@ -92,11 +99,12 @@ export default function SearchTabScreen() {
     }
     setLoading(true);
     try {
-      const [mangaRes, animeRes, novelRes, userRes] = await Promise.allSettled([
+      const [mangaRes, animeRes, novelRes, userRes, hentaiRes] = await Promise.allSettled([
         searchManga(q, 12),
         searchAnime(q),
         searchNovels(q),
         searchUsersByUsername(q, 12),
+        allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
       ]);
 
       const merged: SearchResult[] = [];
@@ -152,6 +160,18 @@ export default function SearchTabScreen() {
             });
           });
       }
+      if (allowAdult && hentaiRes.status === 'fulfilled') {
+        hentaiRes.value.slice(0, 10).forEach((item) => {
+          merged.push({
+            key: `hentai-${item.id}`,
+            title: item.title,
+            cover: item.cover,
+            type: 'hentai',
+            meta: '18+',
+            navTarget: `/manga/${item.id}?source=hentai`,
+          });
+        });
+      }
 
       setResults(merged);
     } catch {
@@ -159,7 +179,7 @@ export default function SearchTabScreen() {
     } finally {
       setLoading(false);
     }
-  }, [address]);
+  }, [address, allowAdult]);
 
   const onChangeQuery = useCallback(
     (text: string) => {
@@ -196,10 +216,17 @@ export default function SearchTabScreen() {
   );
 
   const filteredResults = useMemo(() => {
-    if (filter === 'All') return results;
+    // 18+ results are quarantined behind their own chip — never mixed into All.
+    if (filter === 'All') return results.filter((r) => r.type !== 'hentai');
+    if (filter === '18+') return results.filter((r) => r.type === 'hentai');
     if (filter === 'Users') return results.filter((r) => r.type === 'user');
     return results.filter((r) => r.type === filter.toLowerCase());
   }, [filter, results]);
+
+  // If the adult toggle flips off while 18+ is the active chip, snap back to All.
+  useEffect(() => {
+    if (!allowAdult && filter === '18+') setFilter('All');
+  }, [allowAdult, filter]);
 
   const openUserChat = useCallback(
     async (user: UserSearchResult) => {
@@ -425,7 +452,7 @@ export default function SearchTabScreen() {
         ) : (
           <>
             <View style={s.filters}>
-              {FILTERS.map((f) => (
+              {filters.map((f) => (
                 <TouchableOpacity
                   key={f}
                   style={[s.filterChip, filter === f && s.filterChipActive]}

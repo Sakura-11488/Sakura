@@ -1,9 +1,10 @@
 import { Image as RNImage, Platform } from 'react-native';
 import { type AnimeInfo } from './anime';
 import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
+import { MEDIA_BASE_DEFAULT } from '@/lib/content-hosts';
 
 // ─── Media server (nip.io for iOS ATS compliance) ─────────────────────────────
-const MEDIA = 'http://165-232-83-159.nip.io';
+const MEDIA = MEDIA_BASE_DEFAULT;
 const PSYOP_BASE = `${MEDIA}/psyopanime`;
 const TWO_HE_BASE = `${MEDIA}/2heanime`;
 const DEGEGEN_BASE = `${MEDIA}/sakura-originals/degegen-files`;
@@ -14,10 +15,10 @@ const DEGEGEN_ASSET_VERSION = '20260608-3eps';
 export const PSYOP_COVER = require('../assets/images/psyopanime.png');
 export const BURNIE_COVER = require('../assets/images/burnie-senders-poster.png');
 export const TWO_HE_COVER = require('../assets/images/2he.jpg');
-export const TWO_HE_COVER_URI = `${MEDIA}/2heanime.jpg`;
+export const TWO_HE_COVER_URI = webImg(`${MEDIA}/2heanime.jpg`);
 export const DEGEGEN_COVER = require('../assets/images/degenfiles.jpeg');
 export const DEGEGEN_EP1_THUMB = require('../assets/images/degenfiles-ep1.jpeg');
-const DEGEGEN_REMOTE_COVER_URI = `${DEGEGEN_BASE}/cover.png?v=${DEGEGEN_ASSET_VERSION}`;
+const DEGEGEN_REMOTE_COVER_URI = webImg(`${DEGEGEN_BASE}/cover.png?v=${DEGEGEN_ASSET_VERSION}`);
 const DEGEGEN_COVER_URI = DEGEGEN_REMOTE_COVER_URI;
 
 function resolveBundledAssetUri(source: number | { uri: string }): string {
@@ -121,13 +122,58 @@ const PSYOP_EP_RAW: Array<[number, string, string]> = [
   [41, 't4RcNosDlmo', 'WW3 - IRGC'],
   [42, 'dmPmpPu5I4E', "Canada's MMIWG2SLGBTQQIA+"],
   [43, 'zXlBHNZx_RA', 'Untitled 2026 Series - Transformation'],
+  [44, '9z36buKz_IE', 'Joe Biden is canceled'],
+  [45, 'MTkCHlty-j4', 'Southern Poverty Law Center Scam'],
+  [46, 'orrYe2SDuN8', 'Southern Poverty Law Center Orientation Meeting'],
+  [47, 'ciijNrFFLl4', 'BREAKING - SHOTS FIRED AT WHCA DINNER'],
+  [48, 'J19z12LGBec', 'WHCA UPDATE'],
+  [49, 'zqS6SRCgaBQ', 'World War 11'],
+  [50, '_6W-Cjkhy1M', 'Hentaivirus'],
+  [51, 'MF03-Pj92gw', 'Mixtape 10/10'],
+  [52, 'LkyFrj904JY', 'WW3 Episode 5 preview'],
+  [53, 'P9_dPX3_MMA', 'What are you fighting for?'],
+  [54, 'Ax-5qViMdRQ', 'Enemies of Disclosure preview'],
+  [55, '1oNINhwUlSg', 'Bitcoin Crash May 2026'],
+  [56, '37WQna24yBw', 'Breaking!  Strait of Hormuz will open'],
+  [57, '2kDEAPvD_2Y', 'Shots reported outside of the White House'],
+  [58, 'i6Epuqc6Ikw', 'WW3 Episode 5'],
+  [59, 'K93Q_p_fGpQ', 'World War 3 episodes 1-5 supercut'],
+  [60, 'qZR7FdCdAIA', 'Henry Nowak'],
+  [61, '4W1xeCAiOx0', 'World War 3 episode 6 preview'],
+  [62, 'vGJASDZZE98', 'Asmongold VS'],
+  [63, 'aCPQpsYdI0w', 'Trump walks out of interview'],
+  [64, '1HD3ofBFk7c', 'Iran shoots down US Helicopter'],
+  [65, 'iaGut06MrKk', 'Belfast'],
+  [66, '9fAFOljBvJk', 'UFO Disclosure'],
+  [67, '2qOLJt01va8', 'Knicks win game 4'],
+  [68, 'ZWjlSl4sNCc', 'Pentagon shut down'],
+  [69, '-ZHzAlzCkzE', 'News Network - coming soon'],
+  [70, 'mopJqNAVNTI', 'Space X IPO'],
+  [71, 'LftIVGEqwP8', 'Knicks in 5'],
+  [72, 'HDRxe4R3kdM', 'PsyopQueen 2026 trailer'],
+  [73, 'kdQvai0KeP0', 'Psyopqueen OVA preview'],
+  [74, 'mc8Sc52Zc5o', 'UK bans social media'],
+  [75, '5nnhalquFbU', 'UFC Terror plot'],
+  [76, 'hdLxHtHKycM', 'Grooming Gang Inquiry'],
+  [77, 'mg6kDSEaiMA', 'UFO series'],
+  [78, 'Qy63BFlC6Q8', 'Enemies of Disclosure: Narrative War'],
+  [79, 'C5-OPZ23fvk', 'Supergirl Movie Review'],
+  [80, '84Y-CmsH2EE', 'Supergirl VS Doomsday tech demo'],
+  [81, 'AEY58qovEmU', 'Socialist Summer'],
+  [82, 'kqjLIvWP7Dc', 'Technical Demo 2'],
+  [83, 'pO3pTn4u5tU', 'Michael Saylor sells bitcoin'],
+  [84, 'pPluqbSoWhU', 'Venezuela Earthquake'],
+  [85, 'KGlKVkJkxM0', 'News Update'],
+  [86, 'w-LFecX6D5A', 'Enemies of Disclosure preview'],
+  [87, 'xhGbwW-gd4g', 'Russia attacks Kyiv, Ukraine'],
+  [88, 'YyKwPvbQzPQ', 'News Network - Episode 1'],
 ];
 
 const psyopEpisodes: AnimeInfo['episodes'] = PSYOP_EP_RAW.map(([number, ytId, title]) => ({
   id: `psyop-${ytId}`,
   number,
   title,
-  thumbnail: `${PSYOP_BASE}/thumbs/${ytId}.jpg`,
+  thumbnail: webImg(`${PSYOP_BASE}/thumbs/${ytId}.jpg`),
 }));
 
 // ─── 2heAnime episode list ────────────────────────────────────────────────────
@@ -162,17 +208,17 @@ const degegenEpisodes: AnimeInfo['episodes'] = [
     id: 'degegen-sellor',
     number: 2,
     title: 'Sellor',
-    thumbnail: `${DEGEGEN_BASE}/episodes/sellor.png?v=${DEGEGEN_ASSET_VERSION}`,
+    thumbnail: webImg(`${DEGEGEN_BASE}/episodes/sellor.png?v=${DEGEGEN_ASSET_VERSION}`),
   },
   {
     id: 'degegen-z-crash',
     number: 3,
     title: 'Z-Crash',
-    thumbnail: `${DEGEGEN_BASE}/episodes/z-crash.png?v=${DEGEGEN_ASSET_VERSION}`,
+    thumbnail: webImg(`${DEGEGEN_BASE}/episodes/z-crash.png?v=${DEGEGEN_ASSET_VERSION}`),
   },
 ];
 
-type RemoteDegegenEpisode = {
+type RemoteWorkEpisode = {
   id: string;
   number?: number;
   title: string;
@@ -180,7 +226,7 @@ type RemoteDegegenEpisode = {
   videoUrl: string;
 };
 
-type RemoteDegegenManifest = {
+type RemoteWorkManifest = {
   id?: string;
   title?: string;
   description?: string;
@@ -189,102 +235,176 @@ type RemoteDegegenManifest = {
   score?: number | null;
   image?: string;
   cover?: string;
-  episodes?: RemoteDegegenEpisode[];
+  episodes?: RemoteWorkEpisode[];
 };
 
-let remoteDegegenInfo: AnimeInfo | null = null;
-let remoteDegegenStreams = new Map<string, string>();
-let remoteDegegenFetchedAt = 0;
-let remoteDegegenFetch: Promise<AnimeInfo | null> | null = null;
-const REMOTE_DEGEGEN_TTL_MS = 5 * 60_000;
+type RemoteWorkConfig = {
+  manifestUrl: string;
+  /** Base URL for bare-relative asset paths in the manifest */
+  base: string;
+  /** Optional cache-bust version appended to asset URLs (legacy Degegen behavior) */
+  assetVersion?: string;
+  fallback: () => AnimeInfo;
+};
 
-function absoluteMediaUrl(url?: string): string | undefined {
+type RemoteWorkState = {
+  info: AnimeInfo | null;
+  streams: Map<string, string>;
+  fetchedAt: number;
+  inflight: Promise<AnimeInfo | null> | null;
+};
+
+const REMOTE_WORK_TTL_MS = 5 * 60_000;
+
+/**
+ * Shows whose episode lists live in a droplet manifest.json maintained by the
+ * media-ingest service (scripts/droplet/media-ingest). The hardcoded arrays
+ * above remain as offline/bootstrap fallback only \u2014 new episodes appear
+ * without an app release.
+ */
+const REMOTE_WORKS: Record<string, RemoteWorkConfig> = {
+  psyopanime: {
+    manifestUrl: `${PSYOP_BASE}/manifest.json`,
+    base: PSYOP_BASE,
+    fallback: () => PSYOP_INFO,
+  },
+  '2heanime': {
+    manifestUrl: `${TWO_HE_BASE}/manifest.json`,
+    base: TWO_HE_BASE,
+    fallback: () => TWO_HE_INFO,
+  },
+  'degegen-files': {
+    manifestUrl: DEGEGEN_MANIFEST_URL,
+    base: DEGEGEN_BASE,
+    assetVersion: DEGEGEN_ASSET_VERSION,
+    fallback: () => DEGEGEN_INFO,
+  },
+};
+
+const remoteWorkState = new Map<string, RemoteWorkState>();
+
+function stateFor(id: string): RemoteWorkState {
+  let state = remoteWorkState.get(id);
+  if (!state) {
+    state = { info: null, streams: new Map(), fetchedAt: 0, inflight: null };
+    remoteWorkState.set(id, state);
+  }
+  return state;
+}
+
+function absoluteMediaUrl(url: string | undefined, base: string): string | undefined {
   if (!url) return undefined;
   if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith('/')) return `${MEDIA}${url}`;
-  return `${DEGEGEN_BASE}/${url.replace(/^\/+/, '')}`;
+  return `${base}/${url.replace(/^\/+/, '')}`;
 }
 
-function cacheBustUrl(url?: string): string | undefined {
-  if (!url) return undefined;
+/**
+ * On web, route droplet-hosted (plain-HTTP) image URLs through the same-origin
+ * HTTPS media proxy so they aren't mixed-content blocked. No-op on native.
+ */
+export function webImg<T extends string | undefined>(url: T): T {
+  if (!url || Platform.OS !== 'web') return url;
+  return getWebMediaProxyUrl(url) as T;
+}
+
+function cacheBustUrl(url?: string, version?: string): string | undefined {
+  if (!url) return url;
+  if (!version) return webImg(url);
   const join = url.includes('?') ? '&' : '?';
-  return `${url}${join}v=${DEGEGEN_ASSET_VERSION}`;
+  return webImg(`${url}${join}v=${version}`);
 }
 
-function normalizeRemoteDegegenManifest(manifest: RemoteDegegenManifest): AnimeInfo | null {
-  if (manifest.id && manifest.id !== 'degegen-files') return null;
+function normalizeRemoteManifest(
+  id: string,
+  cfg: RemoteWorkConfig,
+  manifest: RemoteWorkManifest,
+): AnimeInfo | null {
+  if (manifest.id && manifest.id !== id) return null;
+  const fallback = cfg.fallback();
   const episodes = Array.isArray(manifest.episodes) ? manifest.episodes : [];
   const normalizedEpisodes: AnimeInfo['episodes'] = [];
   const streams = new Map<string, string>();
 
   for (const [idx, ep] of episodes.entries()) {
-    const id = String(ep.id || '').trim();
+    const epId = String(ep.id || '').trim();
     const title = String(ep.title || '').trim();
-    const videoUrl = absoluteMediaUrl(ep.videoUrl);
-    if (!id || !title || !videoUrl) continue;
+    const videoUrl = absoluteMediaUrl(ep.videoUrl, cfg.base);
+    if (!epId || !title || !videoUrl) continue;
     normalizedEpisodes.push({
-      id,
+      id: epId,
       number: Number.isFinite(ep.number) ? Number(ep.number) : idx + 1,
       title,
-      thumbnail: cacheBustUrl(absoluteMediaUrl(ep.thumbnail)),
+      thumbnail: cacheBustUrl(absoluteMediaUrl(ep.thumbnail, cfg.base), cfg.assetVersion),
     });
-    streams.set(id, videoUrl);
+    streams.set(epId, videoUrl);
   }
 
   if (normalizedEpisodes.length === 0) return null;
 
-  remoteDegegenStreams = streams;
+  stateFor(id).streams = streams;
   return {
-    ...DEGEGEN_INFO,
-    title: manifest.title || DEGEGEN_INFO.title,
-    image: cacheBustUrl(absoluteMediaUrl(manifest.image)) || DEGEGEN_INFO.image,
-    cover: cacheBustUrl(absoluteMediaUrl(manifest.cover) || absoluteMediaUrl(manifest.image)) || DEGEGEN_INFO.cover,
-    description: manifest.description || DEGEGEN_INFO.description,
-    status: manifest.status || DEGEGEN_INFO.status,
-    genres: Array.isArray(manifest.genres) && manifest.genres.length ? manifest.genres : DEGEGEN_INFO.genres,
-    score: typeof manifest.score === 'number' || manifest.score === null ? manifest.score : DEGEGEN_INFO.score,
+    ...fallback,
+    title: manifest.title || fallback.title,
+    image: cacheBustUrl(absoluteMediaUrl(manifest.image, cfg.base), cfg.assetVersion) || fallback.image,
+    cover:
+      cacheBustUrl(
+        absoluteMediaUrl(manifest.cover, cfg.base) || absoluteMediaUrl(manifest.image, cfg.base),
+        cfg.assetVersion,
+      ) || fallback.cover,
+    description: manifest.description || fallback.description,
+    status: manifest.status || fallback.status,
+    genres: Array.isArray(manifest.genres) && manifest.genres.length ? manifest.genres : fallback.genres,
+    score: typeof manifest.score === 'number' || manifest.score === null ? manifest.score : fallback.score,
     episodes: normalizedEpisodes,
   };
 }
 
-async function fetchRemoteDegegenInfo(opts?: { force?: boolean }): Promise<AnimeInfo | null> {
+async function fetchRemoteWorkInfo(id: string, opts?: { force?: boolean }): Promise<AnimeInfo | null> {
+  const cfg = REMOTE_WORKS[id];
+  if (!cfg) return null;
+  const state = stateFor(id);
   const now = Date.now();
-  if (!opts?.force && remoteDegegenInfo && now - remoteDegegenFetchedAt < REMOTE_DEGEGEN_TTL_MS) {
-    return remoteDegegenInfo;
+  if (!opts?.force && state.info && now - state.fetchedAt < REMOTE_WORK_TTL_MS) {
+    return state.info;
   }
-  if (!opts?.force && remoteDegegenFetch) return remoteDegegenFetch;
+  if (!opts?.force && state.inflight) return state.inflight;
 
-  remoteDegegenFetch = (async () => {
+  state.inflight = (async () => {
     try {
-      const res = await fetch(`${DEGEGEN_MANIFEST_URL}?t=${Math.floor(now / REMOTE_DEGEGEN_TTL_MS)}`, {
+      const rawUrl = `${cfg.manifestUrl}?t=${Math.floor(now / REMOTE_WORK_TTL_MS)}`;
+      // Web builds can't fetch the plain-http media host from an https page —
+      // route through the media proxy (same as video playback).
+      const url = Platform.OS === 'web' ? getWebMediaProxyUrl(rawUrl) : rawUrl;
+      const res = await fetch(url, {
         headers: { Accept: 'application/json' },
       });
-      if (!res.ok) throw new Error(`Degegen manifest returned ${res.status}`);
+      if (!res.ok) throw new Error(`manifest returned ${res.status}`);
       const text = await res.text();
-      const manifest = JSON.parse(text.replace(/^\uFEFF/, '').trim()) as RemoteDegegenManifest;
-      const info = normalizeRemoteDegegenManifest(manifest);
+      const manifest = JSON.parse(text.replace(/^\uFEFF/, '').trim()) as RemoteWorkManifest;
+      const info = normalizeRemoteManifest(id, cfg, manifest);
       if (info) {
-        remoteDegegenInfo = info;
-        remoteDegegenFetchedAt = Date.now();
+        state.info = info;
+        state.fetchedAt = Date.now();
       }
       return info;
     } catch (e) {
-      console.warn('[sakura-originals] failed to fetch Degegen manifest:', e);
-      return remoteDegegenInfo;
+      console.warn(`[sakura-originals] failed to fetch ${id} manifest:`, e);
+      return state.info;
     } finally {
-      remoteDegegenFetch = null;
+      state.inflight = null;
     }
   })();
 
-  return remoteDegegenFetch;
+  return state.inflight;
 }
 
 // ─── AnimeInfo objects ────────────────────────────────────────────────────────
 const PSYOP_INFO: AnimeInfo = {
   id: 'psyopanime',
   title: 'PsyopAnime: The Series',
-  image: `${PSYOP_BASE}/thumbs/BnBj8sRUu6o.jpg`,
-  cover: `${PSYOP_BASE}/thumbs/BnBj8sRUu6o.jpg`,
+  image: webImg(`${PSYOP_BASE}/thumbs/BnBj8sRUu6o.jpg`),
+  cover: webImg(`${PSYOP_BASE}/thumbs/BnBj8sRUu6o.jpg`),
   localCover: PSYOP_COVER,
   description:
     'In a hyper-connected world where digital psyops blur the lines between reality and illusion, ' +
@@ -343,10 +463,9 @@ const DEGEGEN_INFO: AnimeInfo = {
 };
 
 export function getSakuraOriginalInfo(id: string): AnimeInfo | null {
-  if (id === 'psyopanime') return PSYOP_INFO;
-  if (id === '2heanime') return TWO_HE_INFO;
+  const cfg = REMOTE_WORKS[id];
+  if (cfg) return stateFor(id).info ?? cfg.fallback();
   if (id === 'burnie-senders') return BURNIE_INFO;
-  if (id === 'degegen-files') return remoteDegegenInfo ?? DEGEGEN_INFO;
   return null;
 }
 
@@ -354,8 +473,9 @@ export async function fetchSakuraOriginalInfo(
   id: string,
   opts?: { force?: boolean },
 ): Promise<AnimeInfo | null> {
-  if (id === 'degegen-files') {
-    return (await fetchRemoteDegegenInfo(opts)) ?? DEGEGEN_INFO;
+  const cfg = REMOTE_WORKS[id];
+  if (cfg) {
+    return (await fetchRemoteWorkInfo(id, opts)) ?? cfg.fallback();
   }
   return getSakuraOriginalInfo(id);
 }
@@ -368,8 +488,10 @@ function proxyStreamUrlForWeb(url: string | null): string | null {
 }
 
 export function getSakuraOriginalStreamUrl(episodeId: string): string | null {
-  const remoteUrl = remoteDegegenStreams.get(episodeId);
-  if (remoteUrl) return proxyStreamUrlForWeb(remoteUrl);
+  for (const state of remoteWorkState.values()) {
+    const remoteUrl = state.streams.get(episodeId);
+    if (remoteUrl) return proxyStreamUrlForWeb(remoteUrl);
+  }
   if (episodeId.startsWith('psyop-')) {
     const ytId = episodeId.slice(6);
     if (!ytId) return null;
@@ -401,12 +523,19 @@ export function getSakuraOriginalEmbedUrl(episodeId: string): string | null {
   return null;
 }
 
+const EPISODE_PREFIX_TO_WORK: Array<[string, string]> = [
+  ['degegen-', 'degegen-files'],
+  ['psyop-', 'psyopanime'],
+  ['2he-', '2heanime'],
+];
+
 export async function resolveSakuraOriginalStreamUrl(
   episodeId: string,
   opts?: { force?: boolean },
 ): Promise<string | null> {
-  if (episodeId.startsWith('degegen-')) {
-    await fetchRemoteDegegenInfo(opts);
+  const match = EPISODE_PREFIX_TO_WORK.find(([prefix]) => episodeId.startsWith(prefix));
+  if (match) {
+    await fetchRemoteWorkInfo(match[1], opts);
   }
   return getSakuraOriginalStreamUrl(episodeId);
 }

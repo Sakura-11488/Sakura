@@ -5,7 +5,9 @@ export const TWO_HE_CREATOR_WALLET = "AYTey4uWERPEc4LyTM7mkPbs5XSjTCbF3hmM6jWoJg
 export const TWO_HE_CREATOR_EMAIL = "2hecovers@gmail.com";
 export const TWO_HE_CREATOR_BIO = "16 y/o building the future of anime streaming with AI @grok\n2hecovers@gmail.com";
 
-export const TWO_HE_ANIME_SERVER = "http://165-232-83-159.nip.io/2heanime";
+import { MEDIA_BASE_DEFAULT } from "../../sakura-mobile/lib/content-hosts";
+
+export const TWO_HE_ANIME_SERVER = `${MEDIA_BASE_DEFAULT}/2heanime`;
 export const TWO_HE_ANIME_COVER = "/2heanime.jpg";
 
 interface TwoHeEpisodeInput {

@@ -25,7 +25,7 @@ import { Colors, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useUnreadMessages } from '@/lib/unread-messages-context';
 import { playSwitch } from '@/lib/sound';
-import { MAX_TAB_BAR_WIDTH } from '@/constants/layout';
+import { MAX_TAB_BAR_WIDTH, isWideWeb } from '@/constants/layout';
 
 type BottomTabBarProps = {
   state: { index: number; routes: { name: string }[] };
@@ -233,7 +233,8 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
     );
   });
 
-  if (hideBar) return null;
+  // On desktop web the WebSidebar replaces the floating bottom bar.
+  if (hideBar || isWideWeb(windowW)) return null;
 
   // ── Glass tab bar (iOS 26+) ──────────────────────────────────────────────
   if (USE_GLASS) {

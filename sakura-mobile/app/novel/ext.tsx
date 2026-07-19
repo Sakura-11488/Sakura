@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   FlatList,
   Share,
+  Platform,
   type ListRenderItemInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -32,7 +33,8 @@ import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme'
 import { useTheme } from '@/lib/theme';
 import { Toast } from '@/components/ui/Toast';
 import { playTap, onTap } from '@/lib/sound';
-import { parseNovelDetail, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
+import { parseNovelDetail, parseChapterContent, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
+import { saveTextFile } from '@/lib/web-download';
 import { Library } from '@/lib/storage';
 import {
   downloadNovelChapter,
@@ -453,6 +455,20 @@ export default function NovelExtDetail() {
   const handleDownloadChapter = useCallback(async (ch: AllNovelChapter) => {
     if (!detail) return;
     playTap();
+    // Web has no offline store — save the chapter text straight to the browser's
+    // downloads as a .txt file instead of writing to the (null) filesystem.
+    if (Platform.OS === 'web') {
+      setToast('Preparing chapter…');
+      try {
+        const content = await parseChapterContent(ch.path);
+        if (!content?.trim()) throw new Error('Chapter has no content.');
+        saveTextFile(`${detail.name} - ${ch.name}`, content);
+        setToast('Chapter saved to your device');
+      } catch (e) {
+        setToast(e instanceof Error ? e.message : 'Download failed');
+      }
+      return;
+    }
     const existing = offlineMap[ch.path];
     if (existing?.status === 'ready') {
       setToast('Chapter already downloaded');
@@ -1037,7 +1053,7 @@ export default function NovelExtDetail() {
               }
               onPress={() => openChapter(playChapter, canContinueNovel && !!resumeChapter)}
             />
-            {detail.chapters.length > 0 && (
+            {detail.chapters.length > 0 && Platform.OS !== 'web' && (
               <TouchableOpacity
                 style={dynS.dlOutlineBtn}
                 activeOpacity={0.85}

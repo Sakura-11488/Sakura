@@ -1,5 +1,7 @@
-const DEFAULT_CONSUMET_URL = 'http://165-232-83-159.nip.io:3000';
-const LEGACY_CONSUMET_URL = 'http://165.232.83.159:3000';
+import { CONSUMET_URL_DEFAULT, CONSUMET_URL_LEGACY } from './content-hosts';
+
+const DEFAULT_CONSUMET_URL = CONSUMET_URL_DEFAULT;
+const LEGACY_CONSUMET_URL = CONSUMET_URL_LEGACY;
 
 export function consumetCandidates(): string[] {
   const fromEnv = (process.env.EXPO_PUBLIC_CONSUMET_URL || '').replace(/\/+$/, '');

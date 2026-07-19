@@ -24,6 +24,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constant
 import { parseChapterContent } from '@/lib/allnovel';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { getNovelReadProgress, setNovelReadProgress } from '@/lib/reader-progress';
+import { recordReadingEvent } from '@/lib/gamification';
 import { getOfflineNovelChapterContent } from '@/lib/novel-offline';
 import { AppSettings } from '@/lib/settings';
 import { playTap, onTap } from '@/lib/sound';
@@ -235,6 +236,32 @@ export default function NovelReader() {
       endReadingActivity();
     };
   }, [decodedPath, readOffsetY, readProgress, displayTitle, novelCover, chapterTitle]);
+
+  // ── Reading gamification: report the read on exit (dwell + completion). ──
+  const novelGamStartRef = useRef(Date.now());
+  const novelGamProgressRef = useRef(0);
+  useEffect(() => {
+    novelGamStartRef.current = Date.now();
+  }, [decodedPath]);
+  useEffect(() => {
+    novelGamProgressRef.current = readProgress;
+  });
+  useEffect(() => {
+    return () => {
+      if (!decodedPath) return;
+      const series = novelPath ? decodeURIComponent(novelPath) : decodedPath;
+      const progress = novelGamProgressRef.current;
+      void recordReadingEvent({
+        kind: 'novel',
+        contentId: series,
+        chapterId: decodedPath,
+        seriesId: series,
+        progress,
+        dwellMs: Date.now() - novelGamStartRef.current,
+        completed: progress >= 0.9,
+      });
+    };
+  }, [decodedPath, novelPath]);
 
   const topPad = insets.top;
   const botPad = insets.bottom;

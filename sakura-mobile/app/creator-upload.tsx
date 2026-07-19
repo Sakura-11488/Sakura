@@ -32,9 +32,9 @@ import {
   createCreatorWork,
   createWorkRelease,
   getCreatorProfile,
-  uploadWorkCover,
   type CreatorWorkKind,
 } from '@/lib/creator';
+import { uploadMangaPages, uploadAnimeEpisodeVideo, uploadWorkImage } from '@/lib/creator-media';
 import {
   publishWorkViaApi,
   registerWorkMintOnChain,
@@ -55,6 +55,10 @@ export default function CreatorUploadScreen() {
   const [releaseTitle, setReleaseTitle] = useState('');
   const [releaseBody, setReleaseBody] = useState('');
   const [coverUri, setCoverUri] = useState<string | null>(null);
+  const [mangaPageUris, setMangaPageUris] = useState<string[]>([]);
+  const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [videoName, setVideoName] = useState<string | null>(null);
+  const [mediaProgress, setMediaProgress] = useState<string | null>(null);
   const [mintAsNft, setMintAsNft] = useState(true);
 
   useFocusEffect(
@@ -95,6 +99,41 @@ export default function CreatorUploadScreen() {
     }
   };
 
+  const pickMangaPages = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Photos', 'Allow photo access to add chapter pages.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      orderedSelection: true,
+      selectionLimit: 60,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length) {
+      setMangaPageUris(result.assets.map((a) => a.uri));
+    }
+  };
+
+  const pickEpisodeVideo = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Videos', 'Allow media access to add your episode.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsMultipleSelection: false,
+    });
+    const asset = result.canceled ? null : result.assets[0];
+    if (asset?.uri) {
+      setVideoUri(asset.uri);
+      setVideoName(asset.fileName ?? asset.uri.split('/').pop() ?? 'episode.mp4');
+    }
+  };
+
   const handleUpload = async () => {
     if (!address) return;
     if (!workTitle.trim()) {
@@ -120,7 +159,7 @@ export default function CreatorUploadScreen() {
         description: workDescription,
       });
 
-      await createWorkRelease({
+      const release = await createWorkRelease({
         workId: work.id,
         kind: workKind,
         title: releaseTitle,
@@ -128,17 +167,50 @@ export default function CreatorUploadScreen() {
         bodyText: releaseBody,
       });
 
+      const kp = await signWithBiometrics();
+      if (!kp) throw new Error('Could not unlock account.');
+
+      // Cover goes through the ownership-checked upload-work-media edge function
+      // (service role), same as manga pages — a direct client storage write is
+      // blocked by RLS since the app authenticates by wallet, not a Supabase
+      // session. The function also records release_metadata.cover_url so the
+      // catalog + detail screens can display it.
       let coverUrl: string | null = null;
       if (coverUri) {
-        coverUrl = await uploadWorkCover({
-          walletAddress: address,
+        try {
+          const uploaded = await uploadWorkImage({
+            keypair: kp,
+            workId: work.id,
+            role: 'cover',
+            localUri: coverUri,
+          });
+          coverUrl = uploaded.url;
+        } catch (e) {
+          console.warn('[creator-upload] cover upload failed:', e);
+        }
+      }
+
+      if (workKind === 'manga' && mangaPageUris.length) {
+        await uploadMangaPages({
+          keypair: kp,
           workId: work.id,
-          localUri: coverUri,
+          releaseId: release.id,
+          localUris: mangaPageUris,
+          onProgress: (done, total) => setMediaProgress(`Uploading pages ${done}/${total}…`),
         });
       }
 
-      const kp = await signWithBiometrics();
-      if (!kp) throw new Error('Could not unlock account.');
+      if (workKind === 'anime' && videoUri) {
+        setMediaProgress('Uploading episode video…');
+        await uploadAnimeEpisodeVideo({
+          keypair: kp,
+          workId: work.id,
+          releaseId: release.id,
+          localUri: videoUri,
+          fileName: videoName ?? undefined,
+        });
+      }
+      setMediaProgress(null);
 
       if (mintAsNft) {
         const txSignature = await registerWorkMintOnChain(kp, work.id, workTitle.trim());
@@ -163,6 +235,7 @@ export default function CreatorUploadScreen() {
     } catch (e) {
       Alert.alert('Upload failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
+      setMediaProgress(null);
       setUploading(false);
     }
   };
@@ -284,10 +357,53 @@ export default function CreatorUploadScreen() {
                   inputStyle={{ minHeight: 200, textAlignVertical: 'top', paddingTop: 12 }}
                 />
               )}
-              {workKind !== 'novel' && (
-                <Text style={{ fontSize: FontSize.sm, color: colors.textSecondary, lineHeight: 20 }}>
-                  Page and video uploads for manga & anime are coming to mobile soon. For now, publish metadata and cover — then add pages from Sakura Studio on web.
-                </Text>
+              {workKind === 'manga' && (
+                <TouchableOpacity
+                  onPress={onTap(pickMangaPages)}
+                  activeOpacity={0.85}
+                  style={{
+                    backgroundColor: colors.surfaceSecondary,
+                    borderRadius: Radius.lg,
+                    padding: 14,
+                    borderWidth: 1,
+                    borderStyle: mangaPageUris.length ? 'solid' : 'dashed',
+                    borderColor: mangaPageUris.length ? colors.primary : colors.border,
+                  }}
+                >
+                  <Text style={{ fontSize: FontSize.md, fontWeight: FontWeight.bold, color: colors.text }}>
+                    {mangaPageUris.length
+                      ? `${mangaPageUris.length} pages selected`
+                      : 'Add chapter pages'}
+                  </Text>
+                  <Text style={{ fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 4, lineHeight: 18 }}>
+                    {mangaPageUris.length
+                      ? 'Tap to re-select. Pages upload in the order you picked them.'
+                      : 'Select your page images in reading order (up to 60).'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {workKind === 'anime' && (
+                <TouchableOpacity
+                  onPress={onTap(pickEpisodeVideo)}
+                  activeOpacity={0.85}
+                  style={{
+                    backgroundColor: colors.surfaceSecondary,
+                    borderRadius: Radius.lg,
+                    padding: 14,
+                    borderWidth: 1,
+                    borderStyle: videoUri ? 'solid' : 'dashed',
+                    borderColor: videoUri ? colors.primary : colors.border,
+                  }}
+                >
+                  <Text style={{ fontSize: FontSize.md, fontWeight: FontWeight.bold, color: colors.text }}>
+                    {videoUri ? videoName ?? 'Episode video selected' : 'Add episode video'}
+                  </Text>
+                  <Text style={{ fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 4, lineHeight: 18 }}>
+                    {videoUri
+                      ? 'Tap to replace. A poster frame is generated automatically.'
+                      : 'MP4, MOV, or WebM. Hosted on the Sakura media server — a thumbnail is generated for you.'}
+                  </Text>
+                </TouchableOpacity>
               )}
             </FormSection>
 
@@ -340,11 +456,13 @@ export default function CreatorUploadScreen() {
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
         <Text style={styles.footerHint}>
-          {canPublish
-            ? mintAsNft
-              ? 'Publish publicly and mint NFT receipt to your account'
-              : 'Ready to publish publicly on Sakura'
-            : 'Fill in series title and release title to continue'}
+          {mediaProgress
+            ? mediaProgress
+            : canPublish
+              ? mintAsNft
+                ? 'Publish publicly and mint NFT receipt to your account'
+                : 'Ready to publish publicly on Sakura'
+              : 'Fill in series title and release title to continue'}
         </Text>
         <TouchableOpacity
           style={[styles.primaryBtn, (!canPublish || uploading) && styles.primaryBtnDisabled]}

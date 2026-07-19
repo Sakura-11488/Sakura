@@ -16,16 +16,20 @@ import * as Haptics from 'expo-haptics';
 import { Colors, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 
 const { width: W } = Dimensions.get('window');
-const CATEGORIES = ['Manga', 'Comics'];
+const DEFAULT_CATEGORIES = ['Manga', 'Comics'];
 
 interface Measurement { x: number; width: number }
 
 interface Props {
   selected: string;
   onSelect: (cat: string) => void;
+  /** Tab labels to show. Defaults to Manga/Comics; the home screen appends
+   *  '18+' when the adult-content setting is on. */
+  categories?: string[];
 }
 
-export default function CategoryTabs({ selected, onSelect }: Props) {
+export default function CategoryTabs({ selected, onSelect, categories = DEFAULT_CATEGORIES }: Props) {
+  const CATEGORIES = categories;
   const measurements = useRef<Measurement[]>([]);
   const indicatorX = useSharedValue(0);
   const indicatorW = useSharedValue(0);
@@ -60,8 +64,10 @@ export default function CategoryTabs({ selected, onSelect }: Props) {
     [selected, ready, applyIndicator]
   );
 
-  const handlePress = async (cat: string, index: number) => {
-    await Haptics.selectionAsync();
+  const handlePress = (cat: string, index: number) => {
+    // Fire-and-forget so the pill animates instantly instead of waiting on the
+    // haptic promise (and it's a harmless no-op on web).
+    void Haptics.selectionAsync();
     applyIndicator(index, true);
     onSelect(cat);
   };

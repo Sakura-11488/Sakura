@@ -38,6 +38,7 @@ import {
   type AnimeResult,
 } from '@/lib/anime';
 import { SAKURA_ORIGINALS, type OriginalEntry } from '@/lib/sakura-originals';
+import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 const ANIME_ORIGINALS = SAKURA_ORIGINALS.filter((o) => o.type === 'anime');
 import { playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
@@ -721,6 +722,8 @@ export default function AnimeScreen() {
             ))}
           </ScrollView>
         )}
+
+        {!isSearching && <CreatorWorksRow kind="anime" />}
 
         {/* Search results */}
         {isSearching && (

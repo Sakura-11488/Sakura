@@ -2,7 +2,7 @@
   "expo": {
     "name": "Sakura",
     "slug": "sakura-expo",
-    "version": "1.9.9",
+    "version": "2.0.0",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -74,7 +74,7 @@
         "backgroundColor": "#FFFFFF"
       },
       "package": "com.millw14.sakura",
-      "versionCode": 10909
+      "versionCode": 10910
     },
     "plugins": [
       "expo-router",

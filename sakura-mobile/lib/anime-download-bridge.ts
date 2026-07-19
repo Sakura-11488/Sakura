@@ -106,6 +106,13 @@ export function onEmbedBridgeFetch(
 
 export function runEmbedBridge(job: Omit<EmbedBridgeJob, 'id'>): Promise<EmbedBridgeResult> {
   return new Promise((resolve, reject) => {
+    // No native WebView bridge is registered on web (AnimeDownloadBridge.web
+    // renders nothing), so a job would otherwise hang for the full 120s timeout.
+    // Reject immediately with a clear, actionable message instead.
+    if (!setJob) {
+      reject(new Error('Video downloads are available in the Sakura mobile app.'));
+      return;
+    }
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const full: EmbedBridgeJob = { ...job, id };
     const timer = setTimeout(() => {

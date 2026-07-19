@@ -1,0 +1,203 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
+import { corsHeaders, isWallet, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
+import { checkRateLimit } from '../_shared/rate-limit.ts';
+import { generateFluxImage } from '../_shared/flux.ts';
+import { verifyAvatarSakuraPayment, avatarPaymentWallet } from '../_shared/verify-sakura-payment.ts';
+import { buildFanArtPrompt, STYLE_PRESETS, FAN_ART_SERIES } from '../_shared/fan-art-prompt.ts';
+
+/**
+ * AI Fan-Art Studio. Generate FLUX art of a chosen series/character (or a
+ * sanitized free prompt), keep a per-wallet gallery, and set a piece as the
+ * profile avatar/banner. Paid in SAKURA. Prompt is validated + moderated BEFORE
+ * payment is required so a rejected prompt never charges. (NFT minting reuses
+ * the avatar mint pipeline and lands in a follow-up `mint` action.)
+ */
+
+const cors = corsHeaders();
+const MODEL = Deno.env.get('FAL_FLUX_MODEL')?.trim() || 'fal-ai/flux/dev';
+
+function fanArtPrice(): number {
+  const raw = Deno.env.get('FAN_ART_PRICE_SAKURA')?.trim();
+  const parsed = raw ? Number(raw) : 50_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 50_000;
+}
+
+type Body = {
+  action?: 'quote' | 'generate' | 'list' | 'set-avatar' | 'set-banner';
+  subject_type?: 'series' | 'character' | 'free';
+  series?: string;
+  character?: string;
+  free_prompt?: string;
+  style_preset?: string;
+  payment_tx_signature?: string;
+  generation_id?: string;
+  admin_test_secret?: string;
+  recipient_wallet?: string;
+};
+
+function resolveCtx(req: Request, body: Body): { walletAddress: string; paymentBypass: boolean } {
+  const secret = Deno.env.get('FAN_ART_ADMIN_TEST_SECRET')?.trim();
+  const provided = body.admin_test_secret?.trim() || req.headers.get('x-avatar-admin-test')?.trim() || '';
+  const recipient = body.recipient_wallet?.trim();
+  if (secret && provided === secret && recipient && isWallet(recipient)) {
+    return { walletAddress: recipient, paymentBypass: true };
+  }
+  const { walletAddress } = verifyWalletHeaders(req.headers, 'generate-fan-art');
+  return { walletAddress, paymentBypass: false };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
+
+  try {
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const action = body.action || 'generate';
+    const { walletAddress, paymentBypass } = resolveCtx(req, body);
+
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    );
+
+    if (action === 'quote') {
+      return jsonResponse(
+        200,
+        {
+          price_sakura: fanArtPrice(),
+          currency: 'SAKURA',
+          payment_wallet: avatarPaymentWallet(),
+          styles: Object.keys(STYLE_PRESETS),
+          series: FAN_ART_SERIES,
+        },
+        cors,
+      );
+    }
+
+    if (action === 'list') {
+      const { data } = await supabase
+        .from('fan_art_generations')
+        .select('id, subject_type, series, character_name, style_preset, status, public_url, is_minted, created_at')
+        .eq('wallet_address', walletAddress)
+        .in('status', ['ready', 'processing'])
+        .order('created_at', { ascending: false })
+        .limit(60);
+      return jsonResponse(200, { items: data ?? [] }, cors);
+    }
+
+    if (action === 'set-avatar' || action === 'set-banner') {
+      const id = String(body.generation_id || '').trim();
+      const { data: row } = await supabase
+        .from('fan_art_generations')
+        .select('id, public_url, status')
+        .eq('id', id)
+        .eq('wallet_address', walletAddress)
+        .maybeSingle();
+      if (!row || row.status !== 'ready' || !row.public_url) {
+        return jsonResponse(404, { error: 'Artwork not found.' }, cors);
+      }
+      const patch =
+        action === 'set-avatar'
+          ? { wallet_address: walletAddress, avatar_url: row.public_url }
+          : { wallet_address: walletAddress, banner_url: row.public_url, banner_fan_art_id: row.id };
+      await supabase.from('user_profiles').upsert(patch, { onConflict: 'wallet_address' });
+      return jsonResponse(200, { ok: true, public_url: row.public_url }, cors);
+    }
+
+    // ── action === 'generate' ──
+    // 1. Validate + build the prompt (throws on blocked/invalid) — no charge yet.
+    const prompt = buildFanArtPrompt({
+      subjectType: body.subject_type || 'free',
+      series: body.series,
+      character: body.character,
+      freeText: body.free_prompt,
+      stylePreset: body.style_preset,
+    });
+
+    // 2. Rate limit per wallet (+ generous IP backstop).
+    const rl = await checkRateLimit(supabase, `fan-art:${walletAddress}`, 10, 86_400);
+    if (!rl.allowed) {
+      return jsonResponse(429, { error: 'Daily generation limit reached.', retryAfterSec: rl.retryAfterSec }, cors);
+    }
+
+    // 3. Payment (unless admin bypass).
+    let chargedSakura = 0;
+    const paymentTxSignature = body.payment_tx_signature?.trim() || null;
+    if (!paymentBypass) {
+      if (!paymentTxSignature) {
+        return jsonResponse(402, { error: 'Payment required.', price_sakura: fanArtPrice() }, cors);
+      }
+      const { data: used } = await supabase
+        .from('fan_art_generations')
+        .select('id')
+        .eq('payment_tx_signature', paymentTxSignature)
+        .maybeSingle();
+      if (used) return jsonResponse(400, { error: 'This payment was already used.' }, cors);
+
+      const verified = await verifyAvatarSakuraPayment({
+        signature: paymentTxSignature,
+        expectedPayer: walletAddress,
+        minAmountSakura: fanArtPrice(),
+      });
+      chargedSakura = verified.amount;
+    }
+
+    // 4. Insert processing row.
+    const { data: gen, error: insErr } = await supabase
+      .from('fan_art_generations')
+      .insert({
+        wallet_address: walletAddress,
+        subject_type: body.subject_type || 'free',
+        series: body.series ?? null,
+        character_name: body.character ?? null,
+        free_prompt: body.free_prompt ?? null,
+        style_preset: body.style_preset || 'mappa',
+        status: 'processing',
+        prompt_snapshot: prompt,
+        model: MODEL,
+        payment_tx_signature: paymentTxSignature,
+        payment_amount_sakura: chargedSakura,
+      })
+      .select('id')
+      .single();
+    if (insErr || !gen) {
+      return jsonResponse(500, { error: insErr?.message || 'Could not start generation.' }, cors);
+    }
+    const genId = gen.id as string;
+
+    // 5. Generate + upload.
+    try {
+      const bytes = await generateFluxImage(prompt);
+      const path = `${walletAddress}/${genId}.png`;
+      const { error: upErr } = await supabase.storage
+        .from('fan-art')
+        .upload(path, bytes, { contentType: 'image/png', upsert: true, cacheControl: '3600' });
+      if (upErr) throw new Error(upErr.message);
+      const { data: pub } = supabase.storage.from('fan-art').getPublicUrl(path);
+
+      await supabase
+        .from('fan_art_generations')
+        .update({
+          status: 'ready',
+          storage_path: path,
+          public_url: pub.publicUrl,
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', genId);
+
+      return jsonResponse(200, { ok: true, id: genId, status: 'ready', public_url: pub.publicUrl }, cors);
+    } catch (genErr) {
+      const message = genErr instanceof Error ? genErr.message : 'Generation failed.';
+      const rejected = /moderat|not allowed|rejected/i.test(message);
+      await supabase
+        .from('fan_art_generations')
+        .update({ status: rejected ? 'rejected' : 'failed', error_message: message })
+        .eq('id', genId);
+      return jsonResponse(rejected ? 400 : 502, { error: message, id: genId }, cors);
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Request failed.';
+    const status = /wallet|signature|expired/i.test(message) ? 401 : 400;
+    return jsonResponse(status, { error: message }, cors);
+  }
+});

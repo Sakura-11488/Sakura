@@ -1,4 +1,21 @@
 import { PublicKey } from '@solana/web3.js';
+import {
+  SAKURA_MINT_ADDRESS,
+  SAKURA_DECIMALS as SAKURA_DECIMALS_CANONICAL,
+  TOKEN_2022_PROGRAM_ADDRESS,
+  INO_PROGRAM_ADDRESS,
+  FEE_ROUTER_PROGRAM_ADDRESS,
+  PERCOLATOR_INSURANCE_VAULT_ADDRESS,
+  INSURANCE_SPLIT,
+  BURN_SPLIT,
+  SAKURA_TREASURY_PROGRAM_ADDRESS,
+  SAKURA_TREASURY_ADMIN_ADDRESS,
+  AVATAR_PAYMENT_WALLET_ADDRESS,
+  MONTHLY_PASS_PRICE as MONTHLY_PASS_PRICE_CANONICAL,
+  PASS_DURATION_DAYS as PASS_DURATION_DAYS_CANONICAL,
+} from './addresses';
+
+export { INSURANCE_SPLIT, BURN_SPLIT };
 
 export const SAKURA_SEND_SOL_RESERVE = 0.003;
 export const SOL_SEND_FEE_RESERVE = 0.005;
@@ -19,29 +36,27 @@ export function getSolanaNetworkLabel(): string {
   return isSolanaMainnet() ? 'Mainnet' : 'Devnet';
 }
 
-export const SAKURA_MINT = new PublicKey(
-  'EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump'
-);
-export const SAKURA_DECIMALS = 6;
-export const SAKURA_TOKEN_PROGRAM_ID = new PublicKey(
-  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+// On-chain constants come from lib/wallet/addresses.ts — the single source
+// of truth shared with legacy src/lib/solana.ts. Edit addresses there.
+export const SAKURA_MINT = new PublicKey(SAKURA_MINT_ADDRESS);
+export const SAKURA_DECIMALS = SAKURA_DECIMALS_CANONICAL;
+export const SAKURA_TOKEN_PROGRAM_ID = new PublicKey(TOKEN_2022_PROGRAM_ADDRESS);
+
+export const INO_PROGRAM_ID = new PublicKey(INO_PROGRAM_ADDRESS);
+
+export const FEE_ROUTER_PROGRAM_ID = new PublicKey(FEE_ROUTER_PROGRAM_ADDRESS);
+export const PERCOLATOR_INSURANCE_VAULT = new PublicKey(
+  PERCOLATOR_INSURANCE_VAULT_ADDRESS
 );
 
-export const INO_PROGRAM_ID = new PublicKey(
-  'E9ju12He2mnBRaneM4xdtUXECDPXdpQQbU6HtSKb6Hpf'
+export const SAKURA_TREASURY_PROGRAM_ID = new PublicKey(
+  SAKURA_TREASURY_PROGRAM_ADDRESS
 );
-
-export const FEE_ROUTER_PROGRAM_ID = new PublicKey(
-  'FNoE2JUhn981hBDyBMvWJYkw9DThhtYwWoPbw6wgz1rg'
-);
-
-export const SAKURA_TREASURY_ADMIN = new PublicKey(
-  '5NcWtvtQ48QJcizEs9i8H7Ef3YmtmybnSkPQxA2fxFiF'
-);
+export const SAKURA_TREASURY_ADMIN = new PublicKey(SAKURA_TREASURY_ADMIN_ADDRESS);
 
 /** Treasury wallet for paid avatar NFT mints (100k SAKURA). */
 export const AVATAR_PAYMENT_WALLET = (
-  process.env.EXPO_PUBLIC_AVATAR_PAYMENT_WALLET ?? 'G8tc69u9PVjAjaL4h8iD3t845dJrvnTKusrLrjv89EZ1'
+  process.env.EXPO_PUBLIC_AVATAR_PAYMENT_WALLET ?? AVATAR_PAYMENT_WALLET_ADDRESS
 ).trim();
 
 export const AVATAR_MINT_PRICE_SAKURA = Number(
@@ -60,8 +75,8 @@ export function solanaExplorerToken(mintAddress: string): string {
   return `https://solscan.io/token/${mintAddress}`;
 }
 
-export const MONTHLY_PASS_PRICE = 100; // in SAKURA tokens
-export const PASS_DURATION_DAYS = 30;
+export const MONTHLY_PASS_PRICE = MONTHLY_PASS_PRICE_CANONICAL; // in SAKURA tokens
+export const PASS_DURATION_DAYS = PASS_DURATION_DAYS_CANONICAL;
 
 export function truncateAddress(addr: string) {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;

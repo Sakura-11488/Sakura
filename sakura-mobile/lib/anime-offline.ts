@@ -423,6 +423,31 @@ export async function listOfflineEpisodes(): Promise<OfflineEpisode[]> {
   return Object.values(mem.episodes).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+const MODULE_LOAD_TIME = Date.now();
+let reconciledInterrupted = false;
+
+/**
+ * On launch, any episode still marked `downloading` is a leftover from a killed
+ * session — in-memory jobs don't survive a restart, so it would otherwise show a
+ * spinner that never advances. Flip those to `paused` (resumable). Runs once per
+ * process and only touches rows last updated before this session started, so an
+ * in-flight download from the current session is never paused out from under it.
+ */
+export async function reconcileInterruptedEpisodes(): Promise<void> {
+  if (reconciledInterrupted) return;
+  reconciledInterrupted = true;
+  try {
+    const eps = await listOfflineEpisodes();
+    for (const ep of eps) {
+      if (ep.status === 'downloading' && ep.updatedAt < MODULE_LOAD_TIME) {
+        await patchManifest({ ...ep, status: 'paused', updatedAt: Date.now() });
+      }
+    }
+  } catch {
+    // best-effort; a stuck row simply stays visible
+  }
+}
+
 export async function getOfflinePlaybackUri(
   animeId: string,
   episodeId: string,
@@ -610,6 +635,76 @@ async function performDirectFileDownload(
   return current;
 }
 
+function extFromUrl(url: string): string {
+  const clean = url.split('?')[0].split('#')[0];
+  const m = /\.([a-z0-9]{1,5})$/i.exec(clean);
+  return m ? m[1].toLowerCase() : '';
+}
+
+/**
+ * Turn a remote HLS media playlist into a fully-local one: every resource
+ * (AES-128 key, fMP4 init segment via #EXT-X-MAP, and each media segment) is
+ * scheduled for download and rewritten to a local filename, while ALL playlist
+ * tags — real #EXTINF durations, #EXT-X-TARGETDURATION, #EXT-X-KEY (IV/METHOD),
+ * #EXT-X-BYTERANGE — are preserved verbatim. This lets ExoPlayer/expo-video
+ * decrypt encrypted streams from the local key and seek correctly, instead of
+ * the old approach that threw on encryption and faked 10s segment durations.
+ */
+function planLocalPlaylist(
+  mediaText: string,
+  mediaUrl: string,
+): { outLines: string[]; downloads: { url: string; name: string }[] } {
+  const outLines: string[] = [];
+  const downloads: { url: string; name: string }[] = [];
+  const seen = new Map<string, string>();
+  let keyIdx = 0;
+  let mapIdx = 0;
+  let segIdx = 0;
+
+  const localFor = (absUrl: string, kind: 'key' | 'map' | 'seg'): string => {
+    const existing = seen.get(absUrl);
+    if (existing) return existing;
+    const ext = extFromUrl(absUrl);
+    let name: string;
+    if (kind === 'key') name = `key${keyIdx++}.key`;
+    else if (kind === 'map') name = `init${mapIdx++}.${ext || 'mp4'}`;
+    else name = `seg${String(segIdx++).padStart(5, '0')}.${ext || 'ts'}`;
+    seen.set(absUrl, name);
+    downloads.push({ url: absUrl, name });
+    return name;
+  };
+
+  const rewriteUri = (line: string, kind: 'key' | 'map'): string => {
+    const uriMatch = /URI="([^"]+)"/i.exec(line);
+    if (!uriMatch) return line;
+    const abs = resolveUrl(mediaUrl, uriMatch[1]);
+    const local = localFor(abs, kind);
+    return line.replace(/URI="[^"]+"/i, `URI="${local}"`);
+  };
+
+  for (const rawLine of mediaText.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const t = line.trim();
+    if (!t) continue;
+    if (/^#EXT-X-KEY/i.test(t)) {
+      outLines.push(/METHOD=NONE/i.test(t) ? t : rewriteUri(t, 'key'));
+      continue;
+    }
+    if (/^#EXT-X-MAP/i.test(t)) {
+      outLines.push(rewriteUri(t, 'map'));
+      continue;
+    }
+    if (t.startsWith('#')) {
+      outLines.push(t); // preserve EXTINF, TARGETDURATION, BYTERANGE, etc.
+      continue;
+    }
+    outLines.push(localFor(resolveUrl(mediaUrl, t), 'seg'));
+  }
+
+  if (!outLines.some((l) => /#EXT-X-ENDLIST/i.test(l))) outLines.push('#EXT-X-ENDLIST');
+  return { outLines, downloads };
+}
+
 async function performDownload(
   opts: {
     animeId: string;
@@ -664,15 +759,15 @@ async function performDownload(
   const mediaText =
     mediaUrl === src.url ? masterText : (await fetchPlaylistText(mediaUrl, src)).text;
 
-  const segments = parseSegmentUrls(mediaText, mediaUrl);
-  if (segments.length === 0) throw new Error('No video segments in stream.');
+  const { outLines, downloads } = planLocalPlaylist(mediaText, mediaUrl);
+  if (downloads.length === 0) throw new Error('No video segments in stream.');
 
   const dir = dirFor(opts.animeId, opts.episodeId);
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
 
   let current = {
     ...record,
-    totalSegments: segments.length,
+    totalSegments: downloads.length,
     completedSegments: 0,
     progress: 0,
     error: undefined,
@@ -680,40 +775,21 @@ async function performDownload(
   await patchManifest(current);
 
   const epKey = episodeKey(opts.animeId, opts.episodeId);
-  const targetMatch = mediaText.match(/#EXT-X-TARGETDURATION:(\d+)/i);
-  const targetDuration = targetMatch?.[1] || '10';
-  const segmentNames = new Array<string>(segments.length);
   let completed = 0;
   let bytes = 0;
   const concurrency = 3;
   let nextIndex = 0;
 
   async function worker() {
-    while (nextIndex < segments.length) {
+    while (nextIndex < downloads.length) {
       if (pausedEpisodeJobs.has(epKey)) return;
       const i = nextIndex++;
-      const segUrl = segments[i];
-      const name = `seg${String(i).padStart(5, '0')}.ts`;
+      const { url: resUrl, name } = downloads[i];
       const dest = `${dir}${name}`;
-      if (await fileHasContent(dest)) {
-        segmentNames[i] = name;
-        const info = await FileSystem.getInfoAsync(dest);
-        const size = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
-        completed += 1;
-        bytes += size;
-        current = {
-          ...current,
-          completedSegments: completed,
-          progress: completed / segments.length,
-          bytesDownloaded: bytes,
-          updatedAt: Date.now(),
-        };
-        await patchManifest(current);
-        continue;
+      if (!(await fileHasContent(dest))) {
+        if (pausedEpisodeJobs.has(epKey)) return;
+        await downloadFile(resUrl, dest, headers);
       }
-      if (pausedEpisodeJobs.has(epKey)) return;
-      await downloadFile(segUrl, dest, headers);
-      segmentNames[i] = name;
       const info = await FileSystem.getInfoAsync(dest);
       const size = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
       completed += 1;
@@ -721,7 +797,7 @@ async function performDownload(
       current = {
         ...current,
         completedSegments: completed,
-        progress: completed / segments.length,
+        progress: completed / downloads.length,
         bytesDownloaded: bytes,
         updatedAt: Date.now(),
       };
@@ -730,15 +806,15 @@ async function performDownload(
   }
 
   await Promise.all(
-    Array.from({ length: Math.min(concurrency, segments.length) }, () => worker()),
+    Array.from({ length: Math.min(concurrency, downloads.length) }, () => worker()),
   );
 
-  if (pausedEpisodeJobs.has(epKey) && completed < segments.length) {
+  if (pausedEpisodeJobs.has(epKey) && completed < downloads.length) {
     current = {
       ...current,
       status: 'paused',
       completedSegments: completed,
-      progress: segments.length > 0 ? completed / segments.length : 0,
+      progress: downloads.length > 0 ? completed / downloads.length : 0,
       bytesDownloaded: bytes,
       updatedAt: Date.now(),
     };
@@ -746,18 +822,8 @@ async function performDownload(
     return current;
   }
 
-  const localLines = [
-    '#EXTM3U',
-    '#EXT-X-VERSION:3',
-    '#EXT-X-MEDIA-SEQUENCE:0',
-    `#EXT-X-TARGETDURATION:${targetDuration}`,
-  ];
-  for (const name of segmentNames) {
-    localLines.push('#EXTINF:10.0,', name);
-  }
-  localLines.push('#EXT-X-ENDLIST');
   const playlistPath = `${dir}index.m3u8`;
-  await FileSystem.writeAsStringAsync(playlistPath, localLines.join('\n'));
+  await FileSystem.writeAsStringAsync(playlistPath, outLines.join('\n'));
 
   current = {
     ...current,

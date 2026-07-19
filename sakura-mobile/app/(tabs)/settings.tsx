@@ -13,6 +13,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import Constants from 'expo-constants';
 import { useTheme, AppColors } from '@/lib/theme';
 import { AppSettings } from '@/lib/settings';
+import { useContentPrefs } from '@/lib/content-prefs';
 import { confirmDestructive } from '@/lib/confirm-alert';
 import {
   getNotificationPermissionStatus,
@@ -34,7 +35,7 @@ import { clearAllOfflineEpisodes } from '@/lib/anime-offline';
 import { clearAllOfflineManga } from '@/lib/manga-offline';
 import { clearAllOfflineNovel } from '@/lib/novel-offline';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
-import { onTap } from '@/lib/sound';
+import * as Sound from '@/lib/sound';
 import bs58 from 'bs58';
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ const I = {
   Star: ({ c }: { c: string }) => <Svg width={18} height={18} viewBox="0 0 24 24"><Path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill={c} /></Svg>,
   Chart: ({ c }: { c: string }) => <Svg width={18} height={18} viewBox="0 0 24 24"><Path d="M18 20V10M12 20V4M6 20v-6" stroke={c} strokeWidth={2} strokeLinecap="round" fill="none" /></Svg>,
   Chevron: ({ c }: { c: string }) => <Svg width={18} height={18} viewBox="0 0 24 24"><Path d="M9 18l6-6-6-6" stroke={c} strokeWidth={2} strokeLinecap="round" fill="none" /></Svg>,
+  Flame: ({ c }: { c: string }) => <Svg width={18} height={18} viewBox="0 0 24 24"><Path d="M12 2s5 4 5 9a5 5 0 0 1-10 0c0-1.5.5-2.5 1-3.5C8.5 9 9 11 10 11c1.5 0 1-3 0-5 2 1 2 3 2 3s1-2 0-7z" fill={c} /></Svg>,
   Back: ({ c }: { c: string }) => <Svg width={22} height={22} viewBox="0 0 24 24"><Path d="M19 12H5M12 5l-7 7 7 7" stroke={c} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" /></Svg>,
 };
 
@@ -231,6 +233,7 @@ function PillPicker({ value, options, onChange, colors }: {
 export default function SettingsScreen() {
   const { isDark, toggleTheme, colors } = useTheme();
   const { connected, address, shortAddress, disconnect } = useWallet();
+  const { allowAdult, setAllowAdult } = useContentPrefs();
 
   // ── Notifications ──
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -441,7 +444,7 @@ export default function SettingsScreen() {
 
           {/* ── Header ── */}
           <View style={s.headerRow}>
-            <TouchableOpacity onPress={onTap(() => router.navigate('/profile'))} style={s.backBtn} activeOpacity={0.7}>
+            <TouchableOpacity onPress={Sound.onTap(() => router.navigate('/profile'))} style={s.backBtn} activeOpacity={0.7}>
               <I.Back c={colors.text} />
             </TouchableOpacity>
             <Text style={s.heading}>Settings</Text>
@@ -578,6 +581,31 @@ export default function SettingsScreen() {
               sub="Show live SOL PNL widget while reading"
               value={pnlTracker}
               onToggle={async (v) => { setPnlTracker(v); await AppSettings.setPnlTracker(v); }}
+              colors={colors}
+            />
+            <Divider colors={colors} />
+            <ToggleRow
+              badge={<Badge bg="#FF2D55"><I.Flame c="#fff" /></Badge>}
+              label="Allow 18+ Content"
+              sub="Show an 18+ category on the home page"
+              value={allowAdult}
+              onToggle={async (v) => {
+                if (!v) {
+                  setAllowAdult(false);
+                  return;
+                }
+                // Web-aware confirm: Alert.alert with buttons is a no-op on
+                // react-native-web, so use confirmDestructive (window.confirm on
+                // web, native Alert on device) or the toggle can never turn on.
+                const ok = await confirmDestructive(
+                  'Adult content',
+                  'This shows adult (18+) content. Confirm you are 18 or older.',
+                );
+                if (ok) {
+                  Haptics.selectionAsync();
+                  setAllowAdult(true);
+                }
+              }}
               colors={colors}
             />
             <Divider colors={colors} />

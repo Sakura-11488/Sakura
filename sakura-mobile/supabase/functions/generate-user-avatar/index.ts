@@ -18,6 +18,7 @@ type GenerateBody = {
   payment_tx_signature?: string;
   recipient_wallet?: string;
   admin_test_secret?: string;
+  nft_name?: string;
 };
 
 type MintContext = {
@@ -343,11 +344,18 @@ Deno.serve(async (req) => {
       const { data: imagePublic } = supabase.storage.from('user-avatars').getPublicUrl(imagePath);
       const imageUrl = imagePublic.publicUrl;
 
+      const nftDisplayName =
+        paymentBypass && body.nft_name?.trim()
+          ? body.nft_name.trim().slice(0, 32)
+          : avatarNftName(mode);
+
       const metadata = buildAvatarMetadata({
-        name: avatarNftName(mode),
+        name: nftDisplayName,
         symbol: 'SKRAV',
         description:
-          'MAPPA-style Jujutsu Kaisen-inspired anime portrait minted on Sakura. One wallet-bound collectible.',
+          paymentBypass && body.nft_name?.trim()
+            ? `${nftDisplayName} — MAPPA-style anime portrait minted on Sakura.`
+            : 'MAPPA-style Jujutsu Kaisen-inspired anime portrait minted on Sakura. One wallet-bound collectible.',
         imageUrl,
         walletAddress,
         mode,
@@ -370,7 +378,7 @@ Deno.serve(async (req) => {
       const minted = await mintAvatarNft({
         recipientWallet: walletAddress,
         metadataUri,
-        name: metadata.name,
+        name: nftDisplayName,
         symbol: metadata.symbol,
       });
 

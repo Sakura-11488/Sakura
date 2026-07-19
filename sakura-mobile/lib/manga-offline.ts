@@ -137,7 +137,7 @@ async function patch(record: OfflineMangaChapter) {
   await persist();
 }
 
-async function fetchChapterPageUrls(mangaId: string, chapterId: string): Promise<string[]> {
+export async function fetchChapterPageUrls(mangaId: string, chapterId: string): Promise<string[]> {
   const res = await fetch(
     `${ATSU_BASE}/api/read/chapter?mangaId=${encodeURIComponent(mangaId)}&chapterId=${encodeURIComponent(chapterId)}`,
     { headers: { Accept: 'application/json', Referer: ATSU_BASE } },
@@ -178,6 +178,40 @@ export async function getOfflineMapForManga(
 export async function listOfflineMangaChapters(): Promise<OfflineMangaChapter[]> {
   await ensureLoaded();
   return Object.values(mem.chapters).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+const MODULE_LOAD_TIME = Date.now();
+let reconciledInterrupted = false;
+
+/**
+ * On launch, any chapter still `downloading` is a leftover from a killed session
+ * (batch jobs live only in memory). Flip those to `paused` so they show as
+ * resumable. Runs once per process; only touches rows last updated before this
+ * session so an in-flight download is never paused out from under it.
+ */
+export async function reconcileInterruptedMangaChapters(): Promise<void> {
+  if (reconciledInterrupted) return;
+  reconciledInterrupted = true;
+  try {
+    await ensureLoaded();
+    let changed = false;
+    for (const row of Object.values(mem.chapters)) {
+      if (row.status === 'downloading' && row.updatedAt < MODULE_LOAD_TIME) {
+        mem.chapters[chapterKey(row.mangaId, row.chapterId)] = {
+          ...row,
+          status: 'paused',
+          updatedAt: Date.now(),
+        };
+        changed = true;
+      }
+    }
+    if (changed) {
+      await persist();
+      notify();
+    }
+  } catch {
+    // best-effort
+  }
 }
 
 export async function getOfflineMangaPageUris(
