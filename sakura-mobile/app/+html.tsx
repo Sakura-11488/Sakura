@@ -1,6 +1,13 @@
 import { ScrollViewStyleReset } from 'expo-router/html';
 import type { PropsWithChildren } from 'react';
 
+/**
+ * NOTE: the web build uses `output: 'single'` (SPA), and Expo generates
+ * dist/index.html from its own built-in template — this file is NOT used there.
+ * PWA/iOS head tags therefore live in `web/scripts/inject-pwa-tags.mjs`, which
+ * runs after `expo export`. Keep this in sync only if web output ever moves to
+ * static rendering.
+ */
 export default function Root({ children }: PropsWithChildren) {
   return (
     <html lang="en">

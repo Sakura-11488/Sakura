@@ -29,6 +29,7 @@ import { getProfile, upsertProfile } from '@/lib/supabase';
 import { useWallet } from '@/lib/wallet/context';
 import { clearApiCache, getApiCacheSizeBytes } from '@/lib/cache';
 import { clearAnimeSessionCache } from '@/lib/anime';
+import InstallGuideModal, { isStandaloneWebApp } from '@/components/InstallGuideModal';
 import { clearAllWatchProgress } from '@/lib/watch-progress';
 import { clearAllReadingProgress } from '@/lib/reader-progress';
 import { clearAllOfflineEpisodes } from '@/lib/anime-offline';
@@ -265,6 +266,10 @@ export default function SettingsScreen() {
   // ── Storage ──
   const [cacheSize, setCacheSize] = useState('');
   const [clearingCache, setClearingCache] = useState(false);
+  // Web-only: lets users re-open the "add to home screen" tutorial any time,
+  // even after dismissing the install banner.
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const canShowInstallRow = Platform.OS === 'web' && !isStandaloneWebApp();
 
   // ── Wallet export ──
   const [exportLoading, setExportLoading] = useState(false);
@@ -751,6 +756,18 @@ export default function SettingsScreen() {
               onPress={() => Linking.openURL('mailto:sakuramanga162@gmail.com')}
               colors={colors}
             />
+            {canShowInstallRow ? (
+              <>
+                <Divider colors={colors} />
+                <TapRow
+                  badge={<Badge bg={colors.primary}><I.Download c="#fff" /></Badge>}
+                  label="Install as App"
+                  sub="Add Sakura to your home screen"
+                  onPress={() => setShowInstallGuide(true)}
+                  colors={colors}
+                />
+              </>
+            ) : null}
           </Group>
           {/* ── LEGAL ──────────────────────────────────── */}
           <SectionHeader title="Legal" colors={colors} />
@@ -789,6 +806,7 @@ export default function SettingsScreen() {
           <View style={{ height: 120 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+      <InstallGuideModal visible={showInstallGuide} onClose={() => setShowInstallGuide(false)} />
     </SafeAreaView>
   );
 }
