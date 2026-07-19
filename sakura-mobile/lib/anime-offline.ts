@@ -209,10 +209,15 @@ function downloadHeaderVariants(src: StreamingSource, cookies: string): Record<s
   return variants;
 }
 
+// The fetchers return the post-redirect final URL alongside the text so segment/
+// key/#EXT-X-MAP URIs resolve against the URL that actually served the playlist,
+// not the original request URL (which may have 3xx-redirected to a different host).
+type PlaylistFetch = { text: string; finalUrl: string };
+
 async function fileDownloadPlaylist(
   url: string,
   headers: Record<string, string>,
-): Promise<string | null> {
+): Promise<PlaylistFetch | null> {
   const tmp = `${FileSystem.cacheDirectory}sakura_pl_${Date.now()}_${Math.random().toString(36).slice(2)}.m3u8`;
   try {
     const result = await FileSystem.downloadAsync(url, tmp, { headers });
@@ -220,7 +225,8 @@ async function fileDownloadPlaylist(
     const text = await FileSystem.readAsStringAsync(tmp);
     if (!text.trim()) return null;
     assertPlaylist(text, 'file');
-    return text;
+    // downloadAsync doesn't expose the post-redirect URL; best effort is the request URL.
+    return { text, finalUrl: url };
   } catch {
     return null;
   } finally {
@@ -228,14 +234,14 @@ async function fileDownloadPlaylist(
   }
 }
 
-async function nativeFetchText(url: string, headers: Record<string, string>): Promise<string | null> {
+async function nativeFetchText(url: string, headers: Record<string, string>): Promise<PlaylistFetch | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(url, { headers });
       if (!res.ok) continue;
       const text = await res.text();
       assertPlaylist(text, 'native');
-      return text;
+      return { text, finalUrl: res.url || url };
     } catch {
       // retry
     }
@@ -249,7 +255,7 @@ async function nativeFetchText(url: string, headers: Record<string, string>): Pr
 async function nativeFetchFollowingRedirects(
   url: string,
   headers: Record<string, string>,
-): Promise<string | null> {
+): Promise<PlaylistFetch | null> {
   let current = url;
   for (let hop = 0; hop < 6; hop++) {
     try {
@@ -271,7 +277,7 @@ async function nativeFetchFollowingRedirects(
           }
         }
         assertPlaylist(text, 'redirect');
-        return text;
+        return { text, finalUrl: current };
       }
       return null;
     } catch {
@@ -285,7 +291,7 @@ async function tryNativePlaylistFetch(
   url: string,
   src: StreamingSource,
   cookies: string,
-): Promise<string | null> {
+): Promise<PlaylistFetch | null> {
   for (const headers of downloadHeaderVariants(src, cookies)) {
     const file = await fileDownloadPlaylist(url, headers);
     if (file) return file;
@@ -315,7 +321,7 @@ async function primeStreamCookies(embedUrl: string, referer?: string): Promise<s
 async function fetchPlaylistText(
   url: string,
   src: StreamingSource,
-): Promise<{ text: string; cookies: string }> {
+): Promise<{ text: string; cookies: string; finalUrl: string }> {
   const ref = src.referer || src.requestHeaders?.Referer || src.requestHeaders?.referer;
   const embedUrl = src.embedUrl || '';
   let lastError: Error | null = null;
@@ -326,9 +332,9 @@ async function fetchPlaylistText(
     cookies = cookies ? `${cookies}; ${headerCookie}` : headerCookie;
   }
 
-  const nativeText = await tryNativePlaylistFetch(url, src, cookies);
-  if (nativeText) {
-    return { text: nativeText, cookies };
+  const nativeResult = await tryNativePlaylistFetch(url, src, cookies);
+  if (nativeResult) {
+    return { text: nativeResult.text, cookies, finalUrl: nativeResult.finalUrl };
   }
 
   for (const page of bridgePageCandidates(ref, embedUrl)) {
@@ -340,9 +346,11 @@ async function fetchPlaylistText(
         mode: 'fetch',
       });
       assertPlaylist(bridge.text || '', 'embed');
+      // The WebView bridge fetches `url` directly; no post-redirect URL is exposed.
       return {
         text: bridge.text!,
         cookies: bridge.cookies || cookies,
+        finalUrl: url,
       };
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
@@ -359,6 +367,7 @@ async function fetchPlaylistText(
     return {
       text: direct.text!,
       cookies: direct.cookies || cookies,
+      finalUrl: url,
     };
   } catch (e) {
     lastError = e instanceof Error ? e : new Error(String(e));
@@ -405,6 +414,9 @@ async function downloadFile(
 }
 
 async function patchManifest(ep: OfflineEpisode) {
+  // If the episode was deleted/cleared mid-download, a still-running worker must
+  // not resurrect its manifest row.
+  if (canceledEpisodeJobs.has(episodeKey(ep.animeId, ep.episodeId))) return;
   mem.episodes[episodeKey(ep.animeId, ep.episodeId)] = ep;
   await persist();
   notify();
@@ -461,6 +473,10 @@ export async function getOfflinePlaybackUri(
 export async function deleteOfflineEpisode(animeId: string, episodeId: string) {
   await ensureLoaded();
   const key = episodeKey(animeId, episodeId);
+  // Stop any live worker for this episode and clear a stale pause flag so a
+  // later fresh re-download isn't instantly paused at 0%.
+  pausedEpisodeJobs.delete(key);
+  if (activeJobs.has(key)) canceledEpisodeJobs.add(key);
   const dir = dirFor(animeId, episodeId);
   try {
     await FileSystem.deleteAsync(dir, { idempotent: true });
@@ -474,6 +490,9 @@ export async function deleteOfflineEpisode(animeId: string, episodeId: string) {
 
 export async function clearAllOfflineEpisodes() {
   await ensureLoaded();
+  // Cancel every in-flight worker and drop all pause flags (see deleteOfflineEpisode).
+  for (const key of activeJobs) canceledEpisodeJobs.add(key);
+  pausedEpisodeJobs.clear();
   try {
     await FileSystem.deleteAsync(ROOT, { idempotent: true });
     await FileSystem.makeDirectoryAsync(ROOT, { intermediates: true });
@@ -515,6 +534,10 @@ export function formatBytes(n: number): string {
 
 const activeJobs = new Set<string>();
 const pausedEpisodeJobs = new Set<string>();
+// Episodes deleted/cleared while a download worker is still running. The worker
+// and patchManifest both check this so a delete actually stops (and can't be
+// undone by an in-flight write). Cleared when the job ends.
+const canceledEpisodeJobs = new Set<string>();
 
 export function pauseAnimeEpisodeDownload(animeId: string, episodeId: string) {
   pausedEpisodeJobs.add(episodeKey(animeId, episodeId));
@@ -737,7 +760,7 @@ async function performDownload(
   ];
   const uniquePlaylistUrls = [...new Set(playlistCandidates)];
 
-  let master: { text: string; cookies: string } | null = null;
+  let master: { text: string; cookies: string; finalUrl: string } | null = null;
   let playlistError: Error | null = null;
   for (const playlistUrl of uniquePlaylistUrls) {
     try {
@@ -755,11 +778,20 @@ async function performDownload(
   }
   const headers = buildDownloadHeaders(src, master.cookies);
   const masterText = master.text;
-  const mediaUrl = pickMediaPlaylistUrl(masterText, src.url) || src.url;
-  const mediaText =
-    mediaUrl === src.url ? masterText : (await fetchPlaylistText(mediaUrl, src)).text;
+  // Resolve against the URL that actually served each playlist (post-redirect),
+  // not the original request URL — otherwise relative segment/key/#EXT-X-MAP URIs
+  // build against the wrong host and every segment 404s.
+  const masterBase = master.finalUrl;
+  const mediaUrl = pickMediaPlaylistUrl(masterText, masterBase) || masterBase;
+  let mediaText = masterText;
+  let mediaBase = masterBase;
+  if (mediaUrl !== masterBase) {
+    const mediaFetch = await fetchPlaylistText(mediaUrl, src);
+    mediaText = mediaFetch.text;
+    mediaBase = mediaFetch.finalUrl;
+  }
 
-  const { outLines, downloads } = planLocalPlaylist(mediaText, mediaUrl);
+  const { outLines, downloads } = planLocalPlaylist(mediaText, mediaBase);
   if (downloads.length === 0) throw new Error('No video segments in stream.');
 
   const dir = dirFor(opts.animeId, opts.episodeId);
@@ -782,12 +814,12 @@ async function performDownload(
 
   async function worker() {
     while (nextIndex < downloads.length) {
-      if (pausedEpisodeJobs.has(epKey)) return;
+      if (pausedEpisodeJobs.has(epKey) || canceledEpisodeJobs.has(epKey)) return;
       const i = nextIndex++;
       const { url: resUrl, name } = downloads[i];
       const dest = `${dir}${name}`;
       if (!(await fileHasContent(dest))) {
-        if (pausedEpisodeJobs.has(epKey)) return;
+        if (pausedEpisodeJobs.has(epKey) || canceledEpisodeJobs.has(epKey)) return;
         await downloadFile(resUrl, dest, headers);
       }
       const info = await FileSystem.getInfoAsync(dest);
@@ -809,6 +841,10 @@ async function performDownload(
     Array.from({ length: Math.min(concurrency, downloads.length) }, () => worker()),
   );
 
+  // Deleted/cleared mid-download: leave it gone — don't rewrite the playlist or a
+  // manifest row into the just-removed directory.
+  if (canceledEpisodeJobs.has(epKey)) return current;
+
   if (pausedEpisodeJobs.has(epKey) && completed < downloads.length) {
     current = {
       ...current,
@@ -825,6 +861,8 @@ async function performDownload(
   const playlistPath = `${dir}index.m3u8`;
   await FileSystem.writeAsStringAsync(playlistPath, outLines.join('\n'));
 
+  // Completed cleanly — drop any lingering pause flag so a future re-download starts.
+  pausedEpisodeJobs.delete(epKey);
   current = {
     ...current,
     status: 'ready',
@@ -856,6 +894,10 @@ export async function downloadAnimeEpisode(opts: {
 
   const category = opts.category || 'sub';
   activeJobs.add(key);
+  // Starting/resuming a download lifts any stale pause or cancel flag left over
+  // from a previous delete/clear so this run isn't immediately short-circuited.
+  pausedEpisodeJobs.delete(key);
+  canceledEpisodeJobs.delete(key);
 
   let record: OfflineEpisode = {
     animeId: opts.animeId,
@@ -936,5 +978,6 @@ export async function downloadAnimeEpisode(opts: {
     throw e;
   } finally {
     activeJobs.delete(key);
+    canceledEpisodeJobs.delete(key);
   }
 }

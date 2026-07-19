@@ -86,6 +86,29 @@ export default function FanArtScreen() {
     else setLoading(false);
   }, [connected]);
 
+  // Silent gallery refresh (no full-screen spinner) for polling.
+  const refreshGallery = useCallback(async () => {
+    try {
+      const kp = await unlockForAppSession();
+      if (!kp) return;
+      const items = await listFanArt(buildFanArtAuthHeaders(kp));
+      setGallery(items);
+    } catch {
+      // a transient poll failure shouldn't interrupt the user
+    }
+  }, []);
+
+  // While any piece is still rendering server-side, poll so it flips to the
+  // finished image on its own instead of showing a spinner until manual reload.
+  useEffect(() => {
+    const pending = gallery.some(
+      (it) => it.status !== 'ready' && it.status !== 'error' && it.status !== 'failed',
+    );
+    if (!pending) return;
+    const t = setInterval(refreshGallery, 4000);
+    return () => clearInterval(t);
+  }, [gallery, refreshGallery]);
+
   const onGenerate = useCallback(async () => {
     if (!quote || busy) return;
     setBusy(true);

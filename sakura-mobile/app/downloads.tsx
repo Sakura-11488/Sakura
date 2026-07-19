@@ -40,10 +40,7 @@ import {
   getOfflineNovelStorageBytes,
   listOfflineNovelChapters,
   reconcileInterruptedNovelChapters,
-  pauseNovelBatchDownload,
-  resumeNovelBatchDownload,
   downloadNovelChapter,
-  getNovelBatchState,
   type OfflineNovelChapter,
 } from '@/lib/novel-offline';
 import {
@@ -352,13 +349,8 @@ export default function DownloadsScreen() {
       }
       return;
     }
-    if (row.data.status === 'downloading' || row.data.status === 'paused') {
-      const batch = getNovelBatchState(row.data.novelPath);
-      if (batch) {
-        if (row.data.status === 'downloading') pauseNovelBatchDownload(row.data.novelPath);
-        else resumeNovelBatchDownload(row.data.novelPath);
-      }
-    }
+    // Novels expose no pause/resume control on this screen (handled on the novel
+    // page), so there's no novel branch here.
   };
 
   const handleRetry = (row: DownloadRow) => {
@@ -451,7 +443,10 @@ export default function DownloadsScreen() {
           </Text>
           <Text style={styles.badge}>{statusLabel}</Text>
         </View>
-        {row.data.status === 'downloading' || row.data.status === 'paused' ? (
+        {/* Novels have no per-chapter pause and the Downloads screen lacks the
+            chapter list needed to resume a batch, so their pause/resume lives on
+            the novel page — here they show only Delete. */}
+        {(row.data.status === 'downloading' || row.data.status === 'paused') && row.kind !== 'novel' ? (
           <TouchableOpacity style={styles.deleteBtn} onPress={() => handlePauseResume(row)}>
             <Text style={[styles.deleteText, { color: colors.primary }]}>
               {row.data.status === 'paused' ? 'Resume' : 'Pause'}

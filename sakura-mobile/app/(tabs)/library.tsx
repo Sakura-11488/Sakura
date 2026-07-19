@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -48,6 +48,18 @@ export default function LibraryScreen() {
     refreshContinueWatching();
     refreshContinueReading();
   }, [refreshContinueWatching, refreshContinueReading]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const all = await Library.getAll();
+      setItems(all);
+      refreshContinue();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshContinue]);
 
   useFocusEffect(
     useCallback(() => {
@@ -225,6 +237,9 @@ export default function LibraryScreen() {
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           scrollIndicatorInsets={{ bottom: 90 }}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} colors={[colors.primary]} />
+          }
           ListHeaderComponent={
             showContinueHeader ? (
               <Animated.View entering={FadeInDown.duration(350)} style={styles.continueWrap}>

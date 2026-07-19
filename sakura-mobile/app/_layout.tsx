@@ -27,6 +27,7 @@ import AnimeDownloadBridge from '@/components/anime/AnimeDownloadBridge';
 import NotificationBridge from '@/components/notifications/NotificationBridge';
 import PriceAlertBridge from '@/components/notifications/PriceAlertBridge';
 import OtaUpdateBridge from '@/components/OtaUpdateBridge';
+import AppUpdateBridge from '@/components/AppUpdateBridge';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
 import { TransferCelebrationProvider } from '@/lib/wallet/transfer-celebration';
@@ -54,9 +55,18 @@ function LiveActivityDeepLinkBridge() {
       if (path.startsWith('chapter/')) {
         const id = decodeURIComponent(path.replace(/^chapter\//, ''));
         const page = parsed.queryParams?.p ? String(parsed.queryParams.p) : undefined;
+        // Preserve source/offline so a comic or 18+ chapter reopened from the
+        // Live Activity routes to the right reader backend instead of manga.
+        const source = parsed.queryParams?.source ? String(parsed.queryParams.source) : undefined;
+        const offline = parsed.queryParams?.offline ? String(parsed.queryParams.offline) : undefined;
         router.push({
           pathname: '/chapter/[id]',
-          params: page ? { id, p: page } : { id },
+          params: {
+            id,
+            ...(page ? { p: page } : {}),
+            ...(source ? { source } : {}),
+            ...(offline ? { offline } : {}),
+          },
         });
         return;
       }
@@ -156,6 +166,7 @@ export default function RootLayout() {
           </Stack>
           <AnimeDownloadBridge />
           <OtaUpdateBridge />
+          <AppUpdateBridge />
           <CloudSyncBridge />
           <PriceAlertBridge />
           <FloatingTradeWidget />

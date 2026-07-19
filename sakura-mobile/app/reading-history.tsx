@@ -25,7 +25,7 @@ import {
 import { subscribeReadingProgress } from '@/lib/reader-progress';
 import { subscribeWatchProgress } from '@/lib/watch-progress';
 import { confirmDestructive } from '@/lib/confirm-alert';
-import { onTap } from '@/lib/sound';
+import { onTap, playTap } from '@/lib/sound';
 
 const TABS: Array<'All' | 'Anime' | 'Manga' | 'Novel'> = ['All', 'Anime', 'Manga', 'Novel'];
 
@@ -97,6 +97,7 @@ export default function ReadingHistoryScreen() {
           p: String(item.page || 1),
           title: item.title,
           cover: item.cover || '',
+          ...(item.source ? { source: item.source } : {}),
         },
       });
       return;

@@ -13,6 +13,9 @@ export interface ContinueReadingItem {
   mangaId?: string;
   chapterId?: string;
   page?: number;
+  /** Backing source for manga-type items: 'comics' | 'hentai' route to the
+   *  scraped reader, undefined/'manga' to the manga backend. */
+  source?: string;
   novelPath?: string;
   novelOffsetY?: number;
 }
@@ -39,6 +42,8 @@ export type MangaProgress = {
   totalPages: number;
   progress: number;
   updatedAt: number;
+  /** 'comics' | 'hentai' for droplet-scraped sources; absent for atsu manga. */
+  source?: string;
 };
 
 type ProgressStore = {
@@ -200,6 +205,7 @@ export async function setMangaReadProgress(entry: {
   chapterLabel?: string;
   page: number;
   totalPages: number;
+  source?: string;
 }): Promise<void> {
   if (!entry.mangaId || !entry.chapterId) return;
   await ensureLoaded();
@@ -216,6 +222,7 @@ export async function setMangaReadProgress(entry: {
     totalPages: total,
     progress,
     updatedAt: Date.now(),
+    source: entry.source ?? mem.manga[entry.mangaId]?.source,
   };
   await persist();
 }
@@ -237,6 +244,7 @@ export async function getContinueReading(limit = 12): Promise<ContinueReadingIte
       mangaId: row.mangaId,
       chapterId: row.chapterId,
       page: row.page,
+      source: row.source,
     });
   }
 

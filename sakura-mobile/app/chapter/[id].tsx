@@ -237,9 +237,13 @@ export default function ChapterReader() {
         progressPercent: total > 0 ? pageNumber / total : 0,
         kind: 'manga',
       },
-      id ? `sakura://chapter/${id}?p=${pageNumber}` : undefined,
+      id
+        ? `sakura://chapter/${id}?p=${pageNumber}` +
+          (source ? `&source=${source}` : '') +
+          (offline === '1' ? '&offline=1' : '')
+        : undefined,
     );
-  }, [chapterId, currentPage, id, loading, renderedPages.length, isHentai]);
+  }, [chapterId, currentPage, id, loading, renderedPages.length, isHentai, source, offline]);
 
   useEffect(() => {
     didInitialScroll.current = false;
@@ -320,6 +324,7 @@ export default function ChapterReader() {
         chapterLabel,
         page,
         totalPages: renderedPages.length,
+        source: typeof source === 'string' ? source : undefined,
       });
     }, 400);
     return () => clearTimeout(t);
@@ -332,6 +337,7 @@ export default function ChapterReader() {
     mangaCover,
     chapterLabel,
     isHentai,
+    source,
   ]);
 
   useEffect(() => {
@@ -348,6 +354,7 @@ export default function ChapterReader() {
           chapterLabel,
           page: currentPage + 1,
           totalPages: renderedPages.length,
+          source: typeof source === 'string' ? source : undefined,
         });
       }
       endReadingActivity();

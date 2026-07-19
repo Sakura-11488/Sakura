@@ -36,6 +36,9 @@ export default function ContinueReadingRow({ items, title = 'Continue Reading' }
           title: item.title,
           cover: item.cover || '',
           chapter: item.subtitle.split(' · ')[0] || '',
+          // Comics/18+ must carry their source or the reader falls back to the
+          // manga backend and renders an empty "No pages found" screen.
+          ...(item.source ? { source: item.source } : {}),
         },
       });
       return;

@@ -20,6 +20,8 @@ export interface HistoryItem {
   mangaId?: string;
   chapterId?: string;
   page?: number;
+  /** 'comics' | 'hentai' for scraped sources; routes the reopen to the right backend. */
+  source?: string;
   novelPath?: string;
   novelOffsetY?: number;
 }
@@ -89,6 +91,7 @@ export async function getReadingHistory(limit = 100): Promise<HistoryItem[]> {
       mangaId: row.mangaId,
       chapterId: row.chapterId,
       page: row.page,
+      source: row.source,
     });
   }
 

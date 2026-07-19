@@ -94,7 +94,9 @@ export default function AnimatedSplash({ onFinish }: Props) {
   const exitScale = useSharedValue(1);
 
   useEffect(() => {
-    const t = setTimeout(onFinish, 4500);
+    // Safety fallback in case the exit-animation callback never fires; kept just
+    // past the animated exit (~2.15s) so it doesn't cut the splash short.
+    const t = setTimeout(onFinish, 2800);
     return () => clearTimeout(t);
   }, [onFinish]);
 
@@ -115,11 +117,11 @@ export default function AnimatedSplash({ onFinish }: Props) {
       withTiming(1, { duration: 420, easing: Easing.out(Easing.cubic) })
     );
 
-    exitOpacity.value = withDelay(2200, withTiming(0, { duration: 650 }, (done) => {
+    exitOpacity.value = withDelay(1500, withTiming(0, { duration: 650 }, (done) => {
       if (done) runOnJS(onFinish)();
     }));
     exitScale.value = withDelay(
-      2200,
+      1500,
       withTiming(1.08, { duration: 650, easing: Easing.in(Easing.quad) })
     );
   }, [onFinish]);
