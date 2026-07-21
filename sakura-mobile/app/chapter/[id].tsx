@@ -24,8 +24,12 @@ import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib/wallet/pass';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const PAGE_HEIGHT = SCREEN_WIDTH * 1.5;
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// Fallback page aspect (height/width) used only until an image reports its real
+// size. A manga page is ~1.5, but manhwa/webtoon pages are long vertical strips
+// (often 3–15), so every page is measured and sized to its own ratio — assuming
+// 1.5 for everything is what made manhwa pages render cropped.
+const DEFAULT_PAGE_RATIO = 1.5;
 const THUMB_W = 44;
 const THUMB_H = 60;
 const THUMB_GAP = 8;
@@ -83,7 +87,22 @@ export default function ChapterReader() {
   const [currentPage, setCurrentPage] = useState(0);
   const [readingMode, setReadingMode] = useState<'page' | 'scroll'>('scroll');
   const [readDirection, setReadDirection] = useState<'ltr' | 'rtl'>('ltr');
+  // Real per-page aspect ratios (height/width), filled in as each image loads so
+  // tall manhwa strips get their full height instead of being cropped to 1.5.
+  const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
   const uiOpacity = useSharedValue(1);
+
+  const handlePageLoad = useCallback((pageId: string, width?: number, height?: number) => {
+    if (!width || !height) return;
+    const ratio = height / width;
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    setPageRatios((prev) => {
+      const existing = prev[pageId];
+      // Only re-render when the ratio meaningfully changes.
+      if (existing && Math.abs(existing - ratio) < 0.01) return prev;
+      return { ...prev, [pageId]: ratio };
+    });
+  }, []);
 
   const tildeIdx = (id || '').indexOf('~');
   const mangaId = tildeIdx >= 0 ? id!.slice(0, tildeIdx) : '';
@@ -249,20 +268,22 @@ export default function ChapterReader() {
     didInitialScroll.current = false;
   }, [mangaId, chapterId]);
 
-  const itemLength = readingMode === 'page' ? SCREEN_WIDTH : PAGE_HEIGHT;
-
   const jumpToPage = useCallback(
     (sourceIndex: number, animated = false) => {
       if (renderedPages.length === 0) return;
       const clamped = Math.min(Math.max(sourceIndex, 0), renderedPages.length - 1);
       const renderedIdx = mapSourceToRenderedIndex(clamped, renderedPages.length);
-      flatListRef.current?.scrollToOffset({
-        offset: itemLength * renderedIdx,
-        animated,
-      });
+      if (readingMode === 'page') {
+        // Uniform page width, so offset math is exact.
+        flatListRef.current?.scrollToOffset({ offset: SCREEN_WIDTH * renderedIdx, animated });
+      } else {
+        // Webtoon mode has variable page heights — let FlatList resolve the
+        // index itself (onScrollToIndexFailed covers unmeasured items).
+        flatListRef.current?.scrollToIndex({ index: renderedIdx, animated });
+      }
       setCurrentPage(clamped);
     },
-    [isRtlPageMode, itemLength, renderedPages.length],
+    [isRtlPageMode, readingMode, renderedPages.length],
   );
 
   useEffect(() => {
@@ -288,16 +309,35 @@ export default function ChapterReader() {
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   const renderPage = useCallback(
-    ({ item }: { item: { id: string; url: string } }) => (
-      <Image
-        source={{ uri: item.url }}
-        style={styles.page}
-        contentFit="cover"
-        transition={0}
-        recyclingKey={item.id}
-      />
-    ),
-    [],
+    ({ item }: { item: { id: string; url: string } }) => {
+      // Paged mode: one full screen per page, letterboxed so the whole page fits.
+      if (readingMode === 'page') {
+        return (
+          <Image
+            source={{ uri: item.url }}
+            style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
+            contentFit="contain"
+            transition={0}
+            recyclingKey={item.id}
+            onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
+          />
+        );
+      }
+      // Scroll (webtoon) mode: height follows the image's own aspect ratio, so a
+      // long manhwa strip renders in full instead of being cropped.
+      const ratio = pageRatios[item.id] ?? DEFAULT_PAGE_RATIO;
+      return (
+        <Image
+          source={{ uri: item.url }}
+          style={{ width: SCREEN_WIDTH, height: SCREEN_WIDTH * ratio }}
+          contentFit="contain"
+          transition={0}
+          recyclingKey={item.id}
+          onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
+        />
+      );
+    },
+    [readingMode, pageRatios, handlePageLoad],
   );
 
   const mangaTitle = typeof title === 'string' ? title : 'Manga';
@@ -466,11 +506,13 @@ export default function ChapterReader() {
         ref={flatListRef}
         data={renderedPages}
         keyExtractor={(p) => p.id}
-        getItemLayout={(_, index) => ({
-          length: itemLength,
-          offset: itemLength * index,
-          index,
-        })}
+        // Only valid in paged mode (uniform width). Webtoon pages have their own
+        // heights, so FlatList must measure them instead of assuming a constant.
+        getItemLayout={
+          readingMode === 'page'
+            ? (_, index) => ({ length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index })
+            : undefined
+        }
         pagingEnabled={readingMode === 'page'}
         decelerationRate={readingMode === 'page' ? 'fast' : 'normal'}
         horizontal={readingMode === 'page'}
@@ -538,7 +580,6 @@ export default function ChapterReader() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
-  page: { width: SCREEN_WIDTH, height: PAGE_HEIGHT },
   topOverlay: {
     position: 'absolute',
     top: 0,
