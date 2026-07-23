@@ -1,5 +1,5 @@
 import type { Keypair } from '@solana/web3.js';
-import { getWalletWithBiometrics } from './storage';
+import { getWalletWithBiometrics, getWalletKeypairPassive } from './storage';
 
 let cachedKeypair: Keypair | null = null;
 let unlockPromise: Promise<Keypair | null> | null = null;
@@ -18,6 +18,20 @@ export function clearAppSessionKeypair(): void {
  */
 export function getCachedSessionKeypair(): Keypair | null {
   return cachedKeypair;
+}
+
+/**
+ * Keypair for passive background signing (reading-XP ingest). Returns the warm
+ * session cache on any platform; on web it falls back to a no-prompt storage
+ * read so XP/badges still accrue when the user is just reading and hasn't done
+ * an explicit wallet action this session (the web unlock is an interactive
+ * modal, unlike native's frictionless biometric). Native never prompts here.
+ */
+export async function getPassiveSessionKeypair(): Promise<Keypair | null> {
+  if (cachedKeypair) return cachedKeypair;
+  const kp = await getWalletKeypairPassive();
+  if (kp) cachedKeypair = kp;
+  return kp;
 }
 
 /**

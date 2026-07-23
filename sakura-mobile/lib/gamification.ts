@@ -1,15 +1,16 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '@/lib/supabase';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
-import { getCachedSessionKeypair } from '@/lib/wallet/app-session';
+import { getPassiveSessionKeypair } from '@/lib/wallet/app-session';
 
 /**
  * Client half of reading gamification. Records local reading events into an
  * offline-safe queue and flushes them to the `reading-progress-ingest` edge
- * function — but only signs when the wallet is ALREADY unlocked this session
- * (`getCachedSessionKeypair`), so passive reading never triggers a biometric
- * prompt. XP/streaks/quests/badges are awarded server-side; this file only
- * reports what was read.
+ * function via `getPassiveSessionKeypair` — on native it signs only when the
+ * wallet is already unlocked this session (never triggers a biometric prompt);
+ * on web it reads the stored key directly (no keychain there, so no prompt),
+ * which is why reading XP now accrues on web too. XP/streaks/quests/badges are
+ * awarded server-side; this file only reports what was read.
  */
 
 /** Client mirror of the server XP curve (supabase/functions/_shared/xp.ts). */
@@ -147,7 +148,7 @@ function scheduleFlush(delayMs = 8000): void {
 export async function flushReadingEvents(): Promise<GamificationState | null> {
   await loadQueue();
   if (memQueue.length === 0) return null;
-  const kp = getCachedSessionKeypair();
+  const kp = await getPassiveSessionKeypair();
   if (!kp) return null; // not unlocked this session; keep queued for later
 
   const batch = memQueue.slice(0, 100);

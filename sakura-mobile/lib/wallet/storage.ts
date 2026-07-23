@@ -70,6 +70,25 @@ export async function getWalletWithBiometrics(): Promise<Keypair | null> {
   return Keypair.fromSecretKey(secretKey);
 }
 
+/**
+ * Web-only: return the wallet keypair straight from storage with NO unlock
+ * prompt. Web has no keychain, so SecureStore is localStorage-backed and the
+ * biometric/requireAuthentication options are inert — the secret is readable
+ * (and already sits in localStorage). Used for passive, low-stakes background
+ * signing (reading-XP ingest), which must never pop the transaction-auth modal.
+ * Returns null on native, where passive flows must not silently read the secret.
+ */
+export async function getWalletKeypairPassive(): Promise<Keypair | null> {
+  if (Platform.OS !== 'web') return null;
+  try {
+    const secret = await SecureStore.getItemAsync(KEY_SECRET);
+    if (!secret) return null;
+    return Keypair.fromSecretKey(bs58.decode(secret));
+  } catch {
+    return null;
+  }
+}
+
 export async function importWalletFromKey(privateKeyBase58: string): Promise<Keypair> {
   const secretKey = bs58.decode(privateKeyBase58);
   const keypair = Keypair.fromSecretKey(secretKey);
