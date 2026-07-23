@@ -95,14 +95,21 @@ export function mergeChatMessagesFromServer(
       !server.some((s) => pendingMatchesConfirmed(m, s)),
   );
 
-  // Keep any recent local copy (own or peer) missing from this server page — e.g.
-  // realtime inserts before a stale/empty reload would otherwise drop them.
-  const recentOrphans = prev.filter(
-    (m) =>
-      !m.id.startsWith('pending-') &&
-      !serverIds.has(m.id) &&
-      Date.now() - new Date(m.created_at).getTime() < LOCAL_ORPHAN_MS,
-  );
+  // The server only returns the latest page (~50). As new messages arrive, that
+  // window slides forward and older already-loaded messages fall out of it — the
+  // previous 120s-only rule then dropped them, so messages you'd already scrolled
+  // silently vanished. Keep an orphan (not in this page) when it is EITHER older
+  // than the page's oldest row (scroll-back history below the window) OR a very
+  // recent realtime insert. A message that sits inside the window yet is absent
+  // from the page is a genuine removal, so it is (correctly) dropped.
+  const oldestServer = server.length
+    ? Math.min(...server.map((m) => new Date(m.created_at).getTime()))
+    : Infinity;
+  const recentOrphans = prev.filter((m) => {
+    if (m.id.startsWith('pending-') || serverIds.has(m.id)) return false;
+    const t = new Date(m.created_at).getTime();
+    return t < oldestServer || Date.now() - t < LOCAL_ORPHAN_MS;
+  });
 
   const byId = new Map<string, ChatMessage>();
   for (const message of [...server, ...pending, ...recentOrphans]) {

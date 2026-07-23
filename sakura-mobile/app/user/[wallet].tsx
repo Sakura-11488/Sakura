@@ -113,7 +113,13 @@ export default function PublicProfileScreen() {
             <Text style={[styles.walletText, { color: colors.textTertiary }]}>{truncateAddress(wallet)}</Text>
             {profile?.bio ? <Text style={[styles.bio, { color: colors.textSecondary }]}>{profile.bio}</Text> : null}
 
-            <UserSocialActions targetWallet={wallet} viewerWallet={address} />
+            <UserSocialActions
+              targetWallet={wallet}
+              viewerWallet={address}
+              onFollowChange={(state) =>
+                setProfile((p) => (p ? { ...p, follower_count: state.follower_count } : p))
+              }
+            />
 
             {(profile?.follower_count ?? 0) > 0 ? (
               <Text style={[styles.followerCount, { color: colors.textTertiary }]}>

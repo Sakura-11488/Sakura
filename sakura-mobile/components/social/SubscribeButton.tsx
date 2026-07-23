@@ -22,6 +22,11 @@ export default function SubscribeButton({ creatorWallet, compact, fill, iconOnly
   const [following, setFollowing] = useState(false);
   const followingRef = useRef(following);
   followingRef.current = following;
+  // Keep onChange in a ref so the realtime subscribe effect doesn't tear down
+  // and recreate its Supabase channel on every parent re-render (callers pass a
+  // fresh inline lambda each render).
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -32,10 +37,10 @@ export default function SubscribeButton({ creatorWallet, compact, fill, iconOnly
         nextFollowing ??
         (address ? await isFollowingCreator(address, creatorWallet) : false);
       setFollowing(f);
-      onChange?.(f, count);
+      onChangeRef.current?.(f, count);
       return { following: f, count };
     },
-    [address, creatorWallet, onChange],
+    [address, creatorWallet],
   );
 
   const refresh = useCallback(async () => {
@@ -60,19 +65,22 @@ export default function SubscribeButton({ creatorWallet, compact, fill, iconOnly
       onFollowingChange: (next) => {
         setFollowing(next);
         getFollowerCount(creatorWallet)
-          .then((count) => onChange?.(next, count))
-          .catch(() => onChange?.(next));
+          .then((count) => onChangeRef.current?.(next, count))
+          .catch(() => onChangeRef.current?.(next));
       },
       onFollowersChanged: () => {
         syncCounts().catch(() => {});
       },
       onProfileFollowerCount: (count) => {
-        onChange?.(followingRef.current, count);
+        onChangeRef.current?.(followingRef.current, count);
       },
     });
 
     return unsubscribe;
-  }, [creatorWallet, address, refresh, syncCounts, onChange]);
+    // Only re-subscribe when the creator or viewer actually changes; refresh and
+    // syncCounts are stable, and onChange is read through a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creatorWallet, address]);
 
   const toggle = async () => {
     if (!address) {

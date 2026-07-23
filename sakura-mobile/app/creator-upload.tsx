@@ -176,6 +176,7 @@ export default function CreatorUploadScreen() {
       // session. The function also records release_metadata.cover_url so the
       // catalog + detail screens can display it.
       let coverUrl: string | null = null;
+      let coverFailed = false;
       if (coverUri) {
         try {
           const uploaded = await uploadWorkImage({
@@ -187,17 +188,20 @@ export default function CreatorUploadScreen() {
           coverUrl = uploaded.url;
         } catch (e) {
           console.warn('[creator-upload] cover upload failed:', e);
+          coverFailed = true;
         }
       }
 
+      let pagesFailed: number[] = [];
       if (workKind === 'manga' && mangaPageUris.length) {
-        await uploadMangaPages({
+        const pageResult = await uploadMangaPages({
           keypair: kp,
           workId: work.id,
           releaseId: release.id,
           localUris: mangaPageUris,
           onProgress: (done, total) => setMediaProgress(`Uploading pages ${done}/${total}…`),
         });
+        pagesFailed = pageResult.failed;
       }
 
       if (workKind === 'anime' && videoUri) {
@@ -225,11 +229,26 @@ export default function CreatorUploadScreen() {
 
       const result = await publishWorkViaApi(kp, work.id);
 
+      const notified = result.followers_notified
+        ? ` ${result.followers_notified} subscribers notified.`
+        : '';
+      const warnings: string[] = [];
+      if (coverFailed) {
+        warnings.push('Cover art couldn’t be uploaded — add it later from your dashboard.');
+      }
+      if (pagesFailed.length) {
+        warnings.push(
+          `${pagesFailed.length} page${pagesFailed.length > 1 ? 's' : ''} couldn’t be uploaded (page ${pagesFailed.join(', ')}). Re-add them from your dashboard.`,
+        );
+      }
+      const base = mintAsNft
+        ? `Your work is live. NFT receipt registered to your account.${notified}`
+        : `Your work is live on Sakura.${notified}`;
+      const body = warnings.length ? `${base}\n\n⚠️ ${warnings.join('\n')}` : base;
+
       Alert.alert(
         mintAsNft ? 'Published & minted' : 'Published',
-        mintAsNft
-          ? `Your work is live. NFT receipt registered to your account.${result.followers_notified ? ` ${result.followers_notified} subscribers notified.` : ''}`
-          : `Your work is live on Sakura.${result.followers_notified ? ` ${result.followers_notified} subscribers notified.` : ''}`,
+        body,
         [{ text: 'View dashboard', onPress: () => router.replace('/creator-dashboard') }],
       );
     } catch (e) {

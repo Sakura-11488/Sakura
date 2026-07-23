@@ -26,10 +26,24 @@ Deno.serve(async (req) => {
       .select('*')
       .eq('visibility', 'public')
       .eq('moderation_state', 'approved')
+      // id is the unique tiebreaker: published_at defaults to now() and can tie
+      // across posts, and a bare `.lt(published_at)` cursor silently drops every
+      // post sharing the boundary timestamp. Keyset on (published_at, id).
       .order('published_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(limit);
 
-    if (body.cursor) query = query.lt('published_at', body.cursor);
+    if (body.cursor) {
+      const sep = String(body.cursor).lastIndexOf('|');
+      if (sep > 0) {
+        const ts = String(body.cursor).slice(0, sep);
+        const id = String(body.cursor).slice(sep + 1);
+        query = query.or(`published_at.lt.${ts},and(published_at.eq.${ts},id.lt.${id})`);
+      } else {
+        // Back-compat with older bare-timestamp cursors.
+        query = query.lt('published_at', body.cursor);
+      }
+    }
     if (body.creator_wallet) query = query.eq('creator_wallet', body.creator_wallet);
 
     const { data: posts, error } = await query;
@@ -67,7 +81,9 @@ Deno.serve(async (req) => {
       creator: profileByWallet.get(post.creator_wallet) ?? null,
     }));
 
-    return jsonResponse(200, { items, nextCursor: items.at(-1)?.published_at ?? null }, cors);
+    const last = items.at(-1);
+    const nextCursor = last ? `${last.published_at}|${last.id}` : null;
+    return jsonResponse(200, { items, nextCursor }, cors);
   } catch (error) {
     return jsonResponse(500, { error: error instanceof Error ? error.message : 'Feed load failed.' }, cors);
   }

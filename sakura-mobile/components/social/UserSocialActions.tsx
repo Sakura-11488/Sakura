@@ -5,16 +5,19 @@ import * as Haptics from 'expo-haptics';
 import { FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
-import { getCreatorSocialState, setCreatorFollow } from '@/lib/creator-social';
+import { getCreatorSocialState, setCreatorFollow, type CreatorSocialState } from '@/lib/creator-social';
 import { getOrRefreshWalletAuthSession } from '@/lib/wallet-auth-session';
 
 type Props = {
   targetWallet: string;
   viewerWallet?: string | null;
   compact?: boolean;
+  /** Fires with the fresh social state (incl. follower_count) on load and after
+   *  each follow/unfollow, so the parent can keep a displayed count in sync. */
+  onFollowChange?: (state: CreatorSocialState) => void;
 };
 
-export default function UserSocialActions({ targetWallet, viewerWallet, compact }: Props) {
+export default function UserSocialActions({ targetWallet, viewerWallet, compact, onFollowChange }: Props) {
   const { colors } = useTheme();
   const router = useRouter();
   const { signWithBiometrics } = useWallet();
@@ -30,10 +33,13 @@ export default function UserSocialActions({ targetWallet, viewerWallet, compact 
       return;
     }
     getCreatorSocialState(targetWallet, viewerWallet)
-      .then((state) => setFollowing(state.following))
+      .then((state) => {
+        setFollowing(state.following);
+        onFollowChange?.(state);
+      })
       .catch(() => setFollowing(false))
       .finally(() => setLoading(false));
-  }, [targetWallet, viewerWallet, isSelf]);
+  }, [targetWallet, viewerWallet, isSelf, onFollowChange]);
 
   const toggleFollow = useCallback(async () => {
     if (!viewerWallet) {
@@ -49,13 +55,14 @@ export default function UserSocialActions({ targetWallet, viewerWallet, compact 
         authHeaders: headers,
       });
       setFollowing(next.following);
+      onFollowChange?.(next);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
       Alert.alert('Follow failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setFollowBusy(false);
     }
-  }, [following, signWithBiometrics, targetWallet, viewerWallet]);
+  }, [following, signWithBiometrics, targetWallet, viewerWallet, onFollowChange]);
 
   const openMessage = useCallback(() => {
     if (!viewerWallet) {

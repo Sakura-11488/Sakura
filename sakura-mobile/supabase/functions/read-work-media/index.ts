@@ -88,12 +88,21 @@ Deno.serve(async (req) => {
           const af = row.asset_files!;
           if (af.is_public) {
             pages.push(publicUrl(af.bucket, af.object_path));
-          } else {
-            const { data: signed } = await supabase.storage
+            continue;
+          }
+          // Sign the private page, retrying once — a transient sign failure used
+          // to silently drop the page and re-index every page after it.
+          let signedUrl: string | null = null;
+          for (let attempt = 0; attempt < 2 && !signedUrl; attempt++) {
+            const { data: signed, error: signErr } = await supabase.storage
               .from(af.bucket)
               .createSignedUrl(af.object_path, PAGE_URL_TTL);
-            if (signed?.signedUrl) pages.push(signed.signedUrl);
+            if (signed?.signedUrl) signedUrl = signed.signedUrl;
+            else if (attempt === 1) {
+              console.error(`[read-work-media] page sign failed: ${af.bucket}/${af.object_path}`, signErr);
+            }
           }
+          if (signedUrl) pages.push(signedUrl);
         }
         return { pages };
       }

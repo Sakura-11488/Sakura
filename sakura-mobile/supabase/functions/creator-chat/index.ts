@@ -309,6 +309,13 @@ Deno.serve(async (req) => {
         });
       }
 
+      // Most recently active threads first (joined_at only reflects when you
+      // joined, so an old thread with a new message must still bubble to the top).
+      enriched.sort(
+        (a, b) =>
+          new Date(b.last_message_at ?? 0).getTime() - new Date(a.last_message_at ?? 0).getTime(),
+      );
+
       return jsonResponse(200, { threads: enriched }, cors);
     }
 

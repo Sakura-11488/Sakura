@@ -24,11 +24,32 @@ export default function CreatorFeedScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [posting, setPosting] = useState(false);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const load = useCallback(async () => {
-    const feed = await fetchCreatorFeed(25);
+    const { items: feed, nextCursor } = await fetchCreatorFeed(25);
     setItems(feed);
+    setCursor(nextCursor);
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !cursor) return;
+    setLoadingMore(true);
+    try {
+      const { items: more, nextCursor } = await fetchCreatorFeed(25, cursor);
+      // De-dupe by id in case a boundary post repeats across pages.
+      setItems((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...more.filter((p) => !seen.has(p.id))];
+      });
+      setCursor(more.length ? nextCursor : null);
+    } catch {
+      // keep what we have; user can pull-to-refresh
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, loadingMore]);
 
   useEffect(() => {
     load().finally(() => setLoading(false));
@@ -122,6 +143,13 @@ export default function CreatorFeedScreen() {
       <FlatList
         data={items}
         keyExtractor={(item) => item.id}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          loadingMore ? (
+            <ActivityIndicator color={colors.primary} style={{ marginVertical: 20 }} />
+          ) : null
+        }
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.primary} />}
         ListHeaderComponent={
           <View style={styles.compose}>

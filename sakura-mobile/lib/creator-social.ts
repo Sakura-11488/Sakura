@@ -102,12 +102,18 @@ export async function submitCreatorVerification(input: {
   if (error) throw error;
 }
 
-export async function fetchCreatorFeed(limit = 20, cursor?: string): Promise<CreatorFeedPost[]> {
+export async function fetchCreatorFeed(
+  limit = 20,
+  cursor?: string,
+): Promise<{ items: CreatorFeedPost[]; nextCursor: string | null }> {
   const { data, error } = await supabase.functions.invoke('creator-feed', {
     body: { limit, cursor },
   });
   if (error) throw error;
-  return (data?.items ?? []) as CreatorFeedPost[];
+  return {
+    items: (data?.items ?? []) as CreatorFeedPost[],
+    nextCursor: (data?.nextCursor ?? null) as string | null,
+  };
 }
 
 export async function createCreatorPost(input: {

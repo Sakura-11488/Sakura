@@ -68,6 +68,34 @@ Deno.serve(async (req) => {
       if (mediaErr) return jsonResponse(500, { error: mediaErr.message }, cors);
     }
 
+    // Notify followers who opted in (public posts only). Non-fatal: a push
+    // failure must never fail the post. Previously nothing called this, so new
+    // posts silently reached no one.
+    if ((body.visibility ?? 'public') === 'public') {
+      const pushSecret = Deno.env.get('PUSH_SEND_SECRET');
+      if (pushSecret) {
+        try {
+          await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/notify-creator-followers`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${pushSecret}`,
+            },
+            body: JSON.stringify({
+              creator_wallet: walletAddress,
+              notification_type: 'creator_post',
+              title: 'New post from a creator you follow',
+              body: caption ? caption.slice(0, 200) : 'Shared something new on Sakura.',
+              route: `/creator-feed`,
+              post_id: post.id,
+            }),
+          });
+        } catch (_e) {
+          // best-effort; the post already succeeded
+        }
+      }
+    }
+
     return jsonResponse(200, { ok: true, post }, cors);
   } catch (error) {
     return jsonResponse(401, { error: error instanceof Error ? error.message : 'Post failed.' }, cors);
