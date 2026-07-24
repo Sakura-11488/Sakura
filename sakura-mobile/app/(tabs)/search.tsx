@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   ScrollView,
   FlatList,
-  Dimensions,
+  useWindowDimensions,
   ActivityIndicator,
   Alert,
   Platform,
@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
+import { contentWidth } from '@/constants/layout';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import EmptyState from '@/components/ui/EmptyState';
@@ -31,7 +32,6 @@ import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
 import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
 import { useContentPrefs } from '@/lib/content-prefs';
 
-const { width: W } = Dimensions.get('window');
 const BASE_FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
 type Filter = (typeof BASE_FILTERS)[number] | '18+';
 
@@ -66,6 +66,15 @@ export default function SearchTabScreen() {
   const router = useRouter();
   const { address, unlockForAppSession } = useWallet();
   const { allowAdult } = useContentPrefs();
+  // Size the category grid off the CONTENT column, not the raw window: on a
+  // 1920px desktop the window-derived width produced 939px cards that couldn't
+  // fit two per row, so each rendered as a near-empty full-width slab.
+  const { width: windowW } = useWindowDimensions();
+  const catCardW = useMemo(() => {
+    const avail = contentWidth(windowW) - Spacing.md * 2;
+    const cols = avail >= 900 ? 4 : avail >= 620 ? 3 : 2;
+    return Math.floor((avail - 10 * (cols - 1)) / cols);
+  }, [windowW]);
   const filters = useMemo<Filter[]>(
     () => (allowAdult ? [...BASE_FILTERS, '18+'] : [...BASE_FILTERS]),
     [allowAdult],
@@ -329,7 +338,7 @@ export default function SearchTabScreen() {
           paddingBottom: 16,
         },
         catCard: {
-          width: (W - Spacing.md * 2 - 10) / 2,
+          width: catCardW,
           height: 112,
           borderRadius: Radius.md,
           backgroundColor: colors.surfaceSecondary,
@@ -390,7 +399,7 @@ export default function SearchTabScreen() {
         loader: { paddingTop: 48, alignItems: 'center' },
         empty: { paddingTop: 24 },
       }),
-    [colors],
+    [colors, catCardW],
   );
 
   return (

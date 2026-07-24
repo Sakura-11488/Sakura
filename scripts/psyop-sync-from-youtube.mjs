@@ -5,6 +5,9 @@
  *   node scripts/psyop-sync-from-youtube.mjs              # download + thumbs + upload + patch
  *   node scripts/psyop-sync-from-youtube.mjs --dry-run    # list missing only
  *   node scripts/psyop-sync-from-youtube.mjs --skip-download
+ *   node scripts/psyop-sync-from-youtube.mjs --upgrade-sd  # re-pull published
+ *       episodes that are below 720p (they were fetched with the old 360p-only
+ *       format selector) and re-upload them in HD. Needs ffmpeg for the merge.
  */
 import { execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -32,6 +35,8 @@ const INGEST_BASE = (process.env.MEDIA_INGEST_BASE || 'http://165-232-83-159.nip
 
 const dryRun = process.argv.includes('--dry-run');
 const skipDownload = process.argv.includes('--skip-download');
+/** Re-download + re-upload any already-synced episode below 720p (SD backfill). */
+const upgradeSd = process.argv.includes('--upgrade-sd');
 
 function sh(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', stdio: opts.stdio ?? 'pipe', ...opts });
@@ -73,16 +78,39 @@ function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
 
+// YouTube only serves 1080p/720p as SEPARATE video+audio (DASH) streams; the
+// best pre-muxed single file is itag 18 = 360p. The old selector
+// ("best[ext=mp4]/18/best") therefore downloaded 360p every time, which is why
+// episodes looked pixelated. Prefer a merged 1080p, then 720p, and only fall
+// back to progressive/360p if ffmpeg can't merge on this machine.
+const YTDLP_FORMAT = [
+  'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]',
+  'bestvideo[height<=1080]+bestaudio',
+  'best[height<=1080][ext=mp4]',
+  'best[ext=mp4]',
+  'best',
+].join('/');
+
 function downloadOne(id) {
   const out = path.join(VIDEOS, `${id}.mp4`);
-  if (fs.existsSync(out) && fs.statSync(out).size > 100_000) return out;
-  console.log(`  downloading ${id}...`);
+  if (fs.existsSync(out) && fs.statSync(out).size > 100_000) {
+    // Episodes fetched before the format fix are 360p. With --upgrade-sd, drop
+    // and re-pull anything below 720p instead of skipping it as "already done".
+    const h = upgradeSd ? videoHeight(out) : 0;
+    if (!upgradeSd || (h >= 720 && h > 0)) return out;
+    console.log(`  re-downloading ${id} (was ${h || '?'}p)...`);
+    fs.rmSync(out, { force: true });
+  } else {
+    console.log(`  downloading ${id}...`);
+  }
   const r = spawnSync(
     'yt-dlp',
     [
       '--no-update',
       '-f',
-      'best[ext=mp4]/18/best',
+      YTDLP_FORMAT,
+      '--merge-output-format',
+      'mp4',
       '-o',
       out,
       `https://www.youtube.com/watch?v=${id}`,
@@ -90,7 +118,22 @@ function downloadOne(id) {
     { stdio: 'inherit' },
   );
   if (r.status !== 0) throw new Error(`yt-dlp failed for ${id}`);
+  const h = videoHeight(out);
+  if (h) console.log(`  ${id}: ${h}p`);
+  if (h && h < 720) {
+    console.warn(`  [warn] ${id} is only ${h}p — yt-dlp may lack ffmpeg to merge HD streams.`);
+  }
   return out;
+}
+
+/** Height of a downloaded file, via ffprobe. Returns 0 if ffprobe is missing. */
+function videoHeight(file) {
+  const r = spawnSync(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height', '-of', 'csv=p=0', file],
+    { encoding: 'utf8' },
+  );
+  return Number(String(r.stdout || '').trim()) || 0;
 }
 
 function thumbOne(id) {
@@ -203,6 +246,32 @@ async function main() {
   ensureDir(THUMBS);
 
   const existing = readExistingIds();
+
+  // SD backfill: re-pull + re-upload already-published episodes that were
+  // fetched with the old 360p-only format selector. Touches no episode lists.
+  if (upgradeSd) {
+    const ids = [...existing];
+    console.log(`Checking ${ids.length} published episodes for sub-720p video...`);
+    let upgraded = 0;
+    for (const id of ids) {
+      try {
+        const before = path.join(VIDEOS, `${id}.mp4`);
+        const had = fs.existsSync(before) ? videoHeight(before) : 0;
+        downloadOne(id);
+        const after = videoHeight(path.join(VIDEOS, `${id}.mp4`));
+        if (after > had || !had) {
+          thumbOne(id);
+          uploadOne(id);
+          upgraded += 1;
+        }
+      } catch (e) {
+        console.error(`Failed ${id}:`, e.message);
+      }
+    }
+    console.log(`Done. Re-uploaded ${upgraded} episode(s) in HD.`);
+    return;
+  }
+
   const channel = fetchChannelVideos();
   const missing = channel.filter((v) => !existing.has(v.id));
   const maxEp = Math.max(

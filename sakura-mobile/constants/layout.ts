@@ -12,7 +12,11 @@ export const MAX_HERO_HEIGHT_WEB = 360;
 // (mobile web) the original layout is preserved untouched.
 export const DESKTOP_BREAKPOINT = 1000;
 export const SIDEBAR_WIDTH = 232;
-export const MAX_CONTENT_WIDTH_DESKTOP = 1180;
+// 1180 left ~250px of dead gutter on each side at 1920x1080 (the content column
+// is centered in the space beside the sidebar), which read as a broken layout.
+// 1440 keeps line lengths sane while making the margins look like intentional
+// page padding. Components size off contentWidth(), so this cascades.
+export const MAX_CONTENT_WIDTH_DESKTOP = 1440;
 
 /** True when running on web at a desktop-class window width. */
 export function isWideWeb(windowWidth: number): boolean {

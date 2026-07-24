@@ -15,7 +15,11 @@ while IFS='|' read -r id title; do
     echo "skip video $id"
   else
     echo "download $id — $title"
-    "$YTDLP" --no-update -f 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best' \
+    # The merge branch MUST come first: yt-dlp takes the first matching branch,
+    # and a leading `best[ext=mp4]` matches YouTube's only progressive mp4
+    # (itag 18 = 360p), so HD was never fetched.
+    "$YTDLP" --no-update \
+      -f 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[ext=mp4]/best' \
       --merge-output-format mp4 -o "$mp4" "https://www.youtube.com/watch?v=$id"
     chmod 644 "$mp4"
   fi

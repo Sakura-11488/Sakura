@@ -27,7 +27,18 @@ function download(id) {
   console.log(`download ${id}`);
   const r = spawnSync(
     'yt-dlp',
-    ['--no-update', '-f', 'best[ext=mp4]/18/best', '-o', out, `https://www.youtube.com/watch?v=${id}`],
+    [
+      '--no-update',
+      // YouTube serves 720p/1080p only as separate DASH streams; a bare `best`
+      // (and itag 18) is 360p progressive — that is why eps 44+ shipped in SD.
+      '-f',
+      'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][ext=mp4]/best[ext=mp4]/best',
+      '--merge-output-format',
+      'mp4',
+      '-o',
+      out,
+      `https://www.youtube.com/watch?v=${id}`,
+    ],
     { stdio: 'inherit' },
   );
   if (r.status !== 0) throw new Error(`download failed ${id}`);
