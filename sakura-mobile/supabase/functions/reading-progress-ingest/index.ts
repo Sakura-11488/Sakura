@@ -93,21 +93,75 @@ Deno.serve(async (req) => {
         client_reported_at: ev.client_reported_at ?? null,
         xp_awarded: xp,
       });
-      // Unique(wallet,kind,content,chapter,day) violation => already seen today, skip.
-      if (insErr) continue;
 
-      if (xp > 0) {
-        const refKey = `read:${kind}:${contentId}:${chapterId}:${today}`;
-        const { error: ledgerErr } = await supabase.from('xp_ledger').insert({
-          wallet_address: walletAddress,
-          source: 'read_chapter',
-          xp_delta: xp,
-          ref_key: refKey,
-        });
-        if (!ledgerErr) {
-          awardedXp += xp;
-          newEventsAwarded += 1;
-          remaining -= 1;
+      // Effective values after reconciling with any earlier visit today.
+      let effProgress = progress;
+      let effDwell = dwellMs;
+      let effCompleted = completed;
+      let alreadyAwarded = false;
+
+      if (insErr) {
+        // Unique(wallet,kind,content,chapter,day) violation: this chapter was
+        // already touched today. Previously we dropped the event outright, so a
+        // 3-second peek permanently burned the slot and the REAL read of that
+        // chapter could never earn XP that day. Instead, merge the observations:
+        // keep the furthest progress, accumulate reading time, and stay
+        // completed once completed.
+        const { data: prior } = await supabase
+          .from('reading_events')
+          .select('progress, dwell_ms, completed, xp_awarded')
+          .eq('wallet_address', walletAddress)
+          .eq('kind', kind)
+          .eq('content_id', contentId)
+          .eq('chapter_id', chapterId)
+          .eq('day', today)
+          .maybeSingle();
+        if (!prior) continue; // not a duplicate — a genuine insert failure
+
+        alreadyAwarded = Number(prior.xp_awarded) > 0;
+        effProgress = Math.max(Number(prior.progress) || 0, progress);
+        effDwell = (Number(prior.dwell_ms) || 0) + dwellMs;
+        effCompleted = prior.completed === true || completed;
+
+        await supabase
+          .from('reading_events')
+          .update({ progress: effProgress, dwell_ms: effDwell, completed: effCompleted })
+          .eq('wallet_address', walletAddress)
+          .eq('kind', kind)
+          .eq('content_id', contentId)
+          .eq('chapter_id', chapterId)
+          .eq('day', today);
+      }
+
+      // Re-evaluate against the merged totals so a qualifying read still counts.
+      const effEligible = (effCompleted || effProgress >= 0.9) && effDwell >= MIN_DWELL_MS;
+      if (alreadyAwarded || !effEligible || remaining <= 0) continue;
+
+      // xp_ledger's unique (wallet, ref_key) keeps this exactly-once even if two
+      // batches race, so re-crediting a merged row can never double-pay.
+      const refKey = `read:${kind}:${contentId}:${chapterId}:${today}`;
+      const { error: ledgerErr } = await supabase.from('xp_ledger').insert({
+        wallet_address: walletAddress,
+        source: 'read_chapter',
+        xp_delta: XP_PER_CHAPTER,
+        ref_key: refKey,
+      });
+      if (!ledgerErr) {
+        awardedXp += XP_PER_CHAPTER;
+        newEventsAwarded += 1;
+        remaining -= 1;
+        if (insErr || xp === 0) {
+          // The stored row didn't record the award yet (merged, or inserted
+          // before it qualified) — keep xp_awarded truthful for the daily
+          // chapter/series counts and the per-day cap.
+          await supabase
+            .from('reading_events')
+            .update({ xp_awarded: XP_PER_CHAPTER })
+            .eq('wallet_address', walletAddress)
+            .eq('kind', kind)
+            .eq('content_id', contentId)
+            .eq('chapter_id', chapterId)
+            .eq('day', today);
         }
       }
     }
