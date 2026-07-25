@@ -21,14 +21,12 @@ export const XP_REDEEM_MIN = 100;
 /**
  * Whether to surface the swap in the UI.
  *
- * Off until a funded payout wallet exists (SAKURA_PAYOUT_SECRET). Swaps queue
- * correctly without one, but they would never settle — the XP would be spent
- * against a promise nothing can keep. The screen and the whole path stay built
- * and reachable by URL; this only controls whether it is advertised.
- *
- * Flip to true once a swap has been settled end to end.
+ * On. Swaps are queued, not settled inline: the XP is spent when the request is
+ * recorded and the SAKURA is sent by process-xp-redemptions afterwards. Until a
+ * funded payout wallet exists the queue simply doesn't drain, so every surface
+ * says "queued" rather than promising a timeframe the server can't hold to.
  */
-export const XP_SWAP_ENABLED = false;
+export const XP_SWAP_ENABLED = true;
 
 export type RedemptionStatus = 'pending' | 'sent' | 'failed';
 

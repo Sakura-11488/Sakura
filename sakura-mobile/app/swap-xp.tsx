@@ -67,8 +67,10 @@ function ArrowDown({ color }: { color: string }) {
 
 function statusLabel(status: XpRedemption['status']): string {
   if (status === 'sent') return 'Delivered';
-  if (status === 'failed') return 'Refunded';
-  return 'On the way';
+  // 'failed' returns the XP, so say what the user got back rather than that
+  // something broke — from their side nothing was lost.
+  if (status === 'failed') return 'XP refunded';
+  return 'Queued';
 }
 
 export default function SwapXpScreen() {
@@ -221,20 +223,24 @@ export default function SwapXpScreen() {
             </View>
           </View>
 
-          {/* Settlement notice — set expectations before they commit. */}
+          {/* Set expectations before they commit, not after. Deliberately
+              promises no timeframe: swaps are settled by a separate process, so
+              any "in N minutes" here would be a claim this screen cannot keep. */}
           <View style={s.notice}>
-            <Text style={s.noticeTitle}>Swaps settle shortly after</Text>
+            <Text style={s.noticeTitle}>Swaps are queued</Text>
             <Text style={s.noticeBody}>
-              Your XP is deducted straight away and the SAKURA lands in this wallet once the swap
-              is processed. You&rsquo;ll see it here as it moves. Minimum {XP_REDEEM_MIN} XP.
+              Your XP is spent as soon as you confirm, and the SAKURA is sent to this wallet once
+              the swap is processed — not instantly. Track it under Recent swaps below. Minimum{' '}
+              {XP_REDEEM_MIN} XP.
             </Text>
           </View>
 
           {error ? <Text style={s.error}>{error}</Text> : null}
           {done ? (
             <Text style={s.success}>
-              {done.xp.toLocaleString()} XP swapped for{' '}
-              {done.sakura.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAKURA — on the way.
+              Queued — {done.xp.toLocaleString()} XP for{' '}
+              {done.sakura.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAKURA. It will
+              arrive in this wallet once processed.
             </Text>
           ) : null}
 
@@ -254,7 +260,7 @@ export default function SwapXpScreen() {
                     ? `Earn ${XP_REDEEM_MIN} XP to swap`
                     : amount < XP_REDEEM_MIN
                       ? `Minimum ${XP_REDEEM_MIN} XP`
-                      : 'Swap now'}
+                      : 'Queue swap'}
               </Text>
             )}
           </TouchableOpacity>
