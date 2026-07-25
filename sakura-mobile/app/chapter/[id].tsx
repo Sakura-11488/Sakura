@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, ScrollView, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, type ViewToken } from 'react-native';
+import { View, Text, StyleSheet, FlatList, ScrollView, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
@@ -19,6 +19,8 @@ import {
   segmentBounds,
   findSegment,
   rowIndexFor,
+  pruneSegments,
+  MAX_RESIDENT_SEGMENTS,
   type ChapterSegment,
   type ReaderRow,
 } from '@/lib/reader-segments';
@@ -27,6 +29,7 @@ import { AppSettings } from '@/lib/settings';
 import { setMangaReadProgress } from '@/lib/reader-progress';
 import { recordReadingEvent } from '@/lib/gamification';
 import EmptyState from '@/components/ui/EmptyState';
+import ReaderSettingsSheet from '@/components/reader/ReaderSettingsSheet';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib/wallet/pass';
@@ -102,6 +105,9 @@ export default function ChapterReader() {
   const [activePageIndex, setActivePageIndex] = useState(0);
   const [readingMode, setReadingMode] = useState<'page' | 'scroll'>('scroll');
   const [readDirection, setReadDirection] = useState<'ltr' | 'rtl'>('ltr');
+  const [continuous, setContinuous] = useState(true);
+  const [continuousBack, setContinuousBack] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Real per-page aspect ratios (height/width), filled in as each image loads so
   // tall manhwa strips get their full height instead of being cropped to 1.5.
   const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
@@ -144,7 +150,21 @@ export default function ChapterReader() {
     AppSettings.getReadDirection()
       .then((direction) => setReadDirection(direction === 'rtl' ? 'rtl' : 'ltr'))
       .catch(() => setReadDirection('ltr'));
+    AppSettings.getReaderContinuous()
+      .then(setContinuous)
+      .catch(() => setContinuous(true));
+    AppSettings.getReaderContinuousBack()
+      .then(setContinuousBack)
+      .catch(() => setContinuousBack(true));
   }, []);
+
+  // Read from the neighbour loaders, which are ref-held and can't see state.
+  const continuousRef = useRef(continuous);
+  continuousRef.current = continuous;
+  const continuousBackRef = useRef(continuousBack);
+  // Backward flow additionally requires forward flow to be on: "continuous
+  // reading off" should mean off in both directions.
+  continuousBackRef.current = continuous && continuousBack;
 
   const isRtlPageMode = readingMode === 'page' && readDirection === 'rtl';
 
@@ -165,6 +185,13 @@ export default function ChapterReader() {
     [segments, activeChapterId],
   );
   const activeTotalPages = activeSegment?.pages.length ?? 0;
+  // Whether an earlier chapter exists that backward flow could pull in. Drives
+  // the header spacer; no spacer at the true start of a series.
+  const hasPrevChapter =
+    continuous &&
+    continuousBack &&
+    segments.length > 0 &&
+    Math.min(...segments.map((s) => s.orderIndex)) > 0;
 
   const mangaTitle = typeof title === 'string' ? title : 'Manga';
   const mangaCover = typeof cover === 'string' ? cover : undefined;
@@ -400,6 +427,7 @@ export default function ChapterReader() {
     const resident = segmentsRef.current;
     if (resident.length === 0) return;
 
+    if (!continuousRef.current) return;
     const lastOrderIndex = Math.max(...resident.map((s) => s.orderIndex));
     const next = list[lastOrderIndex + 1];
     if (!next) return; // end of the series
@@ -442,6 +470,178 @@ export default function ChapterReader() {
   const ensureNextRef = useRef(ensureNextChapter);
   ensureNextRef.current = ensureNextChapter;
 
+  // ── Backward continuity ────────────────────────────────────────────────
+  //
+  // Prepending is the dangerous direction. Appending leaves every existing row
+  // index alone; inserting at the front shifts all of them, and the list will
+  // happily keep its scroll offset — which now points at completely different
+  // content. The mitigations, in order of how much work they do:
+  //
+  //   1. Only ever prepend while the reader is at rest. This is the big one. It
+  //      converts the worst failure (a jump under a moving thumb) into the mild
+  //      one (the previous chapter isn't ready the instant you reach the top),
+  //      which is just today's behaviour.
+  //   2. maintainVisibleContentPosition — reliable on iOS, best-effort on Android.
+  //   3. An explicit compensating scroll for Android, run after layout settles.
+  //   4. A header spacer, so the top is never at true offset 0 and the insert
+  //      never fights an overscroll bounce.
+  const scrollOffsetRef = useRef(0);
+  const isScrollingRef = useRef(false);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPrependRef = useRef(false);
+  /** True between a prepend and its compensating scroll landing. */
+  const anchorPendingRef = useRef(false);
+  const firstVisibleIdRef = useRef<string | null>(null);
+
+  const settleScroll = useCallback(() => {
+    isScrollingRef.current = false;
+    if (pendingPrependRef.current) {
+      pendingPrependRef.current = false;
+      void ensurePrevRef.current();
+    }
+  }, []);
+
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { x, y } = e.nativeEvent.contentOffset;
+      scrollOffsetRef.current = readingMode === 'page' ? x : y;
+      isScrollingRef.current = true;
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      // Momentum events don't fire for a slow drag that simply stops, so treat
+      // a short gap with no scroll events as "at rest" too.
+      idleTimerRef.current = setTimeout(settleScroll, 120);
+    },
+    [readingMode, settleScroll],
+  );
+
+  useEffect(
+    () => () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    },
+    [],
+  );
+
+  const ensurePrevChapter = useCallback(async () => {
+    if (!continuousBackRef.current) return;
+    const list = orderedChaptersRef.current;
+    const resident = segmentsRef.current;
+    if (list.length === 0 || resident.length === 0) return;
+
+    const firstOrderIndex = Math.min(...resident.map((s) => s.orderIndex));
+    const prev = list[firstOrderIndex - 1];
+    if (!prev) return; // start of the series
+    if (resident.some((s) => s.chapterId === prev.id)) return;
+    if (loadingNeighborRef.current.has(prev.id)) return;
+    loadingNeighborRef.current.add(prev.id);
+
+    try {
+      const { urls, origin } = await loadChapterPages({
+        contentId: mangaId,
+        chapterId: prev.id,
+        source,
+      });
+      if (urls.length === 0) return;
+
+      // Re-check at insert time, not just at request time: the fetch may have
+      // taken long enough for the reader to start moving again.
+      if (isScrollingRef.current) {
+        pendingPrependRef.current = true;
+        return;
+      }
+
+      const anchorId = firstVisibleIdRef.current;
+      const offsetBefore = scrollOffsetRef.current;
+      const insertedRows = urls.length + (readingMode === 'scroll' ? 1 : 0); // +1 divider
+
+      anchorPendingRef.current = true;
+      setSegments((prevSegments) => {
+        if (prevSegments.some((s) => s.chapterId === prev.id)) return prevSegments;
+        return [
+          buildSegment({
+            chapterId: prev.id,
+            chapterNumber: prev.number,
+            chapterLabel: prev.title || `Chapter ${prev.number}`,
+            orderIndex: firstOrderIndex - 1,
+            origin,
+            urls,
+          }),
+          ...prevSegments,
+        ];
+      });
+
+      // Compensate after the new rows have actually been laid out.
+      requestAnimationFrame(() => {
+        InteractionManager.runAfterInteractions(() => {
+          try {
+            if (readingMode === 'page') {
+              // Uniform width, so the correction is exact.
+              flatListRef.current?.scrollToOffset({
+                offset: offsetBefore + insertedRows * SCREEN_WIDTH,
+                animated: false,
+              });
+            } else if (Platform.OS === 'android' && anchorId) {
+              // Variable heights: re-anchor on the row that was on screen.
+              // maintainVisibleContentPosition already handles this on iOS;
+              // on Android it is unreliable, and landing the anchor at the top
+              // of the viewport is a bounded correction rather than an exact
+              // one — it can shift by however far that row was already scrolled.
+              const index = rowsRef.current.findIndex((r) => r.id === anchorId);
+              if (index >= 0) {
+                flatListRef.current?.scrollToIndex({
+                  index,
+                  animated: false,
+                  viewPosition: 0,
+                });
+              }
+            }
+          } catch {
+            // Leave the position as-is rather than throwing mid-scroll.
+          } finally {
+            anchorPendingRef.current = false;
+          }
+        });
+      });
+    } catch {
+      // Leave the top as a hard stop.
+    } finally {
+      loadingNeighborRef.current.delete(prev.id);
+    }
+  }, [mangaId, source, readingMode]);
+
+  const ensurePrevRef = useRef(ensurePrevChapter);
+  ensurePrevRef.current = ensurePrevChapter;
+
+  // ── Eviction ───────────────────────────────────────────────────────────
+  //
+  // The arrays themselves are cheap — a segment is URL strings plus a float per
+  // page — so this is a backstop, not the main memory lever. What actually
+  // bounds memory is mounted images, handled by removeClippedSubviews plus a
+  // smaller windowSize in webtoon mode, with expo-image's own cache under that.
+  //
+  // Only runs when it cannot be felt: the reader must be at rest and settled on
+  // one chapter for a moment. pruneSegments drops from the far end in
+  // preference to the front, because removing a leading segment shifts every
+  // row index exactly as a prepend does.
+  useEffect(() => {
+    if (segments.length <= MAX_RESIDENT_SEGMENTS || !activeChapterId) return;
+    const timer = setTimeout(() => {
+      if (isScrollingRef.current || anchorPendingRef.current) return;
+      setSegments((prev) => {
+        const { kept, droppedFromFront } = pruneSegments(
+          prev,
+          activeChapterId,
+          MAX_RESIDENT_SEGMENTS,
+        );
+        // A front drop would need the same compensation as a prepend. Rather
+        // than risk a jump for a few kilobytes, skip it and try again later —
+        // by then the reader has usually moved on and the far end is droppable.
+        if (droppedFromFront > 0) return prev;
+        return kept.length === prev.length ? prev : kept;
+      });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [segments.length, activeChapterId]);
+
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     // Reads refs only: this callback is held in a useRef and can never see
     // fresh state through a closure.
@@ -450,9 +650,20 @@ export default function ChapterReader() {
     if (index < 0) return;
     const row = rowsRef.current[index];
     if (!row) return;
+
+    // The row to re-anchor on if a chapter gets prepended.
+    firstVisibleIdRef.current = row.id;
+
+    // While a compensating scroll is in flight the visible rows are transient;
+    // reading them would reassign the active chapter to whatever the list
+    // happened to be showing mid-correction.
+    if (anchorPendingRef.current) return;
+
     setActiveChapterId(row.chapterId);
     // A divider carries no page of its own; the chapter change is the signal.
     if (row.kind === 'page') setActivePageIndex(row.pageIndex);
+
+    if (!continuousRef.current) return;
 
     // Start fetching the next chapter before the reader reaches the boundary,
     // so it is already in place by the time they scroll into it. An offline
@@ -463,6 +674,10 @@ export default function ChapterReader() {
       const threshold = segment.origin === 'offline' ? 0.85 : 0.6;
       if (through >= threshold) void ensureNextRef.current();
     }
+
+    // Approaching the very top of the session: pull in the previous chapter.
+    // ensurePrevChapter defers itself if the reader is still moving.
+    if (index <= 3) void ensurePrevRef.current();
   }).current;
 
   // minimumViewTime stops a fast fling through the end of one chapter from
@@ -680,17 +895,35 @@ export default function ChapterReader() {
     tries: number;
   } | null>(null);
 
-  const toggleReadingMode = useCallback(() => {
-    const next = readingMode === 'page' ? 'scroll' : 'page';
-    pendingRestoreRef.current = {
-      chapterId: activeChapterId,
-      page: activePageIndex,
-      tries: 0,
-    };
-    setReadingMode(next);
-    void AppSettings.setMangaReadingMode(next);
-    didInitialScroll.current = true; // don't let the initial-scroll effect fight us
-  }, [readingMode, activeChapterId, activePageIndex]);
+  const changeReadingMode = useCallback(
+    (next: 'page' | 'scroll') => {
+      if (next === readingMode) return;
+      pendingRestoreRef.current = {
+        chapterId: activeChapterId,
+        page: activePageIndex,
+        tries: 0,
+      };
+      setReadingMode(next);
+      void AppSettings.setMangaReadingMode(next);
+      didInitialScroll.current = true; // don't let the initial-scroll effect fight us
+    },
+    [readingMode, activeChapterId, activePageIndex],
+  );
+
+  const changeReadDirection = useCallback(
+    (next: 'ltr' | 'rtl') => {
+      if (next === readDirection) return;
+      // Mirroring re-lays the list out, so hold the reader's place across it.
+      pendingRestoreRef.current = {
+        chapterId: activeChapterId,
+        page: activePageIndex,
+        tries: 0,
+      };
+      setReadDirection(next);
+      void AppSettings.setReadDirection(next);
+    },
+    [readDirection, activeChapterId, activePageIndex],
+  );
 
   const runPendingRestore = useCallback(() => {
     const pending = pendingRestoreRef.current;
@@ -811,7 +1044,27 @@ export default function ChapterReader() {
         // viewability may never report a page far enough through it.
         onEndReached={() => void ensureNextChapter()}
         onEndReachedThreshold={0.6}
-        windowSize={5}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        onScrollBeginDrag={() => {
+          isScrollingRef.current = true;
+        }}
+        onMomentumScrollEnd={settleScroll}
+        onScrollEndDrag={() => {
+          // A drag that ends without flinging emits no momentum event.
+          if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+          idleTimerRef.current = setTimeout(settleScroll, 120);
+        }}
+        // Solid on iOS, best-effort on Android — the explicit compensation in
+        // ensurePrevChapter is what covers Android.
+        maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+        // Keeps the top of the list off true offset 0 whenever an earlier
+        // chapter exists, so a prepend never has to fight an overscroll bounce.
+        ListHeaderComponent={hasPrevChapter ? <View style={styles.listHeaderSpacer} /> : null}
+        // Tighter in webtoon mode: rows there are full-height strips and a
+        // session can now hold several chapters of them, so keeping five
+        // screens either side mounted is a lot of decoded bitmap.
+        windowSize={readingMode === 'scroll' ? 3 : 5}
         maxToRenderPerBatch={3}
         removeClippedSubviews
         onLayout={runPendingRestore}
@@ -857,16 +1110,33 @@ export default function ChapterReader() {
         <Text style={styles.pageCount}>
           {activePageIndex + 1} / {activeTotalPages}
         </Text>
-        {/* Switch webtoon <-> paged without leaving the chapter. Keeps your
-            place across the switch and persists as the new default. */}
-        <TouchableOpacity onPress={onTap(toggleReadingMode)} style={styles.modeBtn}>
-          <Text style={styles.modeBtnText}>
-            {readingMode === 'page' ? 'Paged' : 'Scroll'}
-          </Text>
+        {/* Opens layout / direction / continuity without leaving the chapter.
+            Every change keeps your place and persists as the new default. */}
+        <TouchableOpacity onPress={onTap(() => setSettingsOpen(true))} style={styles.modeBtn}>
+          <Text style={styles.modeBtnText}>Aa</Text>
         </TouchableOpacity>
       </Animated.View>
 
       {/* Page indicator strip — page/swipe mode only */}
+      <ReaderSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        readingMode={readingMode}
+        onChangeReadingMode={changeReadingMode}
+        readDirection={readDirection}
+        onChangeReadDirection={changeReadDirection}
+        continuous={continuous}
+        onChangeContinuous={(v) => {
+          setContinuous(v);
+          void AppSettings.setReaderContinuous(v);
+        }}
+        continuousBack={continuousBack}
+        onChangeContinuousBack={(v) => {
+          setContinuousBack(v);
+          void AppSettings.setReaderContinuousBack(v);
+        }}
+      />
+
       {/* Scoped to the active chapter: a strip spanning every resident chapter
           would be thousands of un-virtualised thumbnails. */}
       {readingMode === 'page' && activeTotalPages > 0 && (
@@ -908,6 +1178,7 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   /** Applied to the list and re-applied per page, so RTL flips geometry only. */
   mirrored: { transform: [{ scaleX: -1 }] },
+  listHeaderSpacer: { height: 48, backgroundColor: '#000' },
   chapterDivider: {
     width: SCREEN_WIDTH,
     height: 44,

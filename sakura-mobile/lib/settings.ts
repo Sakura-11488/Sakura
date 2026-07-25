@@ -11,6 +11,8 @@ const K = {
   READ_DIRECTION:   'settings_read_direction',
   READING_MODE:       'settings_reading_mode',
   MANGA_READING_MODE: 'settings_manga_reading_mode',
+  READER_CONTINUOUS:      'settings_reader_continuous',
+  READER_CONTINUOUS_BACK: 'settings_reader_continuous_back',
   DATA_SAVER:       'settings_data_saver',
   PNL_TRACKER:      'settings_pnl_tracker',
   ALLOW_ADULT:      'settings_allow_adult',
@@ -71,6 +73,17 @@ export const AppSettings = {
     }
   },
   setMangaReadingMode:  (v: string) => setString(K.MANGA_READING_MODE, v),
+  /** Flow from the end of one chapter into the next without leaving the reader. */
+  getReaderContinuous:     () => getBool(K.READER_CONTINUOUS, true),
+  setReaderContinuous:     (v: boolean) => setBool(K.READER_CONTINUOUS, v),
+  /**
+   * Also flow *backwards* when scrolling up past the top of a chapter.
+   * Separate from the forward switch because it is the riskier direction:
+   * prepending shifts every row, and on Android the compensating scroll can
+   * still be visible. This is the escape hatch for a device where it misbehaves.
+   */
+  getReaderContinuousBack: () => getBool(K.READER_CONTINUOUS_BACK, true),
+  setReaderContinuousBack: (v: boolean) => setBool(K.READER_CONTINUOUS_BACK, v),
   getDataSaver:      () => getBool(K.DATA_SAVER, false),
   setDataSaver:      (v: boolean) => setBool(K.DATA_SAVER, v),
   getPnlTracker:     () => getBool(K.PNL_TRACKER, false),
