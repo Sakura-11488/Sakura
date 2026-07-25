@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { AppState } from 'react-native';
 import { useWallet } from './wallet/context';
+import { getPassiveSessionKeypair } from './wallet/app-session';
 import { listChatThreads, isThreadUnread, type ChatThreadSummary } from './chat';
 import { subscribeToInboxThreads } from './chat-realtime';
 
@@ -34,10 +35,10 @@ function countUnread(threads: ChatThreadSummary[], wallet: string | null): numbe
 }
 
 export function UnreadMessagesProvider({ children }: { children: React.ReactNode }) {
-  const { address, connected, unlockForAppSession } = useWallet();
+  const { address, connected } = useWallet();
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const keypairRef = useRef<Awaited<ReturnType<typeof unlockForAppSession>>>(null);
+  const keypairRef = useRef<Awaited<ReturnType<typeof getPassiveSessionKeypair>>>(null);
 
   const applyThreads = useCallback(
     (next: ChatThreadSummary[]) => {
@@ -54,16 +55,23 @@ export function UnreadMessagesProvider({ children }: { children: React.ReactNode
     }
     try {
       if (!keypairRef.current) {
-        keypairRef.current = await unlockForAppSession();
+        // Passive on purpose: this provider is mounted at the app root and runs
+        // on every launch, so unlocking here popped "Confirm transaction" on the
+        // home screen (and Face ID on native) before the user had done anything
+        // — for an unread badge. The passive read signs only if the wallet is
+        // already warm, or on web where the key is readable without a prompt.
+        // An unread count is not worth a wallet prompt; it fills in as soon as
+        // any real wallet action unlocks the session.
+        keypairRef.current = await getPassiveSessionKeypair();
       }
       const kp = keypairRef.current;
       if (!kp) return;
       const list = await listChatThreads(kp);
       applyThreads(list);
     } catch {
-      // ignore — Face ID cancel, network, etc.
+      // ignore — network, locked wallet, etc.
     }
-  }, [connected, address, unlockForAppSession, applyThreads]);
+  }, [connected, address, applyThreads]);
 
   useEffect(() => {
     keypairRef.current = null;
@@ -86,7 +94,9 @@ export function UnreadMessagesProvider({ children }: { children: React.ReactNode
     if (!address || !threadIdsKey) return;
 
     const ids = threadIdsKey.split(',').filter(Boolean);
-    return subscribeToInboxThreads(ids, address, unlockForAppSession, (threadId, msg) => {
+    // Passive for the same reason as refresh() above — a background inbox
+    // subscription must never be the thing that asks for the wallet.
+    return subscribeToInboxThreads(ids, address, getPassiveSessionKeypair, (threadId, msg) => {
       setThreads((prev) => {
         const next = prev.map((t) =>
           t.thread_id === threadId
@@ -102,7 +112,7 @@ export function UnreadMessagesProvider({ children }: { children: React.ReactNode
         return next;
       });
     });
-  }, [address, threadIdsKey, unlockForAppSession]);
+  }, [address, threadIdsKey]);
 
   const value = useMemo(
     () => ({ unreadCount, threads, refresh }),
