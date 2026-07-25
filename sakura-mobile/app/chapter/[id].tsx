@@ -10,14 +10,12 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
-import { fetchMangaChapterPages } from '@/lib/manga';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
+import { loadChapterPages } from '@/lib/chapter-pages';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
 import { setMangaReadProgress } from '@/lib/reader-progress';
 import { recordReadingEvent } from '@/lib/gamification';
-import { getOfflineMangaPageUris } from '@/lib/manga-offline';
-import { getScrapedOfflinePageUris } from '@/lib/scraped-offline';
 import EmptyState from '@/components/ui/EmptyState';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
@@ -189,41 +187,12 @@ export default function ChapterReader() {
     let cancelled = false;
 
     (async () => {
-      if (offline === '1' && !isExternal) {
-        const local = await getOfflineMangaPageUris(mangaId, chapterId);
-        if (cancelled) return;
-        if (local?.length) {
-          setPages(local.map((uri, i) => ({ id: `page-${i}`, url: uri })));
-          setLoading(false);
-          return;
-        }
-      }
-
-      if (adapter) {
-        if (offline === '1') {
-          const local = await getScrapedOfflinePageUris(adapter.key, mangaId, chapterId);
-          if (cancelled) return;
-          if (local?.length) {
-            setPages(local.map((uri, i) => ({ id: `page-${i}`, url: uri })));
-            setLoading(false);
-            return;
-          }
-        }
-        try {
-          const urls = await adapter.pages(mangaId, chapterId);
-          if (!cancelled) {
-            setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
-          }
-        } catch {
-          if (!cancelled) setPages([]);
-        } finally {
-          if (!cancelled) setLoading(false);
-        }
-        return;
-      }
-
       try {
-        const urls = await fetchMangaChapterPages(mangaId, chapterId);
+        // Offline is resolved per chapter inside loadChapterPages by asking the
+        // store, so the route's `offline` param is no longer consulted here.
+        // That also means a chapter opened from Continue Reading — which never
+        // passes the param — now reads from disk instead of refetching.
+        const { urls } = await loadChapterPages({ contentId: mangaId, chapterId, source });
         if (!cancelled) {
           setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
         }
@@ -237,7 +206,7 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, chapterId, offline, isExternal, adapter, isGated, hasAccess]);
+  }, [mangaId, chapterId, source, isGated, hasAccess]);
 
   const uiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
 
