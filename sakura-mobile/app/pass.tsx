@@ -29,6 +29,7 @@ import {
   formatPassTimeRemaining,
   type PassStatus,
 } from '@/lib/wallet/pass';
+import { setPassExpiresAtOnServer } from '@/lib/push-tokens';
 import WalletModal from '@/components/wallet/WalletModal';
 import { playTap, onTap } from '@/lib/sound';
 
@@ -67,11 +68,17 @@ const SakuraIcon = ({ size = 18 }: { size?: number }) => (
   </Svg>
 );
 
+// Keep this list strictly true. It used to lead with "read the latest chapters
+// the moment they drop" and "unlock every premium chapter across the library",
+// both of which described the blanket auto-gating rule that has since been
+// removed (see lib/pass-gate.ts). The pass currently gates no content, so
+// advertising unlocks would be selling something the app does not do. The
+// unlock perk comes back when work_releases.access_tier ships and creators can
+// opt their paid chapters into the pass.
 const PERKS = [
-  'Read the latest chapters the moment they drop',
-  'Unlock every premium chapter across the library',
-  '30 days of access — renew anytime',
-  'Directly supports the creators you read',
+  `${PASS_DURATION_DAYS} days of Sakura Pass — renew anytime`,
+  'Pass-holder badge on your profile',
+  'Supports Sakura and the creators building on it',
 ];
 
 function formatDate(d: Date): string {
@@ -138,6 +145,15 @@ export default function PassScreen() {
       setTxid(result.signature ?? null);
       setStep('done');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Record the new expiry against the push registration. Without this the
+      // renewal reminder cron never learns about a pass bought here -- the only
+      // other writer is the settings screen -- so a fresh purchase would expire
+      // with no warning. Best-effort: a failure here must not fail the purchase.
+      if (result.expiresAt) {
+        await setPassExpiresAtOnServer(wallet.address, result.expiresAt.toISOString()).catch(
+          () => {},
+        );
+      }
       await wallet.refreshBalances?.();
       await refreshStatus();
     } catch (e) {

@@ -11,9 +11,16 @@ export const GATED_LATEST_COUNT = 3;
  * This rule locked the newest 3 chapters of every ongoing series regardless of
  * who published it — including catalogue titles Sakura doesn't own — and no
  * creator ever opted in. Per product decision (2026-07-25): a chapter is only
- * paid when the CREATOR says so, which is handled separately by each work's
- * `release_metadata.pricing` (free_until_chapter / paid_from_chapter) on
- * creator-published works. That system is untouched by this flag.
+ * paid when the CREATOR says so.
+ *
+ * Be aware of what that currently means in practice: creator-controlled
+ * locking is NOT yet built. `release_metadata.pricing` exists but is written
+ * only by the legacy web novel bridge (src/lib/creator-work-bridge.ts) and is
+ * read by nothing — read-work-media drops it before the client ever sees it.
+ * So with this flag off, nothing in the app is gated at all, and the monthly
+ * pass unlocks nothing. Real per-release locking lands with
+ * `work_releases.access_tier`; until then this file is the only gate and it is
+ * deliberately open.
  *
  * Flipping this back to `true` restores the old behaviour in one line.
  */

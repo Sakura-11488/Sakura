@@ -505,10 +505,15 @@ export default function ChapterReader() {
             <GateLockIcon />
           </View>
           <Text style={styles.gateTitle}>Pass Required</Text>
+          {/* Only reachable while AUTO_GATE_LATEST_CHAPTERS is on, which it is
+              not — see lib/pass-gate.ts. Kept because flipping that flag back
+              makes this the gate again, but the copy no longer promises to
+              unlock "every other premium chapter": the pass gates no other
+              content, so that claim was untrue. */}
           <Text style={styles.gateBody}>
             {address
-              ? 'This is one of the latest chapters. Unlock it (and every other premium chapter) with a Sakura Monthly Pass.'
-              : 'Connect your Sakura wallet and grab a Monthly Pass to read the latest chapters.'}
+              ? 'This chapter is behind the Sakura Monthly Pass.'
+              : 'Connect your Sakura wallet and grab a Monthly Pass to read this chapter.'}
           </Text>
           {passExpiry ? (
             <Text style={styles.gateExpiry}>🎴 {formatPassTimeRemaining(passExpiry)}</Text>
