@@ -526,6 +526,8 @@ export default function ChapterReader() {
   //   3. An explicit compensating scroll for Android, run after layout settles.
   //   4. A header spacer, so the top is never at true offset 0 and the insert
   //      never fights an overscroll bounce.
+  /** How close to the top counts as "about to need the previous chapter". */
+  const NEAR_TOP_PX = 400;
   const scrollOffsetRef = useRef(0);
   const isScrollingRef = useRef(false);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -625,12 +627,19 @@ export default function ChapterReader() {
                 offset: offsetBefore + insertedRows * SCREEN_WIDTH,
                 animated: false,
               });
-            } else if (Platform.OS === 'android' && anchorId) {
+            } else if (Platform.OS !== 'ios' && anchorId) {
               // Variable heights: re-anchor on the row that was on screen.
-              // maintainVisibleContentPosition already handles this on iOS;
-              // on Android it is unreliable, and landing the anchor at the top
-              // of the viewport is a bounded correction rather than an exact
-              // one — it can shift by however far that row was already scrolled.
+              //
+              // Everywhere except iOS, which is the only platform where
+              // maintainVisibleContentPosition actually holds the position —
+              // it is unreliable on Android and is a no-op on web, where it is
+              // not implemented at all. Gating this to Android left web with no
+              // compensation whatsoever, so a prepend simply yanked the page
+              // upward mid-read.
+              //
+              // Landing the anchor at the top of the viewport is a bounded
+              // correction, not an exact one: it can shift by however far that
+              // row had already been scrolled past.
               const index = rowsRef.current.findIndex((r) => r.id === anchorId);
               if (index >= 0) {
                 flatListRef.current?.scrollToIndex({
@@ -723,7 +732,13 @@ export default function ChapterReader() {
 
     // Approaching the very top of the session: pull in the previous chapter.
     // ensurePrevChapter defers itself if the reader is still moving.
-    if (index <= 3) void ensurePrevRef.current();
+    //
+    // Measured in pixels, not row index. A webtoon page is several screens
+    // tall and the viewability threshold is deliberately low, so the topmost
+    // row stays "viewable" long after it has been scrolled past — by row index
+    // a reader can look near the top while genuinely deep in a chapter, which
+    // fired this repeatedly mid-read and yanked the page upward.
+    if (scrollOffsetRef.current <= NEAR_TOP_PX) void ensurePrevRef.current();
   }).current;
 
   // The threshold is a percentage OF THE ITEM, and it has to stay low because

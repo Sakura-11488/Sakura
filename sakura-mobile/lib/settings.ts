@@ -78,11 +78,13 @@ export const AppSettings = {
   setReaderContinuous:     (v: boolean) => setBool(K.READER_CONTINUOUS, v),
   /**
    * Also flow *backwards* when scrolling up past the top of a chapter.
-   * Separate from the forward switch because it is the riskier direction:
-   * prepending shifts every row, and on Android the compensating scroll can
-   * still be visible. This is the escape hatch for a device where it misbehaves.
+   *
+   * DEFAULT OFF. Prepending shifts every row, and getting the compensating
+   * scroll right varies by platform — shipped on, it yanked the page upward
+   * mid-read for real users. Forward flow is unaffected and stays on; this is
+   * opt-in until the compensation is proven on a device in each mode.
    */
-  getReaderContinuousBack: () => getBool(K.READER_CONTINUOUS_BACK, true),
+  getReaderContinuousBack: () => getBool(K.READER_CONTINUOUS_BACK, false),
   setReaderContinuousBack: (v: boolean) => setBool(K.READER_CONTINUOUS_BACK, v),
   getDataSaver:      () => getBool(K.DATA_SAVER, false),
   setDataSaver:      (v: boolean) => setBool(K.DATA_SAVER, v),
