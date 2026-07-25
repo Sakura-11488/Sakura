@@ -430,6 +430,19 @@ export default function ChapterReader() {
     };
   }, [mangaId, chapterId, isHentai]);
 
+  // Switch reading mode in place: remember where you are, flip the mode, then
+  // restore that same page once the list has re-laid-out in the new geometry.
+  const toggleReadingMode = useCallback(() => {
+    const next = readingMode === 'page' ? 'scroll' : 'page';
+    const keepPage = currentPage;
+    setReadingMode(next);
+    void AppSettings.setMangaReadingMode(next);
+    didInitialScroll.current = true; // don't let the initial-scroll effect fight us
+    requestAnimationFrame(() => {
+      setTimeout(() => jumpToPage(keepPage, false), 120);
+    });
+  }, [readingMode, currentPage, jumpToPage]);
+
   const toggleUI = () => {
     const next = !uiVisible;
     setUiVisible(next);
@@ -524,10 +537,21 @@ export default function ChapterReader() {
         maxToRenderPerBatch={3}
         removeClippedSubviews
         onScrollToIndexFailed={(info) => {
+          // Webtoon rows have variable heights and aren't measured yet, so the
+          // first jump is only an estimate — land roughly, then retry precisely
+          // once the rows around the target have been laid out. Without the
+          // retry, resuming deep into a chapter dropped you at the wrong place.
           flatListRef.current?.scrollToOffset({
             offset: info.averageItemLength * info.index,
             animated: false,
           });
+          setTimeout(() => {
+            try {
+              flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+            } catch {
+              // still unmeasured; the estimate above is close enough
+            }
+          }, 350);
         }}
         showsVerticalScrollIndicator={readingMode !== 'page'}
         showsHorizontalScrollIndicator={false}
@@ -540,6 +564,13 @@ export default function ChapterReader() {
           <BackIcon />
         </TouchableOpacity>
         <Text style={styles.pageCount}>{currentPage + 1} / {renderedPages.length}</Text>
+        {/* Switch webtoon <-> paged without leaving the chapter. Keeps your
+            place across the switch and persists as the new default. */}
+        <TouchableOpacity onPress={onTap(toggleReadingMode)} style={styles.modeBtn}>
+          <Text style={styles.modeBtnText}>
+            {readingMode === 'page' ? 'Paged' : 'Scroll'}
+          </Text>
+        </TouchableOpacity>
       </Animated.View>
 
       {/* Page indicator strip — page/swipe mode only */}
@@ -657,6 +688,18 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
+  },
+  modeBtn: {
+    marginLeft: 'auto',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  modeBtnText: {
+    color: Colors.white,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
   },
   indicatorWrap: {
     position: 'absolute',

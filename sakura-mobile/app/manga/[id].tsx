@@ -565,7 +565,12 @@ export default function MangaDetail() {
         chapter: ch.title,
         ...(isExternal ? { source } : {}),
         ...(gatedChapterIds.has(ch.id) ? { gated: '1' } : {}),
-        ...(resume && mangaProgress ? { p: String(mangaProgress.page) } : {}),
+        // Resume wherever you stopped IN THIS chapter, however you opened it.
+        // Previously `p` was only sent from the Continue button, so tapping the
+        // chapter you were halfway through restarted it from page 1.
+        ...(mangaProgress && mangaProgress.chapterId === ch.id && mangaProgress.page > 1
+          ? { p: String(mangaProgress.page) }
+          : {}),
         ...(off?.status === 'ready' ? { offline: '1' } : {}),
       },
     });
