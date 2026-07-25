@@ -43,8 +43,7 @@ import {
   MangaDetail as MangaData,
   MangaChapter,
 } from '@/lib/manga';
-import { fetchComicDetail, fetchComicChapters, fetchComicPages } from '@/lib/comics';
-import { fetchHentaiDetail, fetchHentaiChapters, fetchHentaiPages } from '@/lib/hentai';
+import { getScrapedAdapter } from '@/lib/scraped-sources';
 import {
   downloadScrapedChapter,
   getScrapedOfflineMap,
@@ -436,12 +435,14 @@ export default function MangaDetail() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const mangaId = String(id || '');
-  const isComics = source === 'comics';
-  const isHentai = source === 'hentai';
-  // Both comics and hentai are external droplet-scraped sources that reuse this
-  // screen but skip manga-only features (offline downloads, pass-gating,
-  // chapter-thumbnail fetches).
-  const isExternal = isComics || isHentai;
+  // Droplet-scraped sources reuse this screen but skip manga-only features
+  // (atsu offline downloads, pass-gating, chapter-thumbnail fetches).
+  // `adapter` is null for ordinary atsu-backed manga.
+  const adapter = getScrapedAdapter(source);
+  const isExternal = adapter !== null;
+  // Distinct from isExternal: gates the surfaces an adult read must not touch
+  // (library, history, lock-screen activity). Manhwa is scraped but SFW.
+  const isAdult = adapter?.adult === true;
 
   const [manga, setManga] = useState<MangaData | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
@@ -463,22 +464,14 @@ export default function MangaDetail() {
 
   useEffect(() => {
     if (!mangaId) return;
-    const detailFetch = isHentai
-      ? fetchHentaiDetail(mangaId)
-      : isComics
-        ? fetchComicDetail(mangaId)
-        : fetchMangaDetail(mangaId);
-    const chaptersFetch = isHentai
-      ? fetchHentaiChapters(mangaId)
-      : isComics
-        ? fetchComicChapters(mangaId)
-        : fetchMangaChapters(mangaId);
+    const detailFetch = adapter ? adapter.detail(mangaId) : fetchMangaDetail(mangaId);
+    const chaptersFetch = adapter ? adapter.chapters(mangaId) : fetchMangaChapters(mangaId);
     Promise.all([
       detailFetch,
       chaptersFetch,
-      // Hentai is never saved to the library (shared 'manga' namespace + no
-      // source-aware library rows), so don't bother checking saved state.
-      isHentai ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga'),
+      // Adult titles are never saved to the library (shared 'manga' namespace +
+      // no source-aware library rows), so don't bother checking saved state.
+      isAdult ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga'),
     ]).then(([detail, chs, isSaved]) => {
       setManga(detail);
       setChapters(chs.sort((a, b) => a.number - b.number));
@@ -499,20 +492,18 @@ export default function MangaDetail() {
 
   const refreshOffline = useCallback(() => {
     if (!mangaId) return;
-    if (isComics || isHentai) {
-      getScrapedOfflineMap(isHentai ? 'hentai' : 'comics', mangaId).then(setOfflineMap);
+    if (adapter) {
+      getScrapedOfflineMap(adapter.key, mangaId).then(setOfflineMap);
     } else {
       getOfflineMapForManga(mangaId).then(setOfflineMap);
     }
-  }, [mangaId, isComics, isHentai]);
+  }, [mangaId, adapter]);
 
   useEffect(() => {
     if (!mangaId) return;
     refreshOffline();
-    return isComics || isHentai
-      ? subscribeScrapedOffline(refreshOffline)
-      : subscribeOfflineManga(refreshOffline);
-  }, [mangaId, isComics, isHentai, refreshOffline]);
+    return adapter ? subscribeScrapedOffline(refreshOffline) : subscribeOfflineManga(refreshOffline);
+  }, [mangaId, adapter, refreshOffline]);
 
   useEffect(() => {
     if (!mangaId || isExternal) return;
@@ -584,11 +575,9 @@ export default function MangaDetail() {
     if (Platform.OS === 'web') {
       setToast('Preparing pages…');
       try {
-        const urls = isHentai
-          ? await fetchHentaiPages(mangaId, ch.id)
-          : isComics
-            ? await fetchComicPages(mangaId, ch.id)
-            : await fetchChapterPageUrls(mangaId, ch.id);
+        const urls = adapter
+          ? await adapter.pages(mangaId, ch.id)
+          : await fetchChapterPageUrls(mangaId, ch.id);
         if (!urls.length) throw new Error('No pages found for this chapter.');
         const saved = await saveImagesZip(`${manga.title} - Ch ${ch.number}`, urls);
         setToast(`Saved ${saved} pages to your device`);
@@ -603,9 +592,10 @@ export default function MangaDetail() {
       return;
     }
     const cover = (manga as { image?: string }).image || manga.cover || '';
-    // Comics/18+ persist through the scraped-offline store; regular manga through
-    // manga-offline. Both expose the same status shape so the row UI is shared.
-    const scrapedSource: ScrapedSource | null = isHentai ? 'hentai' : isComics ? 'comics' : null;
+    // Scraped sources persist through the scraped-offline store; atsu manga
+    // through manga-offline. Both expose the same status shape so the row UI is
+    // shared.
+    const scrapedSource: ScrapedSource | null = adapter?.key ?? null;
 
     if (existing?.status === 'downloading') {
       if (scrapedSource) pauseScrapedChapterDownload(scrapedSource, mangaId, ch.id);
@@ -647,7 +637,7 @@ export default function MangaDetail() {
       setToast(e instanceof Error ? e.message : 'Download failed');
       refreshOffline();
     }
-  }, [manga, mangaId, offlineMap, refreshOffline, isComics, isHentai]);
+  }, [manga, mangaId, offlineMap, refreshOffline, adapter]);
 
   const runBatchDownload = useCallback(async () => {
     if (!manga || chapters.length === 0) return;
@@ -1098,7 +1088,7 @@ export default function MangaDetail() {
             <TouchableOpacity style={s.navBtn} onPress={handleShare} activeOpacity={0.8}>
               <ShareIcon />
             </TouchableOpacity>
-            {!isHentai && (
+            {!isAdult && (
               <TouchableOpacity
                 style={[s.navBtn, saved && s.navBtnSaved]}
                 onPress={handleSave}
@@ -1131,7 +1121,7 @@ export default function MangaDetail() {
           <TouchableOpacity style={s.navBtn} onPress={handleShare} activeOpacity={0.8}>
             <ShareIcon />
           </TouchableOpacity>
-          {!isHentai && (
+          {!isAdult && (
             <TouchableOpacity
               style={[s.navBtn, saved && s.navBtnSaved]}
               onPress={handleSave}

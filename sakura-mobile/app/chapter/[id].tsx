@@ -11,8 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { fetchMangaChapterPages } from '@/lib/manga';
-import { fetchComicPages } from '@/lib/comics';
-import { fetchHentaiPages } from '@/lib/hentai';
+import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
 import { setMangaReadProgress } from '@/lib/reader-progress';
@@ -64,10 +63,13 @@ export default function ChapterReader() {
     source?: string;
     gated?: string;
   }>();
-  const isComics = source === 'comics';
-  const isHentai = source === 'hentai';
-  // External droplet-scraped sources: no offline downloads, no pass-gating.
-  const isExternal = isComics || isHentai;
+  // Droplet-scraped sources: no atsu offline store, no pass-gating.
+  const adapter = getScrapedAdapter(source);
+  const isExternal = adapter !== null;
+  // Separate from isExternal: suppresses the surfaces an adult read must leave
+  // untouched — reading progress, history and lock-screen activity. Manhwa is
+  // scraped but SFW, so it belongs in all of them.
+  const isAdult = adapter?.adult === true;
   const isGated = gated === '1' && !isExternal;
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -197,9 +199,9 @@ export default function ChapterReader() {
         }
       }
 
-      if (isExternal) {
+      if (adapter) {
         if (offline === '1') {
-          const local = await getScrapedOfflinePageUris(isHentai ? 'hentai' : 'comics', mangaId, chapterId);
+          const local = await getScrapedOfflinePageUris(adapter.key, mangaId, chapterId);
           if (cancelled) return;
           if (local?.length) {
             setPages(local.map((uri, i) => ({ id: `page-${i}`, url: uri })));
@@ -208,9 +210,7 @@ export default function ChapterReader() {
           }
         }
         try {
-          const urls = isHentai
-            ? await fetchHentaiPages(mangaId, chapterId)
-            : await fetchComicPages(mangaId, chapterId);
+          const urls = await adapter.pages(mangaId, chapterId);
           if (!cancelled) {
             setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
           }
@@ -237,15 +237,16 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, chapterId, offline, isExternal, isHentai, isGated, hasAccess]);
+  }, [mangaId, chapterId, offline, isExternal, adapter, isGated, hasAccess]);
 
   const uiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
 
   useEffect(() => {
     if (loading || renderedPages.length === 0) return;
-    // 18+ reading is never surfaced in Continue Reading or lock-screen activity
-    // (it would leak past the settings toggle and the reopen path has no source).
-    if (isHentai) return;
+    // Adult reading is never surfaced in Continue Reading or lock-screen
+    // activity (it would leak past the settings toggle and the reopen path has
+    // no source). Scraped-but-SFW sources like manhwa are surfaced normally.
+    if (isAdult) return;
     const pageNumber = currentPage + 1;
     const total = renderedPages.length;
     upsertReadingActivity(
@@ -262,7 +263,7 @@ export default function ChapterReader() {
           (offline === '1' ? '&offline=1' : '')
         : undefined,
     );
-  }, [chapterId, currentPage, id, loading, renderedPages.length, isHentai, source, offline]);
+  }, [chapterId, currentPage, id, loading, renderedPages.length, isAdult, source, offline]);
 
   useEffect(() => {
     didInitialScroll.current = false;
@@ -355,8 +356,9 @@ export default function ChapterReader() {
 
   useEffect(() => {
     if (!mangaId || !chapterId || renderedPages.length === 0) return;
-    // 18+ reading progress is never persisted (keeps it out of Continue Reading).
-    if (isHentai) return;
+    // Adult reading progress is never persisted (keeps it out of Continue
+    // Reading). Manhwa and comics are persisted like ordinary manga.
+    if (isAdult) return;
     const page = currentPage + 1;
     if (page < 2 && renderedPages.length > 3) return;
     const t = setTimeout(() => {
@@ -380,7 +382,7 @@ export default function ChapterReader() {
     mangaTitle,
     mangaCover,
     chapterLabel,
-    isHentai,
+    isAdult,
     source,
   ]);
 
@@ -394,7 +396,7 @@ export default function ChapterReader() {
   const progressRef = useRef<Parameters<typeof setMangaReadProgress>[0] | null>(null);
   const suppressProgressRef = useRef(false);
   useEffect(() => {
-    suppressProgressRef.current = isHentai;
+    suppressProgressRef.current = isAdult;
     progressRef.current =
       mangaId && chapterId && renderedPages.length > 0
         ? {
@@ -433,7 +435,7 @@ export default function ChapterReader() {
   });
   useEffect(() => {
     return () => {
-      if (isHentai || !mangaId || !chapterId) return;
+      if (isAdult || !mangaId || !chapterId) return;
       const total = gamTotalRef.current;
       if (total <= 0) return;
       const progress = Math.min(1, gamPageRef.current / total);
@@ -447,7 +449,7 @@ export default function ChapterReader() {
         completed: progress >= 0.9,
       });
     };
-  }, [mangaId, chapterId, isHentai]);
+  }, [mangaId, chapterId, isAdult]);
 
   // Switch reading mode in place: remember where you are, flip the mode, then
   // restore that same page once the list has re-laid-out in the new geometry.
