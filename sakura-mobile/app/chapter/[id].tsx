@@ -680,11 +680,24 @@ export default function ChapterReader() {
     if (index <= 3) void ensurePrevRef.current();
   }).current;
 
+  // The threshold is a percentage OF THE ITEM, and it has to stay low because
+  // webtoon pages are taller than the screen. A manhwa strip at its true aspect
+  // ratio is several screens tall, so only ~20-40% of it is ever visible at
+  // once — at the old value of 50 it could never become "viewable" at all.
+  // onViewableItemsChanged then never fired, the current page stayed at 0, and
+  // reads were reported at a few percent progress no matter how long someone
+  // scrolled. That silently starved XP, quests and badges, which only award on
+  // a read that reaches 90%.
+  //
   // minimumViewTime stops a fast fling through the end of one chapter from
   // reporting the next one as "active" for a frame, which would reattribute
   // progress and gamification to a chapter that was never actually read.
+  //
+  // RN rejects changing this on the fly, so one config serves both modes.
+  // Paged mode is unaffected: its pages are exactly one screen, so they clear
+  // any threshold.
   const viewabilityConfig = useRef({
-    itemVisiblePercentThreshold: 50,
+    itemVisiblePercentThreshold: 5,
     minimumViewTime: 80,
   }).current;
 
@@ -844,6 +857,19 @@ export default function ChapterReader() {
     existing.total = activeTotalPages;
   });
 
+  /**
+   * Mark a chapter as read to the end.
+   *
+   * Viewability alone can't always prove completion — the last page of a short
+   * chapter may never become the topmost visible row — but some events are
+   * unambiguous: reaching the bottom of the loaded content, or moving on to a
+   * later chapter. You cannot arrive at chapter 13 without having finished 12.
+   */
+  const creditChapterComplete = useCallback((chapterId: string) => {
+    const stat = chapterStatsRef.current.get(chapterId);
+    if (stat && stat.total > 0) stat.maxPage = stat.total;
+  }, []);
+
   const flushGamification = useCallback((chapterId: string) => {
     if (isAdultRef.current || !mangaIdRef.current || !chapterId) return;
     if (emittedRef.current.has(chapterId)) return;
@@ -867,9 +893,16 @@ export default function ChapterReader() {
   const prevActiveChapterRef = useRef('');
   useEffect(() => {
     const previous = prevActiveChapterRef.current;
-    if (previous && previous !== activeChapterId) flushGamification(previous);
+    if (previous && previous !== activeChapterId) {
+      // Moving forward is proof the chapter behind you was finished, whatever
+      // the viewable rows happened to report.
+      const from = segmentsRef.current.find((s) => s.chapterId === previous);
+      const to = segmentsRef.current.find((s) => s.chapterId === activeChapterId);
+      if (from && to && to.orderIndex > from.orderIndex) creditChapterComplete(previous);
+      flushGamification(previous);
+    }
     prevActiveChapterRef.current = activeChapterId;
-  }, [activeChapterId, flushGamification]);
+  }, [activeChapterId, flushGamification, creditChapterComplete]);
 
   useEffect(() => {
     return () => {
@@ -1042,7 +1075,14 @@ export default function ChapterReader() {
         // proximity check in the viewability callback normally gets there
         // first; this covers a short chapter that fits on one screen, where
         // viewability may never report a page far enough through it.
-        onEndReached={() => void ensureNextChapter()}
+        onEndReached={() => {
+          // Reaching the bottom of the loaded content means the furthest
+          // chapter has been read to its end, which viewability can't always
+          // establish on its own for a short chapter.
+          const last = segmentsRef.current[segmentsRef.current.length - 1];
+          if (last) creditChapterComplete(last.chapterId);
+          void ensureNextChapter();
+        }}
         onEndReachedThreshold={0.6}
         onScroll={onScroll}
         scrollEventThrottle={16}
