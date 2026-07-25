@@ -253,11 +253,16 @@ function cleanTitle(value) {
  * thumbnail anchor and a title anchor off each card, so collect every /manga/
  * anchor and merge by slug rather than maintaining two selector sets.
  *
- * Titles are chosen by source precedence, not by length. Each card links the
- * series twice: the thumbnail anchor carries only an SEO alt ("Read Manhwa Baek
- * XX") while the caption anchor carries the real title ("Baek XX"). Preferring
- * the longer string picks the boilerplate and then blocks the good title from
- * replacing it.
+ * Titles are chosen by source precedence, not by length, and text inside an
+ * image anchor is never treated as a title.
+ *
+ * Each card links the series twice. The caption anchor holds the real title.
+ * The thumbnail anchor holds an SEO alt ("Read Manhwa Baek XX") plus, on the
+ * catalogue grid, a rating badge - so its text content is "SS", not the series
+ * name. Preferring the longest string picks the boilerplate; trusting anchor
+ * text uniformly picks the badge, and because both anchors would then rank
+ * equally the caption could never displace it. Every catalogue title came back
+ * as "SS" that way.
  */
 function mangareadParseList(html) {
     const $ = loadHtml(html);
@@ -293,12 +298,14 @@ function mangareadParseList(html) {
         }
 
         // Highest-ranked available source wins, so the alt-text fallback can
-        // never displace the caption anchor's real title.
-        const candidates = [
-            [3, $a.text()],
-            [2, $a.attr("title")],
-            [1, img.attr("alt")],
-        ];
+        // never displace the caption anchor's real title. An anchor wrapping an
+        // image contributes only its attributes - its text is card chrome.
+        const candidates = img.length
+            ? [
+                  [2, $a.attr("title")],
+                  [1, img.attr("alt")],
+              ]
+            : [[3, $a.text()]];
         for (const [rank, raw] of candidates) {
             const value = cleanTitle(raw);
             if (value && rank > entry.titleRank) {
