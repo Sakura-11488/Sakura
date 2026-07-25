@@ -60,7 +60,10 @@ export interface GamificationBadge {
 }
 
 export interface GamificationState {
+  /** Lifetime XP — drives level and badges, never decreases. */
   xp: number;
+  /** XP already committed to SAKURA swaps. Swappable balance is xp - xp_spent. */
+  xp_spent?: number;
   level: number;
   current_streak: number;
   longest_streak: number;

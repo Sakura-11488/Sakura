@@ -67,6 +67,24 @@ export default function QuestsScreen() {
     },
     statNum: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, color: colors.text },
     statLabel: { fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 2 },
+    swapCta: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      marginHorizontal: Spacing.md,
+      marginTop: 14,
+      paddingVertical: 15,
+      paddingHorizontal: 18,
+      borderRadius: 20,
+      backgroundColor: '#E84545',
+    },
+    swapTitle: {
+      fontFamily: Fonts.display,
+      fontWeight: Fonts.displayWeight,
+      fontSize: FontSize.md,
+      color: '#fff',
+    },
+    swapSub: { fontSize: FontSize.xs, color: 'rgba(255,255,255,0.82)', marginTop: 2 },
     sectionTitle: {
       fontFamily: Fonts.display,
       fontWeight: Fonts.displayWeight,
@@ -127,6 +145,29 @@ export default function QuestsScreen() {
                 <Text style={s.statLabel}>Chapters read</Text>
               </View>
             </View>
+
+            {/* Entry point to the swap — placed under the stats, where the XP
+                total is already on screen and the question "what is this for?"
+                naturally lands. */}
+            <TouchableOpacity
+              style={s.swapCta}
+              activeOpacity={0.88}
+              onPress={onTap(() => router.push('/swap-xp' as any))}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={s.swapTitle}>Swap XP for SAKURA</Text>
+                <Text style={s.swapSub}>1 XP = 3.19 SAKURA</Text>
+              </View>
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+                <Path
+                  d="M9 6l6 6-6 6"
+                  stroke="#fff"
+                  strokeWidth={2.4}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </Svg>
+            </TouchableOpacity>
 
             <Text style={s.sectionTitle}>Today's Quests</Text>
             {state.quests.map((q) => {

@@ -74,6 +74,9 @@ Deno.serve(async (req) => {
       200,
       {
         xp: Number(state.xp ?? 0),
+        // Lifetime xp keeps driving level and badges; xp_spent is what has been
+        // committed to swaps, so the swappable balance is the difference.
+        xp_spent: Number((state as { xp_spent?: number }).xp_spent ?? 0),
         level: Number(state.level ?? 1),
         current_streak: Number(state.current_streak ?? 0),
         longest_streak: Number(state.longest_streak ?? 0),

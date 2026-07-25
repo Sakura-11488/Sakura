@@ -150,6 +150,7 @@ export default function RootLayout() {
             <Stack.Screen name="search"       options={{ animation: 'fade' }} />
             <Stack.Screen name="ai"           options={{ animation: 'slide_from_bottom', gestureEnabled: true, gestureDirection: 'vertical', fullScreenGestureEnabled: true }} />
             <Stack.Screen name="pass"         options={{ animation: 'slide_from_bottom' }} />
+            <Stack.Screen name="swap-xp"      options={{ animation: 'slide_from_bottom' }} />
             <Stack.Screen name="trade"        options={{ animation: 'slide_from_bottom' }} />
             <Stack.Screen name="downloads"    options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="reading-history" options={{ animation: 'slide_from_right' }} />
