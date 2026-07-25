@@ -232,7 +232,11 @@ export async function getContinueReading(limit = 12): Promise<ContinueReadingIte
   const items: ContinueReadingItem[] = [];
 
   for (const row of Object.values(mem.manga)) {
-    if (!row || row.progress < 0.01 || row.progress >= 0.98) continue;
+    // Floor is "any progress at all", not 1%. Crossing into a new chapter saves
+    // its page 1 immediately, and in a 200-page chapter that is 0.005 — a 1%
+    // floor made the series vanish from Continue Reading at exactly the moment
+    // the reader started it.
+    if (!row || row.progress <= 0 || row.progress >= 0.98) continue;
     items.push({
       kind: 'manga',
       id: `manga-${row.mangaId}`,

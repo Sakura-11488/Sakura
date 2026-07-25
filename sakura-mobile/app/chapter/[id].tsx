@@ -11,7 +11,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
-import { loadChapterPages } from '@/lib/chapter-pages';
+import { loadChapterPages, fetchReaderChapterList } from '@/lib/chapter-pages';
+import type { MangaChapter } from '@/lib/manga';
 import {
   buildSegment,
   flattenSegments,
@@ -90,6 +91,9 @@ export default function ChapterReader() {
   const didInitialScroll = useRef(false);
   // One entry per chapter resident in this session, always in reading order.
   const [segments, setSegments] = useState<ChapterSegment[]>([]);
+  // The series' full chapter list, normalised. Empty means continuous reading
+  // is simply off and the reader behaves exactly as it always did.
+  const [orderedChapters, setOrderedChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
   const [uiVisible, setUiVisible] = useState(true);
   // Which chapter the reader is looking at right now — not necessarily the one
@@ -358,6 +362,86 @@ export default function ChapterReader() {
     });
   }, [loading, requestedPage, rows.length, activeTotalPages, entryChapterId, jumpToChapterPage]);
 
+  // Load the series' chapter list so the reader knows what comes next. Falls
+  // back to the offline manifest, which is what makes continuous reading work
+  // in airplane mode — the whole point of "if you have them downloaded you
+  // shouldn't even notice you're in the next chapter".
+  useEffect(() => {
+    if (!mangaId || !entryChapterId) return;
+    let cancelled = false;
+    fetchReaderChapterList(source, mangaId, entryChapterId)
+      .then((list) => {
+        if (!cancelled) setOrderedChapters(list);
+      })
+      .catch(() => {
+        // No list means no continuity; the single-chapter reader still works.
+        if (!cancelled) setOrderedChapters([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mangaId, entryChapterId, source]);
+
+  const orderedChaptersRef = useRef(orderedChapters);
+  orderedChaptersRef.current = orderedChapters;
+  /** Chapters currently being fetched, so proximity and onEndReached don't race. */
+  const loadingNeighborRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Attach the next chapter to the end of the session.
+   *
+   * Append only, for now: adding to the end leaves every existing row index
+   * untouched, whereas prepending shifts them all and needs scroll
+   * compensation. Reading forward is also the overwhelmingly common direction.
+   */
+  const ensureNextChapter = useCallback(async () => {
+    const list = orderedChaptersRef.current;
+    if (list.length === 0) return;
+    const resident = segmentsRef.current;
+    if (resident.length === 0) return;
+
+    const lastOrderIndex = Math.max(...resident.map((s) => s.orderIndex));
+    const next = list[lastOrderIndex + 1];
+    if (!next) return; // end of the series
+    if (resident.some((s) => s.chapterId === next.id)) return;
+    if (loadingNeighborRef.current.has(next.id)) return;
+    loadingNeighborRef.current.add(next.id);
+
+    try {
+      const { urls, origin } = await loadChapterPages({
+        contentId: mangaId,
+        chapterId: next.id,
+        source,
+      });
+      if (urls.length === 0) return;
+      // Warm the first few images so the boundary doesn't arrive as blank space.
+      urls.slice(0, 3).forEach((u) => {
+        void Image.prefetch(u).catch(() => undefined);
+      });
+      setSegments((prev) => {
+        if (prev.some((s) => s.chapterId === next.id)) return prev;
+        return [
+          ...prev,
+          buildSegment({
+            chapterId: next.id,
+            chapterNumber: next.number,
+            chapterLabel: next.title || `Chapter ${next.number}`,
+            orderIndex: lastOrderIndex + 1,
+            origin,
+            urls,
+          }),
+        ];
+      });
+    } catch {
+      // Leave the boundary as a hard stop; the reader still works.
+    } finally {
+      loadingNeighborRef.current.delete(next.id);
+    }
+  }, [mangaId, source]);
+
+  const ensureNextRef = useRef(ensureNextChapter);
+  ensureNextRef.current = ensureNextChapter;
+
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     // Reads refs only: this callback is held in a useRef and can never see
     // fresh state through a closure.
@@ -369,9 +453,25 @@ export default function ChapterReader() {
     setActiveChapterId(row.chapterId);
     // A divider carries no page of its own; the chapter change is the signal.
     if (row.kind === 'page') setActivePageIndex(row.pageIndex);
+
+    // Start fetching the next chapter before the reader reaches the boundary,
+    // so it is already in place by the time they scroll into it. An offline
+    // chapter loads instantly, so it can wait until much later.
+    const segment = segmentsRef.current.find((s) => s.chapterId === row.chapterId);
+    if (segment && segment.pages.length > 0 && row.kind === 'page') {
+      const through = (row.pageIndex + 1) / segment.pages.length;
+      const threshold = segment.origin === 'offline' ? 0.85 : 0.6;
+      if (through >= threshold) void ensureNextRef.current();
+    }
   }).current;
 
-  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
+  // minimumViewTime stops a fast fling through the end of one chapter from
+  // reporting the next one as "active" for a frame, which would reattribute
+  // progress and gamification to a chapter that was never actually read.
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 50,
+    minimumViewTime: 80,
+  }).current;
 
   const renderPage = useCallback(
     ({ item }: { item: ReaderRow }) => {
@@ -705,6 +805,12 @@ export default function ChapterReader() {
         onTouchEnd={toggleUI}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        // Second, independent trigger for attaching the next chapter. The
+        // proximity check in the viewability callback normally gets there
+        // first; this covers a short chapter that fits on one screen, where
+        // viewability may never report a page far enough through it.
+        onEndReached={() => void ensureNextChapter()}
+        onEndReachedThreshold={0.6}
         windowSize={5}
         maxToRenderPerBatch={3}
         removeClippedSubviews
