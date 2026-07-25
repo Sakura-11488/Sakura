@@ -21,6 +21,7 @@ import { getSolBalance, getSakuraBalanceWithMeta } from './connection';
 import { truncateAddress, getSolanaNetworkLabel, SOLANA_RPC } from './config';
 import { rpcDisplayLabel, setBalanceDiagnostics, type SakuraBalanceSource } from './balance-diagnostics';
 import { unlockForAppSession, clearAppSessionKeypair } from './app-session';
+import { clearWebTransactionAuth } from './web-transaction-auth';
 
 export { getSolanaNetworkLabel };
 
@@ -175,6 +176,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     await removeWallet();
     clearAppSessionKeypair();
     clearWalletAuthSession();
+    // The 24-hour "don't ask again" grace was granted to this wallet; it must
+    // not carry over to whoever connects next on a shared device.
+    clearWebTransactionAuth();
     setPublicKey(null);
     setAddress(null);
     setConnected(false);

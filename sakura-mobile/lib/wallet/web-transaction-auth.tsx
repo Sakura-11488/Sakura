@@ -11,19 +11,55 @@ import { Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 
 const SESSION_KEY = 'sakura_web_tx_auth_until';
-const SESSION_MS = 20 * 60 * 1000;
+const REMEMBER_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Deliberately localStorage, not sessionStorage.
+ *
+ * sessionStorage is scoped to a tab session, and on a phone the installed PWA
+ * is backgrounded and evicted constantly — so ticking "remember" bought almost
+ * nothing and users reported being asked again every single time. The old
+ * 20-minute cap made it worse: the label promised the whole session while the
+ * value quietly expired a third of an hour later.
+ *
+ * Cleared on wallet disconnect, so the grace never outlives the wallet it
+ * was granted for.
+ */
 type Resolver = { resolve: () => void; reject: (err: Error) => void };
 
+function store(): Storage | null {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch {
+    // Access can throw outright when site data is blocked.
+    return null;
+  }
+}
+
 function isSessionActive(): boolean {
-  if (typeof sessionStorage === 'undefined') return false;
-  const until = Number(sessionStorage.getItem(SESSION_KEY) || 0);
-  return Date.now() < until;
+  const s = store();
+  if (!s) return false;
+  try {
+    return Date.now() < Number(s.getItem(SESSION_KEY) || 0);
+  } catch {
+    return false;
+  }
 }
 
 function rememberSession(): void {
-  if (typeof sessionStorage !== 'undefined') {
-    sessionStorage.setItem(SESSION_KEY, String(Date.now() + SESSION_MS));
+  try {
+    store()?.setItem(SESSION_KEY, String(Date.now() + REMEMBER_MS));
+  } catch {
+    // Private mode / quota — the user just gets asked again.
+  }
+}
+
+/** Revoke the remembered grace. Call when the wallet is disconnected. */
+export function clearWebTransactionAuth(): void {
+  try {
+    store()?.removeItem(SESSION_KEY);
+  } catch {
+    // nothing to do
   }
 }
 
@@ -103,7 +139,7 @@ export function WebTransactionAuthProvider({ children }: { children: React.React
             >
               <View style={[styles.checkbox, remember && styles.checkboxOn]} />
               <Text style={[styles.rememberText, { color: colors.textSecondary }]}>
-                Remember for this browser session
+                Don&rsquo;t ask again for 24 hours
               </Text>
             </TouchableOpacity>
             <TouchableOpacity

@@ -35,14 +35,30 @@ export async function getPassiveSessionKeypair(): Promise<Keypair | null> {
 }
 
 /**
- * Unlocks the wallet once per app process for non-payment actions (chat, realtime).
- * Payment and transfer flows should call getWalletWithBiometrics directly.
+ * Unlocks the wallet once per app process for non-payment actions (chat,
+ * realtime, fan-art, profile). Payment and transfer flows call
+ * getWalletWithBiometrics directly and always confirm.
+ *
+ * On web this tries the no-prompt read first, so opening a chat no longer
+ * raises a modal captioned "Confirm transaction" when no transaction exists —
+ * the single biggest reason users saw that dialog constantly. It costs nothing
+ * in practice: the same passive read already backs background XP ingest on web,
+ * so the key is reachable without the modal regardless, and the modal's real
+ * job is confirming things that move money.
+ *
+ * Native keeps prompting here, where it is a frictionless biometric rather than
+ * an interactive dialog, and where the passive read deliberately returns null.
  */
 export async function unlockForAppSession(): Promise<Keypair | null> {
   if (cachedKeypair) return cachedKeypair;
   if (unlockPromise) return unlockPromise;
 
   unlockPromise = (async () => {
+    const passive = await getWalletKeypairPassive();
+    if (passive) {
+      cachedKeypair = passive;
+      return passive;
+    }
     const keypair = await getWalletWithBiometrics();
     if (keypair) cachedKeypair = keypair;
     return keypair;
