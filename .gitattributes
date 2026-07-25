@@ -1,0 +1,5 @@
+# These files are copied to the Linux droplet and executed there. Windows
+# checkouts default to core.autocrlf=true, which would rewrite them with CRLF
+# and make bash fail on the stray \r. Pin them to LF regardless of platform.
+*.sh            text eol=lf
+scripts/droplet/**  text eol=lf
