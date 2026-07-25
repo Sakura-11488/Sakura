@@ -76,6 +76,10 @@ export interface ScrapedSourceAdapter {
   homeRows: { title: string; query: string }[];
 }
 
+/**
+ * Insertion order here is the order sources appear in the UI (home tabs,
+ * downloads sections), so keep 18+ last.
+ */
 export const SCRAPED_SOURCES: Record<ScrapedSource, ScrapedSourceAdapter> = {
   comics: {
     key: 'comics',
@@ -88,11 +92,34 @@ export const SCRAPED_SOURCES: Record<ScrapedSource, ScrapedSourceAdapter> = {
     chapters: fetchComicChapters,
     pages: fetchComicPages,
     proxyImage: proxyComicImage,
+    // Verbatim from the ternaries these replaced in app/(tabs)/home.tsx — the
+    // shelves must look exactly as they did before the registry landed.
     homeRows: [
-      { title: 'Batman', query: 'batman' },
-      { title: 'Spider-Man', query: 'spider-man' },
-      { title: 'Superman', query: 'superman' },
-      { title: 'X-Men', query: 'x-men' },
+      { title: 'Action Packed', query: 'action' },
+      { title: 'Superheroes', query: 'superhero' },
+      { title: 'Sci-Fi & Space', query: 'sci-fi' },
+      { title: 'Horror & Thriller', query: 'horror' },
+    ],
+  },
+  manhwa: {
+    key: 'manhwa',
+    label: 'Manhwa',
+    adult: false,
+    detailKind: 'Manhwa',
+    trending: fetchTrendingManhwa,
+    search: searchManhwa,
+    detail: fetchManhwaDetail,
+    chapters: fetchManhwaChapters,
+    pages: fetchManhwaPages,
+    proxyImage: proxyManhwaImage,
+    // These are title searches, not genre filters — both upstreams match on
+    // series name — so the queries are words that actually appear in manhwa
+    // titles. A genre word like "action" would return almost nothing.
+    homeRows: [
+      { title: 'Martial Arts', query: 'martial' },
+      { title: 'Leveling Up', query: 'level' },
+      { title: 'Return & Regression', query: 'return' },
+      { title: 'Hunters', query: 'hunter' },
     ],
   },
   hentai: {
@@ -107,28 +134,10 @@ export const SCRAPED_SOURCES: Record<ScrapedSource, ScrapedSourceAdapter> = {
     pages: fetchHentaiPages,
     proxyImage: proxyHentaiImage,
     homeRows: [
+      { title: 'Vanilla', query: 'vanilla' },
       { title: 'Romance', query: 'romance' },
-      { title: 'School', query: 'school' },
-      { title: 'Fantasy', query: 'fantasy' },
-      { title: 'Story', query: 'story' },
-    ],
-  },
-  manhwa: {
-    key: 'manhwa',
-    label: 'Manhwa',
-    adult: false,
-    detailKind: 'Manhwa',
-    trending: fetchTrendingManhwa,
-    search: searchManhwa,
-    detail: fetchManhwaDetail,
-    chapters: fetchManhwaChapters,
-    pages: fetchManhwaPages,
-    proxyImage: proxyManhwaImage,
-    homeRows: [
-      { title: 'Martial Arts', query: 'martial' },
-      { title: 'Leveling Up', query: 'leveling' },
-      { title: 'Regression', query: 'return' },
-      { title: 'Tower Climbing', query: 'tower' },
+      { title: 'Full Color', query: 'full color' },
+      { title: 'Yuri', query: 'yuri' },
     ],
   },
 };

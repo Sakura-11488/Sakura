@@ -42,14 +42,7 @@ import {
   toCarouselItem,
   searchManga,
 } from '@/lib/manga';
-import {
-  fetchTrendingComics,
-  searchComics,
-} from '@/lib/comics';
-import {
-  fetchTrendingHentai,
-  searchHentai,
-} from '@/lib/hentai';
+import { visibleScrapedSources } from '@/lib/scraped-sources';
 import { useContentPrefs } from '@/lib/content-prefs';
 import { isWideWeb } from '@/constants/layout';
 import { SAKURA_ORIGINALS } from '@/lib/sakura-originals';
@@ -58,6 +51,15 @@ import StreakLevelCard from '@/components/gamification/StreakLevelCard';
 import FeaturedCarousel, { type CarouselItem } from '@/components/ui/FeaturedCarousel';
 
 const { width: W } = Dimensions.get('window');
+
+// Genre shelves for the atsu-backed Manga tab. The scraped sources carry their
+// own set on their registry entry; this is the one case with no adapter.
+const MANGA_HOME_ROWS = [
+  { title: 'Action Packed', query: 'action' },
+  { title: 'Romance', query: 'romance' },
+  { title: 'Boredom Busters', query: 'slice of life' },
+  { title: 'Get Into Comedy', query: 'comedy' },
+];
 
 
 // ─── Notification bell ────────────────────────────────────────────────────────
@@ -230,17 +232,22 @@ export default function HomeScreen() {
   useScrollToTop(scrollRef);
   const scrollY = useSharedValue(0);
 
-  const isComics = category === 'Comics';
-  const isHentai = category === '18+';
-  const categories = useMemo(
-    () => (allowAdult ? ['Manga', 'Comics', '18+'] : ['Manga', 'Comics']),
-    [allowAdult],
+  // Tabs are derived from the source registry rather than hardcoded, so a new
+  // scraper appears here automatically instead of being silently unreachable.
+  // Adult sources only surface once the user has opted in.
+  const sources = useMemo(() => visibleScrapedSources(allowAdult), [allowAdult]);
+  const categories = useMemo(() => ['Manga', ...sources.map((s) => s.label)], [sources]);
+  const adapter = useMemo(
+    () => sources.find((s) => s.label === category) ?? null,
+    [sources, category],
   );
+  // Four fixed shelves; atsu manga has no adapter so it keeps its own set.
+  const homeRows = adapter?.homeRows ?? MANGA_HOME_ROWS;
 
   // Expand a home row into the full-grid browse screen, carrying the row's
   // source + query so it shows *that* section's content (not the manga
   // catalogue). `q` drives genre rows (search); `kind` drives catalogue rows.
-  const browseSource = isHentai ? 'hentai' : isComics ? 'comics' : 'manga';
+  const browseSource = adapter?.key ?? 'manga';
   const goBrowse = useCallback(
     (title: string, opts: { q?: string; kind?: string }) =>
       router.push({
@@ -250,23 +257,23 @@ export default function HomeScreen() {
     [router, browseSource],
   );
 
-  // If the user turns off 18+ while the 18+ tab is selected, fall back to Manga.
+  // If the selected tab disappears — turning off 18+ while it's open, or a
+  // source being removed — fall back to Manga rather than showing an empty tab.
   useEffect(() => {
-    if (!allowAdult && category === '18+') setCategory('Manga');
-  }, [allowAdult, category]);
+    if (!categories.includes(category)) setCategory('Manga');
+  }, [categories, category]);
 
   const loadData = useCallback(async () => {
     try {
-      if (isComics || isHentai) {
-        const source = isHentai ? 'hentai' : 'comics';
-        const list = isHentai ? await fetchTrendingHentai(40) : await fetchTrendingComics(40);
+      if (adapter) {
+        const list = await adapter.trending(40);
         const toCarousel = (c: ContentItem): CarouselItem => ({
           id: c.id,
           title: c.title,
           cover: c.cover,
           genres: [],
           type: 'manga',
-          source,
+          source: adapter.key,
         });
         setFeatured(list.slice(0, 20).map(toCarousel));
         setTrending(list.slice(7, 15));
@@ -292,7 +299,7 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [isComics, isHentai]);
+  }, [adapter]);
 
   useEffect(() => {
     setLoading(true);
@@ -305,44 +312,32 @@ export default function HomeScreen() {
   useEffect(() => {
     if (loading) return;
     (async () => {
-      if (isHentai) {
-        const [vanilla, romance, fullColor, yuri] = await Promise.all([
-          searchHentai('vanilla', 12),
-          searchHentai('romance', 12),
-          searchHentai('full color', 12),
-          searchHentai('yuri', 12),
+      const [first, second, third, fourth] = homeRows;
+      if (adapter) {
+        const [a, b, c, d] = await Promise.all([
+          adapter.search(first.query, 12),
+          adapter.search(second.query, 12),
+          adapter.search(third.query, 12),
+          adapter.search(fourth.query, 12),
         ]);
-        setActionPacked(vanilla);
-        setRomance(romance);
-        setBoredmBusters(fullColor);
-        setComedy(yuri);
+        setActionPacked(a);
+        setRomance(b);
+        setBoredmBusters(c);
+        setComedy(d);
         return;
       }
-      if (isComics) {
-        const [action, hero, scifi, horror] = await Promise.all([
-          searchComics('action', 12),
-          searchComics('superhero', 12),
-          searchComics('sci-fi', 12),
-          searchComics('horror', 12),
-        ]);
-        setActionPacked(action);
-        setRomance(hero);
-        setBoredmBusters(scifi);
-        setComedy(horror);
-        return;
-      }
-      const [action, rom, bored, com] = await Promise.all([
-        searchManga('action', 12),
-        searchManga('romance', 12),
-        searchManga('slice of life', 12),
-        searchManga('comedy', 12),
+      const [a, b, c, d] = await Promise.all([
+        searchManga(first.query, 12),
+        searchManga(second.query, 12),
+        searchManga(third.query, 12),
+        searchManga(fourth.query, 12),
       ]);
-      setActionPacked(action.map((i) => toContentItem(i)));
-      setRomance(rom.map((i) => toContentItem(i)));
-      setBoredmBusters(bored.map((i) => toContentItem(i)));
-      setComedy(com.map((i) => toContentItem(i)));
+      setActionPacked(a.map((i) => toContentItem(i)));
+      setRomance(b.map((i) => toContentItem(i)));
+      setBoredmBusters(c.map((i) => toContentItem(i)));
+      setComedy(d.map((i) => toContentItem(i)));
     })();
-  }, [loading, isComics, isHentai]);
+  }, [loading, adapter, homeRows]);
 
   const refreshContinueWatching = useCallback(() => {
     getContinueWatching(10).then(setContinueAnime);
@@ -492,7 +487,7 @@ export default function HomeScreen() {
 
           {/* Community uploads — only in the Manga catalog (creator works are
               novel/manga/anime; novels + anime live on their own tabs). */}
-          {!isComics && !isHentai && (
+          {!adapter && (
             <View style={s.sectionGap}>
               <CreatorWorksRow kind="manga" />
             </View>
@@ -520,50 +515,19 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {/* Action Packed */}
-          {actionPacked.length > 0 && (
-            <View style={s.sectionGap}>
-              {(() => {
-                const t = isHentai ? 'Vanilla' : 'Action Packed';
-                const q = isHentai ? 'vanilla' : 'action';
-                return (
-                  <HorizSection data={actionPacked} title={t} onSeeAll={() => goBrowse(t, { q })} />
-                );
-              })()}
-            </View>
-          )}
-
-          {/* Romance / Superheroes */}
-          {romance.length > 0 && (
-            <View style={s.sectionGap}>
-              {(() => {
-                const t = isHentai ? 'Romance' : isComics ? 'Superheroes' : 'Romance';
-                const q = isHentai ? 'romance' : isComics ? 'superhero' : 'romance';
-                return <HorizSection data={romance} title={t} onSeeAll={() => goBrowse(t, { q })} />;
-              })()}
-            </View>
-          )}
-
-          {/* Boredom Busters / Sci-Fi */}
-          {boredmBusters.length > 0 && (
-            <View style={s.sectionGap}>
-              {(() => {
-                const t = isHentai ? 'Full Color' : isComics ? 'Sci-Fi & Space' : 'Boredom Busters';
-                const q = isHentai ? 'full color' : isComics ? 'sci-fi' : 'slice of life';
-                return <HorizSection data={boredmBusters} title={t} onSeeAll={() => goBrowse(t, { q })} />;
-              })()}
-            </View>
-          )}
-
-          {/* Get Into Comedy / Horror */}
-          {comedy.length > 0 && (
-            <View style={s.sectionGap}>
-              {(() => {
-                const t = isHentai ? 'Yuri' : isComics ? 'Horror & Thriller' : 'Get Into Comedy';
-                const q = isHentai ? 'yuri' : isComics ? 'horror' : 'comedy';
-                return <HorizSection data={comedy} title={t} onSeeAll={() => goBrowse(t, { q })} />;
-              })()}
-            </View>
+          {/* Four genre shelves; their titles and queries come from the active
+              source's registry entry so they stay in step with what was
+              actually fetched above. */}
+          {[actionPacked, romance, boredmBusters, comedy].map((data, i) =>
+            data.length > 0 ? (
+              <View key={homeRows[i].title} style={s.sectionGap}>
+                <HorizSection
+                  data={data}
+                  title={homeRows[i].title}
+                  onSeeAll={() => goBrowse(homeRows[i].title, { q: homeRows[i].query })}
+                />
+              </View>
+            ) : null,
           )}
 
           <View style={{ height: 130 }} />

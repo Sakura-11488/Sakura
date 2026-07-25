@@ -20,8 +20,7 @@ import {
   searchManga,
   toContentItem,
 } from '@/lib/manga';
-import { fetchTrendingComics, searchComics } from '@/lib/comics';
-import { fetchTrendingHentai, searchHentai } from '@/lib/hentai';
+import { getScrapedAdapter, asScrapedSource, type ScrapedSource } from '@/lib/scraped-sources';
 import { useTheme } from '@/lib/theme';
 import { Spacing, Radius, FontSize, FontWeight, Colors, Shadow } from '@/constants/theme';
 import { ContentItem } from '@/components/ui/ContentCard';
@@ -34,15 +33,15 @@ const ITEM_W = (W - H_PAD * 2 - GAP * (COLS - 1)) / COLS;
 const ITEM_H = ITEM_W * 1.5;
 const PAGE_SIZE = 60;
 
-type BrowseSource = 'manga' | 'comics' | 'hentai';
+type BrowseSource = 'manga' | ScrapedSource;
 
 /**
  * Fetch one page of a section's content, honouring the section's *source*
- * (manga / comics / 18+) and its query, rather than always falling back to the
- * manga catalogue. `q` drives the genre sections (search), while `kind` drives
- * the catalogue sections (New Releases / Today's Pick / Trending / Popular).
- * Only the paginated manga catalogue reports `hasMore`; every other source
- * returns a single generous batch.
+ * (manga or any scraped source) and its query, rather than always falling back
+ * to the manga catalogue. `q` drives the genre sections (search), while `kind`
+ * drives the catalogue sections (New Releases / Today's Pick / Trending /
+ * Popular). Only the paginated manga catalogue reports `hasMore`; every other
+ * source returns a single generous batch.
  */
 async function loadBrowse(
   source: BrowseSource,
@@ -50,12 +49,9 @@ async function loadBrowse(
   kind: string,
   page: number,
 ): Promise<{ items: ContentItem[]; hasMore: boolean }> {
-  if (source === 'comics') {
-    const items = q ? await searchComics(q, PAGE_SIZE) : await fetchTrendingComics(PAGE_SIZE);
-    return { items, hasMore: false };
-  }
-  if (source === 'hentai') {
-    const items = q ? await searchHentai(q, PAGE_SIZE) : await fetchTrendingHentai(PAGE_SIZE);
+  const adapter = getScrapedAdapter(source);
+  if (adapter) {
+    const items = q ? await adapter.search(q, PAGE_SIZE) : await adapter.trending(PAGE_SIZE);
     return { items, hasMore: false };
   }
   if (q) {
@@ -106,8 +102,7 @@ export default function BrowseScreen() {
   }>();
 
   const title = typeof params.title === 'string' && params.title ? params.title : 'Browse';
-  const source: BrowseSource =
-    params.source === 'comics' || params.source === 'hentai' ? params.source : 'manga';
+  const source: BrowseSource = asScrapedSource(params.source) ?? 'manga';
   const q = typeof params.q === 'string' ? params.q : '';
   const kind = typeof params.kind === 'string' ? params.kind : '';
 

@@ -28,6 +28,7 @@ import { fetchTrendingManga, searchManga, toContentItem } from '@/lib/manga';
 import { searchAnime } from '@/lib/anime';
 import { searchNovels } from '@/lib/allnovel';
 import { searchHentai } from '@/lib/hentai';
+import { searchManhwa } from '@/lib/manhwa';
 import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
 import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
 import { useContentPrefs } from '@/lib/content-prefs';
@@ -110,13 +111,17 @@ export default function SearchTabScreen() {
     }
     setLoading(true);
     try {
-      const [mangaRes, animeRes, novelRes, userRes, hentaiRes] = await Promise.allSettled([
-        searchManga(q, 12),
-        searchAnime(q),
-        searchNovels(q),
-        searchUsersByUsername(q, 12),
-        allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
-      ]);
+      const [mangaRes, animeRes, novelRes, userRes, manhwaRes, hentaiRes] =
+        await Promise.allSettled([
+          searchManga(q, 12),
+          searchAnime(q),
+          searchNovels(q),
+          searchUsersByUsername(q, 12),
+          // Unconditional: manhwa is SFW, and it carries titles the atsu
+          // catalogue doesn't have at all.
+          searchManhwa(q, 12),
+          allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
+        ]);
 
       const merged: SearchResult[] = [];
 
@@ -171,6 +176,21 @@ export default function SearchTabScreen() {
             });
           });
       }
+      if (manhwaRes.status === 'fulfilled') {
+        manhwaRes.value.slice(0, 10).forEach((item) => {
+          merged.push({
+            key: `manhwa-${item.id}`,
+            title: item.title,
+            cover: item.cover,
+            // Typed as 'manga' so it appears under both the All and Manga
+            // filters; `meta` is what tells the reader where it came from.
+            type: 'manga',
+            meta: 'Manhwa',
+            // Ids carry an `mr:`/`cz:` prefix, so encode before interpolating.
+            navTarget: `/manga/${encodeURIComponent(item.id)}?source=manhwa`,
+          });
+        });
+      }
       if (allowAdult && hentaiRes.status === 'fulfilled') {
         hentaiRes.value.slice(0, 10).forEach((item) => {
           merged.push({
@@ -192,6 +212,7 @@ export default function SearchTabScreen() {
       if (animeRes.status === 'rejected') failed.push('Anime');
       if (novelRes.status === 'rejected') failed.push('Novels');
       if (userRes.status === 'rejected') failed.push('Users');
+      if (manhwaRes.status === 'rejected') failed.push('Manhwa');
       if (allowAdult && hentaiRes.status === 'rejected') failed.push('18+');
       setFailedSources(failed);
 

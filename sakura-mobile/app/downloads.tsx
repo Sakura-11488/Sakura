@@ -53,6 +53,7 @@ import {
   resumeScrapedChapterDownload,
   type OfflineScrapedChapter,
 } from '@/lib/scraped-offline';
+import { SCRAPED_SOURCES, SCRAPED_SOURCE_KEYS } from '@/lib/scraped-sources';
 import { playTap, onTap } from '@/lib/sound';
 
 type DownloadRow =
@@ -108,18 +109,15 @@ export default function DownloadsScreen() {
           data: novel.map((data) => ({ kind: 'novel' as const, data })),
         });
       }
-      const comics = scraped.filter((c) => c.source === 'comics');
-      const hentai = scraped.filter((c) => c.source === 'hentai');
-      if (comics.length) {
+      // One section per scraped source, in registry order, so a new scraper's
+      // downloads can't end up invisible here just because nobody added a
+      // matching filter+push block.
+      for (const key of SCRAPED_SOURCE_KEYS) {
+        const rows = scraped.filter((c) => c.source === key);
+        if (!rows.length) continue;
         next.push({
-          title: 'Comics',
-          data: comics.map((data) => ({ kind: 'scraped' as const, data })),
-        });
-      }
-      if (hentai.length) {
-        next.push({
-          title: '18+',
-          data: hentai.map((data) => ({ kind: 'scraped' as const, data })),
+          title: SCRAPED_SOURCES[key].label,
+          data: rows.map((data) => ({ kind: 'scraped' as const, data })),
         });
       }
       setSections(next);
