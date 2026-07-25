@@ -413,10 +413,52 @@ interface JikanFull {
   genres: { name: string }[];
 }
 
+/**
+ * Jikan allows roughly 3 requests a second and 60 a minute, and returns 429
+ * once you pass that. Requests used to go out unthrottled with no retry, so
+ * opening a detail page while trending or search calls were still in flight
+ * would burst past the limit — and because the caller treats any failure as
+ * "no such anime", a 429 rendered a dead "Could not load anime" page. It looked
+ * random because it depended entirely on what else was loading.
+ *
+ * Requests are serialised through one chain with a minimum gap, and a 429 is
+ * retried rather than reported as missing.
+ */
+const JIKAN_MIN_GAP_MS = 400;
+const JIKAN_MAX_ATTEMPTS = 3;
+let jikanChain: Promise<unknown> = Promise.resolve();
+let jikanLastAt = 0;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function jikanRequest(path: string): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < JIKAN_MAX_ATTEMPTS; attempt += 1) {
+    const gap = JIKAN_MIN_GAP_MS - (Date.now() - jikanLastAt);
+    if (gap > 0) await delay(gap);
+    jikanLastAt = Date.now();
+
+    const res = await fetch(`${JIKAN_API}${path}`);
+    if (res.status === 429) {
+      // Honour Retry-After when present, otherwise back off progressively.
+      const retryAfter = Number(res.headers.get('retry-after')) || 0;
+      await delay(retryAfter > 0 ? retryAfter * 1000 : 1000 * (attempt + 1));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
+    return res.json();
+  }
+  throw new Error('Jikan rate limited');
+}
+
 async function jikanGet(path: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${JIKAN_API}${path}`);
-  if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
-  return res.json();
+  // Queue behind whatever is already in flight so concurrent screens can't
+  // burst. Failures must not break the chain for everyone after them.
+  const next = jikanChain.then(
+    () => jikanRequest(path),
+    () => jikanRequest(path),
+  );
+  jikanChain = next.catch(() => undefined);
+  return next;
 }
 
 function jikanToResult(r: Record<string, unknown>): AnimeResult {
