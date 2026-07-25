@@ -12,6 +12,7 @@ import {
   levelProgress,
   type GamificationState,
 } from '@/lib/gamification';
+import { XP_SWAP_ENABLED } from '@/lib/xp-redeem';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 
 export default function QuestsScreen() {
@@ -148,7 +149,9 @@ export default function QuestsScreen() {
 
             {/* Entry point to the swap — placed under the stats, where the XP
                 total is already on screen and the question "what is this for?"
-                naturally lands. */}
+                naturally lands. Hidden until payouts can actually settle; see
+                XP_SWAP_ENABLED. */}
+            {XP_SWAP_ENABLED ? (
             <TouchableOpacity
               style={s.swapCta}
               activeOpacity={0.88}
@@ -168,6 +171,7 @@ export default function QuestsScreen() {
                 />
               </Svg>
             </TouchableOpacity>
+            ) : null}
 
             <Text style={s.sectionTitle}>Today's Quests</Text>
             {state.quests.map((q) => {

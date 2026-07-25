@@ -18,6 +18,18 @@ import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 export const XP_SAKURA_RATE = 3.19;
 export const XP_REDEEM_MIN = 100;
 
+/**
+ * Whether to surface the swap in the UI.
+ *
+ * Off until a funded payout wallet exists (SAKURA_PAYOUT_SECRET). Swaps queue
+ * correctly without one, but they would never settle — the XP would be spent
+ * against a promise nothing can keep. The screen and the whole path stay built
+ * and reachable by URL; this only controls whether it is advertised.
+ *
+ * Flip to true once a swap has been settled end to end.
+ */
+export const XP_SWAP_ENABLED = false;
+
 export type RedemptionStatus = 'pending' | 'sent' | 'failed';
 
 export interface XpRedemption {
