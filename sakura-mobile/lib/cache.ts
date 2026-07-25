@@ -1,11 +1,11 @@
-import * as FileSystem from 'expo-file-system/legacy';
+import { readStore, writeStore, removeStore } from '@/lib/kv-store';
 
 type CacheRecord = {
   exp: number;
   value: unknown;
 };
 
-const CACHE_FILE = `${FileSystem.documentDirectory}sakura_api_cache.json`;
+const CACHE_FILE = 'sakura_api_cache.json';
 const mem = new Map<string, CacheRecord>();
 let loaded = false;
 let loadingPromise: Promise<void> | null = null;
@@ -19,12 +19,11 @@ async function ensureLoaded() {
   if (loadingPromise) return loadingPromise;
   loadingPromise = (async () => {
     try {
-      const info = await FileSystem.getInfoAsync(CACHE_FILE);
-      if (!info.exists) {
+      const raw = await readStore(CACHE_FILE);
+      if (!raw) {
         loaded = true;
         return;
       }
-      const raw = await FileSystem.readAsStringAsync(CACHE_FILE);
       const parsed = JSON.parse(raw) as Record<string, CacheRecord>;
       const now = Date.now();
       Object.entries(parsed || {}).forEach(([key, rec]) => {
@@ -48,7 +47,7 @@ async function persistAll() {
     mem.forEach((value, key) => {
       if (isFresh(value)) payload[key] = value;
     });
-    await FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(payload));
+    await writeStore(CACHE_FILE, JSON.stringify(payload));
   } catch {
     // Ignore cache write issues to avoid blocking request flow.
   }
@@ -93,9 +92,10 @@ export async function getOrSetCached<T>(
 
 export async function getApiCacheSizeBytes(): Promise<number> {
   try {
-    const info = await FileSystem.getInfoAsync(CACHE_FILE);
-    if (!info.exists) return 0;
-    return ((info as { size?: number }).size ?? 0);
+    const raw = await readStore(CACHE_FILE);
+    // Byte length of the stored payload — equivalent to the old file size, and
+    // the only measure available on web where there is no file to stat.
+    return raw ? new Blob([raw]).size : 0;
   } catch {
     return 0;
   }
@@ -104,7 +104,7 @@ export async function getApiCacheSizeBytes(): Promise<number> {
 export async function clearApiCache(): Promise<void> {
   try {
     mem.clear();
-    await FileSystem.deleteAsync(CACHE_FILE, { idempotent: true });
+    await removeStore(CACHE_FILE);
   } catch {
     // Ignore cache clear failures.
   }

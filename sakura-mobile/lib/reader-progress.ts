@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system/legacy';
+import { readStore, writeStore } from '@/lib/kv-store';
 
 export type ReadingKind = 'manga' | 'novel';
 
@@ -51,7 +51,7 @@ type ProgressStore = {
   manga: Record<string, MangaProgress>;
 };
 
-const FILE = `${FileSystem.documentDirectory}sakura_reader_progress.json`;
+const FILE = 'sakura_reader_progress.json';
 const mem: ProgressStore = { novels: {}, manga: {} };
 let loaded = false;
 const listeners = new Set<() => void>();
@@ -70,9 +70,8 @@ export function subscribeReadingProgress(fn: () => void): () => void {
 async function ensureLoaded() {
   if (loaded) return;
   try {
-    const info = await FileSystem.getInfoAsync(FILE);
-    if (info.exists) {
-      const raw = await FileSystem.readAsStringAsync(FILE);
+    const raw = await readStore(FILE);
+    if (raw) {
       const parsed = JSON.parse(raw) as Partial<ProgressStore>;
       mem.novels = parsed?.novels || {};
       mem.manga = parsed?.manga || {};
@@ -96,7 +95,7 @@ async function ensureLoaded() {
 
 async function persist() {
   try {
-    await FileSystem.writeAsStringAsync(FILE, JSON.stringify(mem));
+    await writeStore(FILE, JSON.stringify(mem));
     notify();
   } catch {
     // no-op
