@@ -296,6 +296,10 @@ export default function ChapterReader() {
   }, [loading, requestedPage, renderedPages.length, jumpToPage]);
 
   pageCountRef.current = renderedPages.length;
+  // Lets the deferred scroll retry below re-find its target by identity rather
+  // than replaying a stale index.
+  const renderedPagesRef = useRef(renderedPages);
+  renderedPagesRef.current = renderedPages;
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     const renderedIndex = Number(viewableItems[0]?.index ?? -1);
@@ -380,23 +384,38 @@ export default function ChapterReader() {
     source,
   ]);
 
+  // Snapshot of what the unmount handler should save, refreshed every render.
+  //
+  // This has to go through a ref. An unmount effect with an empty dep array
+  // closes over the *first* render, where the page list is still empty — so the
+  // previous version's `renderedPages.length > 0` was never true and the save
+  // silently never ran. That is why backing out of a chapter lost your place.
+  // The gamification unmount below already uses this pattern correctly.
+  const progressRef = useRef<Parameters<typeof setMangaReadProgress>[0] | null>(null);
+  const suppressProgressRef = useRef(false);
+  useEffect(() => {
+    suppressProgressRef.current = isHentai;
+    progressRef.current =
+      mangaId && chapterId && renderedPages.length > 0
+        ? {
+            mangaId,
+            chapterId,
+            title: mangaTitle,
+            cover: mangaCover,
+            chapterLabel,
+            page: currentPage + 1,
+            totalPages: renderedPages.length,
+            source: typeof source === 'string' ? source : undefined,
+          }
+        : null;
+  });
+
   useEffect(() => {
     return () => {
       // Never persist 18+ progress or touch the shared reading-activity record
       // (clearing it here would wipe a legitimate manga/comic session).
-      if (isHentai) return;
-      if (mangaId && chapterId && renderedPages.length > 0) {
-        void setMangaReadProgress({
-          mangaId,
-          chapterId,
-          title: mangaTitle,
-          cover: mangaCover,
-          chapterLabel,
-          page: currentPage + 1,
-          totalPages: renderedPages.length,
-          source: typeof source === 'string' ? source : undefined,
-        });
-      }
+      if (suppressProgressRef.current) return;
+      if (progressRef.current) void setMangaReadProgress(progressRef.current);
       endReadingActivity();
     };
   }, []);
@@ -432,16 +451,35 @@ export default function ChapterReader() {
 
   // Switch reading mode in place: remember where you are, flip the mode, then
   // restore that same page once the list has re-laid-out in the new geometry.
+  //
+  // The restore can't be a fixed timer. Flipping the axis re-lays out every row,
+  // and in webtoon mode the target rows have no measured height yet, so a jump
+  // fired 120ms later jumps into unmeasured space, falls through to
+  // onScrollToIndexFailed, and lands *near* the page you were on rather than on
+  // it. Instead, record the target and re-land on it from every layout pass
+  // until the geometry settles.
+  const pendingRestoreRef = useRef<{ page: number; tries: number } | null>(null);
+
   const toggleReadingMode = useCallback(() => {
     const next = readingMode === 'page' ? 'scroll' : 'page';
-    const keepPage = currentPage;
+    pendingRestoreRef.current = { page: currentPage, tries: 0 };
     setReadingMode(next);
     void AppSettings.setMangaReadingMode(next);
     didInitialScroll.current = true; // don't let the initial-scroll effect fight us
-    requestAnimationFrame(() => {
-      setTimeout(() => jumpToPage(keepPage, false), 120);
-    });
-  }, [readingMode, currentPage, jumpToPage]);
+  }, [readingMode, currentPage]);
+
+  const runPendingRestore = useCallback(() => {
+    const pending = pendingRestoreRef.current;
+    if (!pending) return;
+    pending.tries += 1;
+    // Bounded so a chapter that never settles can't retry forever. Each attempt
+    // is just a scroll, so over-trying costs nothing and the last one wins.
+    if (pending.tries > 6) {
+      pendingRestoreRef.current = null;
+      return;
+    }
+    jumpToPage(pending.page, false);
+  }, [jumpToPage]);
 
   const toggleUI = () => {
     const next = !uiVisible;
@@ -536,6 +574,8 @@ export default function ChapterReader() {
         windowSize={5}
         maxToRenderPerBatch={3}
         removeClippedSubviews
+        onLayout={runPendingRestore}
+        onContentSizeChange={runPendingRestore}
         onScrollToIndexFailed={(info) => {
           // Webtoon rows have variable heights and aren't measured yet, so the
           // first jump is only an estimate — land roughly, then retry precisely
@@ -545,9 +585,18 @@ export default function ChapterReader() {
             offset: info.averageItemLength * info.index,
             animated: false,
           });
+          // Retry by page identity, not by replaying the index: the list can be
+          // reordered or replaced in the 350ms gap (switching direction, or a
+          // chapter finishing its load), and a stale index would then scroll to
+          // the wrong page or throw.
+          const targetId = renderedPagesRef.current[info.index]?.id;
           setTimeout(() => {
+            const index = targetId
+              ? renderedPagesRef.current.findIndex((pg) => pg.id === targetId)
+              : info.index;
+            if (index < 0) return; // that page is no longer in the list
             try {
-              flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+              flatListRef.current?.scrollToIndex({ index, animated: false });
             } catch {
               // still unmeasured; the estimate above is close enough
             }
