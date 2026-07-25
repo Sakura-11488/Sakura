@@ -77,7 +77,7 @@ src/lib/sources/atsumaru-source.ts
 src/lib/sources/comics/
 src/plugins/anime.ts
 android/app/src/main/java/com/millw14/sakura/anime/AnimePlugin.kt
-scripts/droplet/
+scripts/droplet/**/node_modules/
 scripts/recover-wallet*.py
 scripts/smoke-sakura-ai*.mjs
 scripts/run-manga-source-bakeoff.mjs

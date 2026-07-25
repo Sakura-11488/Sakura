@@ -1,0 +1,20 @@
+{
+  "name": "sakura-media-ingest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sakura Originals media ingest: authenticated uploads, ffmpeg/sharp thumbnails, automatic manifest.json updates.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bs58": "^6.0.0",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
