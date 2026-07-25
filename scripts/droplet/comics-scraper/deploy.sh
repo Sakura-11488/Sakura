@@ -62,21 +62,35 @@ pm2 startup systemd -u root --hp /root >/dev/null || true
 if [[ -f "$NGINX_SITE" ]] && ! grep -q "location /comics/v1/" "$NGINX_SITE"; then
     log "patching nginx site ($NGINX_SITE) with /comics/v1/ proxy snippet"
     tmp="$(mktemp)"
-    # Insert the snippet *before* the first top-level `}` (the closing brace of
-    # the server block). This keeps the new location {} inside the server {}.
-    awk -v marker="$NGINX_SNIPPET_MARKER" -v snippet="$SCRIPT_DIR/nginx-snippet.conf" '
-        BEGIN { inserted = 0 }
-        {
-            if (!inserted && $0 ~ /^}[[:space:]]*$/) {
-                print marker
-                while ((getline line < snippet) > 0) print line
-                print "# <<< sakura comics scraper <<<"
-                close(snippet)
-                inserted = 1
+    # Insert the snippet before the LAST top-level `}` — the closing brace of
+    # the server block — so the new location {} lands inside server {}.
+    #
+    # Not the *first* such brace: every snippet these deploy scripts add brings
+    # its own column-0 `}`, so once a sibling scraper is installed the first
+    # top-level brace is that sibling's location block, and anchoring there
+    # nests the new location inside it. nginx then refuses to load with
+    # 'location "/x/v1/" is outside location "/y/v1/"'.
+    awk -v marker="$NGINX_SNIPPET_MARKER" \
+        -v closer="# <<< sakura comics scraper <<<" \
+        -v snippet="$SCRIPT_DIR/nginx-snippet.conf" '
+        { lines[NR] = $0; if ($0 ~ /^}[[:space:]]*$/) last = NR }
+        END {
+            if (last == 0) { exit 3 }
+            for (i = 1; i <= NR; i++) {
+                if (i == last) {
+                    print marker
+                    while ((getline line < snippet) > 0) print line
+                    print closer
+                    close(snippet)
+                }
+                print lines[i]
             }
-            print
         }
-    ' "$NGINX_SITE" > "$tmp"
+    ' "$NGINX_SITE" > "$tmp" || {
+        rm -f "$tmp"
+        log "ERROR: no top-level '}' found in $NGINX_SITE — patch it by hand"
+        exit 1
+    }
     mv "$tmp" "$NGINX_SITE"
 fi
 
