@@ -432,27 +432,43 @@ export async function searchManga(query: string, limit = 24): Promise<AtsuItem[]
     `manga:search:${query.trim().toLowerCase()}:${limit}`,
     10 * 60 * 1000,
     async () => {
-      const payload = {
-        page: 0,
-        filter: {
-          search: query.trim(),
-          types: ['Manga', 'Manwha', 'Manhua', 'OEL'],
-          sortBy: 'popularity',
-          showAdult: false,
-          officialTranslation: false,
-        },
-      };
+      // atsu removed its REST search API (`POST /api/explore/filteredView` now
+      // 404s, which silently broke manga search). The site itself queries its
+      // Typesense index through this unauthenticated same-origin proxy, so we
+      // do the same. GET, no body, `page` is 1-based here.
+      const params = new URLSearchParams({
+        q: query.trim(),
+        query_by: 'title,englishTitle,otherNames,authors',
+        query_by_weights: '4,3,2,1',
+        num_typos: '4,3,2,1',
+        include_fields:
+          'id,title,englishTitle,poster,posterSmall,posterMedium,type,isAdult,status,year,mbRating,popularity',
+        filter_by: 'hidden:!=true && isAdult:=false && type:=[Manga,Manwha,Manhua,OEL]',
+        infix: 'off,off,fallback,off', // partial words: "blackfi" -> "God of Blackfield"
+        page: '1',
+        per_page: String(limit),
+      });
+
       try {
-        const res = await atsuFetch('/api/explore/filteredView', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        const res = await atsuFetch(`/collections/manga/documents/search?${params.toString()}`);
+        if (!res.ok) throw new Error(`atsu search ${res.status}`);
         const json = await res.json();
-        const hits = (json.hits || json.items || []) as any[];
-        const items = hits
-          .map((h) => h.document || h)
-          .filter((h): h is AtsuItem => Boolean(h?.id && h?.title))
+        const items = ((json.hits || []) as any[])
+          .map((h) => h.document)
+          .filter((d) => d?.id && (d.title || d.englishTitle))
+          .map(
+            (d): AtsuItem => ({
+              id: d.id,
+              title: d.title || d.englishTitle,
+              // Typesense returns "/static/posters/x.jpg"; absUrl() normalizes
+              // the leading slash and the `static/` prefix. There is no
+              // posterLarge field, so `poster` doubles as the large image.
+              image: d.posterSmall || d.poster,
+              mediumImage: d.posterMedium || d.poster,
+              largeImage: d.poster,
+              type: d.type,
+            }),
+          )
           .slice(0, limit);
         return items.length > 0 ? items : mangaDexSearch(query.trim(), limit);
       } catch {

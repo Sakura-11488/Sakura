@@ -44,6 +44,18 @@ const TAGS = `
 
 let html = fs.readFileSync(indexPath, 'utf8');
 
+// ── Build stamp for the in-app "new version" prompt ────────────────────────
+// Expo fingerprints the JS bundle filename on every export, so that hash IS the
+// build id. Stamp it into the page and publish it at /app/version.json; the web
+// app polls that file and offers a hard refresh when it no longer matches the
+// build the tab is running.
+const bundle = (html.match(/index-([a-f0-9]{16,})\.js/) || [])[1] || String(Date.now());
+fs.writeFileSync(
+  path.join(root, 'dist', 'version.json'),
+  JSON.stringify({ build: bundle, builtAt: new Date().toISOString() }) + '\n',
+);
+const BUILD_STAMP = `\n    <script>window.__SAKURA_BUILD__=${JSON.stringify(bundle)};</script>`;
+
 if (html.includes('rel="manifest"')) {
   console.log('[inject-pwa-tags] Already present — nothing to do.');
   process.exit(0);
@@ -54,6 +66,6 @@ if (!html.includes('</head>')) {
   process.exit(1);
 }
 
-html = html.replace('</head>', `${TAGS}</head>`);
+html = html.replace('</head>', `${TAGS}${BUILD_STAMP}\n  </head>`);
 fs.writeFileSync(indexPath, html);
 console.log('[inject-pwa-tags] Injected PWA + iOS head tags into dist/index.html');

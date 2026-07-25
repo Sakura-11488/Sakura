@@ -88,6 +88,8 @@ export default function SearchTabScreen() {
   const [filter, setFilter] = useState<Filter>('All');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Sources whose request rejected on the last search (outage, not "no match"). */
+  const [failedSources, setFailedSources] = useState<string[]>([]);
   const [messagingUser, setMessagingUser] = useState<string | null>(null);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
 
@@ -182,9 +184,21 @@ export default function SearchTabScreen() {
         });
       }
 
+      // A source that is DOWN must not look like "this doesn't exist". Track
+      // which ones rejected so the UI can say so instead of rendering the same
+      // "No results" state for an outage as for a genuinely empty search.
+      const failed: string[] = [];
+      if (mangaRes.status === 'rejected') failed.push('Manga');
+      if (animeRes.status === 'rejected') failed.push('Anime');
+      if (novelRes.status === 'rejected') failed.push('Novels');
+      if (userRes.status === 'rejected') failed.push('Users');
+      if (allowAdult && hentaiRes.status === 'rejected') failed.push('18+');
+      setFailedSources(failed);
+
       setResults(merged);
     } catch {
       setResults([]);
+      setFailedSources(['Search']);
     } finally {
       setLoading(false);
     }
@@ -537,7 +551,20 @@ export default function SearchTabScreen() {
                   );
                 }}
                 ListEmptyComponent={
-                  <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
+                  failedSources.length ? (
+                    // An outage must read as an outage. Saying "no results"
+                    // when the source is down tells users the title doesn't
+                    // exist, which is how a broken backend gets reported as
+                    // missing content.
+                    <EmptyState
+                      compact
+                      title="Couldn’t reach some sources"
+                      subtitle={`${failedSources.join(', ')} didn’t respond. Check your connection and try again.`}
+                      style={s.empty}
+                    />
+                  ) : (
+                    <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
+                  )
                 }
               />
             )}

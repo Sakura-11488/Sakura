@@ -29,6 +29,7 @@ import PriceAlertBridge from '@/components/notifications/PriceAlertBridge';
 import OtaUpdateBridge from '@/components/OtaUpdateBridge';
 import AppUpdateBridge from '@/components/AppUpdateBridge';
 import InstallAppBanner from '@/components/InstallAppBanner';
+import WebUpdateBanner from '@/components/WebUpdateBanner';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
 import { TransferCelebrationProvider } from '@/lib/wallet/transfer-celebration';
@@ -169,6 +170,7 @@ export default function RootLayout() {
           <OtaUpdateBridge />
           <AppUpdateBridge />
           <InstallAppBanner />
+          <WebUpdateBanner />
           <CloudSyncBridge />
           <PriceAlertBridge />
           <FloatingTradeWidget />
