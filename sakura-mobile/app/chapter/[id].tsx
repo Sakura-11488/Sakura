@@ -282,6 +282,10 @@ export default function ChapterReader() {
         setSegments([
           buildSegment({
             chapterId: entryChapterId,
+            // Placeholders: the route carries an opaque chapter id, so the real
+            // number and position aren't known until the chapter list resolves.
+            // The reconcile effect below fills them in. Nothing may infer a
+            // neighbour from orderIndex before then.
             chapterNumber: Number(entryChapterId) || 0,
             chapterLabel: routeChapterLabel,
             orderIndex: 0,
@@ -411,6 +415,35 @@ export default function ChapterReader() {
 
   const orderedChaptersRef = useRef(orderedChapters);
   orderedChaptersRef.current = orderedChapters;
+
+  // Place the resident segments within the series once the list arrives.
+  //
+  // The entry segment is built as soon as its pages load, which is before the
+  // chapter list resolves, so its orderIndex starts as a placeholder. Anything
+  // that reasons about position — segment sorting, eviction, and whether an
+  // earlier chapter exists — needs the real index, not the placeholder. Also
+  // adopts the list's real chapter number and title, since the route only
+  // carries an opaque id.
+  useEffect(() => {
+    if (orderedChapters.length === 0) return;
+    setSegments((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map((segment) => {
+        const at = orderedChapters.findIndex((c) => c.id === segment.chapterId);
+        if (at < 0 || at === segment.orderIndex) return segment;
+        changed = true;
+        const chapter = orderedChapters[at];
+        return {
+          ...segment,
+          orderIndex: at,
+          chapterNumber: chapter.number,
+          chapterLabel: chapter.title || segment.chapterLabel,
+        };
+      });
+      return changed ? next.sort((a, b) => a.orderIndex - b.orderIndex) : prev;
+    });
+  }, [orderedChapters]);
   /** Chapters currently being fetched, so proximity and onEndReached don't race. */
   const loadingNeighborRef = useRef<Set<string>>(new Set());
 
@@ -428,7 +461,15 @@ export default function ChapterReader() {
     if (resident.length === 0) return;
 
     if (!continuousRef.current) return;
-    const lastOrderIndex = Math.max(...resident.map((s) => s.orderIndex));
+    // Resolve position by chapter id, never by the stored orderIndex. The entry
+    // segment is created before the chapter list has loaded, so its index is a
+    // placeholder until reconciled — trusting it appended the series' second
+    // chapter after whatever you actually opened.
+    const positions = resident
+      .map((s) => list.findIndex((c) => c.id === s.chapterId))
+      .filter((i) => i >= 0);
+    if (positions.length === 0) return; // this chapter isn't in the list; don't guess
+    const lastOrderIndex = Math.max(...positions);
     const next = list[lastOrderIndex + 1];
     if (!next) return; // end of the series
     if (resident.some((s) => s.chapterId === next.id)) return;
@@ -527,7 +568,12 @@ export default function ChapterReader() {
     const resident = segmentsRef.current;
     if (list.length === 0 || resident.length === 0) return;
 
-    const firstOrderIndex = Math.min(...resident.map((s) => s.orderIndex));
+    // By id, for the same reason as ensureNextChapter above.
+    const positions = resident
+      .map((s) => list.findIndex((c) => c.id === s.chapterId))
+      .filter((i) => i >= 0);
+    if (positions.length === 0) return;
+    const firstOrderIndex = Math.min(...positions);
     const prev = list[firstOrderIndex - 1];
     if (!prev) return; // start of the series
     if (resident.some((s) => s.chapterId === prev.id)) return;
