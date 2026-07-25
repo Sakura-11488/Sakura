@@ -12,6 +12,15 @@ import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { loadChapterPages } from '@/lib/chapter-pages';
+import {
+  buildSegment,
+  flattenSegments,
+  segmentBounds,
+  findSegment,
+  rowIndexFor,
+  type ChapterSegment,
+  type ReaderRow,
+} from '@/lib/reader-segments';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
 import { setMangaReadProgress } from '@/lib/reader-progress';
@@ -76,15 +85,17 @@ export default function ChapterReader() {
   const [accessChecked, setAccessChecked] = useState(!isGated);
   const [hasAccess, setHasAccess] = useState(!isGated);
   const [passExpiry, setPassExpiry] = useState<Date | null>(null);
-  const flatListRef = useRef<FlatList<{ id: string; url: string }>>(null);
+  const flatListRef = useRef<FlatList<ReaderRow>>(null);
   const indicatorRef = useRef<ScrollView>(null);
   const didInitialScroll = useRef(false);
-  const pageCountRef = useRef(0);
-  const isRtlRef = useRef(false);
-  const [pages, setPages] = useState<{ id: string; url: string }[]>([]);
+  // One entry per chapter resident in this session, always in reading order.
+  const [segments, setSegments] = useState<ChapterSegment[]>([]);
   const [loading, setLoading] = useState(true);
   const [uiVisible, setUiVisible] = useState(true);
-  const [currentPage, setCurrentPage] = useState(0);
+  // Which chapter the reader is looking at right now — not necessarily the one
+  // the route was opened on, once reading has crossed a boundary.
+  const [activeChapterId, setActiveChapterId] = useState('');
+  const [activePageIndex, setActivePageIndex] = useState(0);
   const [readingMode, setReadingMode] = useState<'page' | 'scroll'>('scroll');
   const [readDirection, setReadDirection] = useState<'ltr' | 'rtl'>('ltr');
   // Real per-page aspect ratios (height/width), filled in as each image loads so
@@ -106,9 +117,21 @@ export default function ChapterReader() {
 
   const tildeIdx = (id || '').indexOf('~');
   const mangaId = tildeIdx >= 0 ? id!.slice(0, tildeIdx) : '';
-  const chapterId = tildeIdx >= 0 ? id!.slice(tildeIdx + 1) : '';
+  // The chapter the route opened on. Deliberately never reassigned: it is a
+  // dependency of the load effect, so making it follow the reader would re-fire
+  // that effect at every boundary and wipe the session back to one chapter.
+  const entryChapterId = tildeIdx >= 0 ? id!.slice(tildeIdx + 1) : '';
   const parsedRequested = Number(p);
   const requestedPage = Number.isFinite(parsedRequested) && parsedRequested > 0 ? parsedRequested : 1;
+  // Declared here rather than beside the other display strings because the page
+  // load effect lists it as a dependency, and a dependency array is evaluated
+  // during render — a later `const` would be in its temporal dead zone.
+  const routeChapterLabel =
+    typeof chapter === 'string' && chapter
+      ? chapter
+      : entryChapterId
+        ? `Chapter ${entryChapterId}`
+        : 'Chapter';
 
   useEffect(() => {
     AppSettings.getMangaReadingMode()
@@ -120,16 +143,41 @@ export default function ChapterReader() {
   }, []);
 
   const isRtlPageMode = readingMode === 'page' && readDirection === 'rtl';
-  isRtlRef.current = isRtlPageMode;
-  const renderedPages = useMemo(
-    () => (isRtlPageMode ? [...pages].reverse() : pages),
-    [isRtlPageMode, pages],
-  );
 
-  const mapSourceToRenderedIndex = (sourceIndex: number, total: number) => {
-    if (!isRtlPageMode) return sourceIndex;
-    return total - 1 - sourceIndex;
-  };
+  // Rows are ALWAYS in reading order; right-to-left is a visual mirror applied
+  // at render time (see the scaleX transforms below). The list used to reverse
+  // the array instead, which cannot survive a second chapter: it would reverse
+  // the whole book rather than each chapter, and it would swap the meaning of
+  // append and prepend so "next chapter" became the index-shifting path.
+  const rows = useMemo(
+    // Dividers only in webtoon mode — getItemLayout in paged mode assumes every
+    // row is exactly one screen wide, and a shorter row desynchronises it.
+    () => flattenSegments(segments, readingMode === 'scroll'),
+    [segments, readingMode],
+  );
+  const bounds = useMemo(() => segmentBounds(rows), [rows]);
+  const activeSegment = useMemo(
+    () => findSegment(segments, activeChapterId) ?? segments[0],
+    [segments, activeChapterId],
+  );
+  const activeTotalPages = activeSegment?.pages.length ?? 0;
+
+  const mangaTitle = typeof title === 'string' ? title : 'Manga';
+  const mangaCover = typeof cover === 'string' ? cover : undefined;
+  // Label of the chapter actually on screen. Falls back to the route's label,
+  // which is only correct while the reader is still on the chapter it opened.
+  // Declared up here because effects below list it as a dependency, and
+  // dependency arrays are evaluated during render.
+  const chapterLabel = activeSegment?.chapterLabel ?? routeChapterLabel;
+
+  // Assigned during render so the useRef-held viewability callback — which
+  // cannot close over state — always reads current values.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const boundsRef = useRef(bounds);
+  boundsRef.current = bounds;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
 
   // Pass gating — verify entitlement before loading the latest chapters.
   useEffect(() => {
@@ -175,7 +223,7 @@ export default function ChapterReader() {
   );
 
   useEffect(() => {
-    if (!mangaId || !chapterId) {
+    if (!mangaId || !entryChapterId) {
       setLoading(false);
       return;
     }
@@ -192,12 +240,27 @@ export default function ChapterReader() {
         // store, so the route's `offline` param is no longer consulted here.
         // That also means a chapter opened from Continue Reading — which never
         // passes the param — now reads from disk instead of refetching.
-        const { urls } = await loadChapterPages({ contentId: mangaId, chapterId, source });
-        if (!cancelled) {
-          setPages(urls.map((url, i) => ({ id: `page-${i}`, url })).filter((pg) => pg.url));
-        }
+        const { urls, origin } = await loadChapterPages({
+          contentId: mangaId,
+          chapterId: entryChapterId,
+          source,
+        });
+        if (cancelled) return;
+        // Opening a chapter always resets the session to just that chapter;
+        // neighbours are attached afterwards as the reader approaches them.
+        setSegments([
+          buildSegment({
+            chapterId: entryChapterId,
+            chapterNumber: Number(entryChapterId) || 0,
+            chapterLabel: routeChapterLabel,
+            orderIndex: 0,
+            origin,
+            urls,
+          }),
+        ]);
+        setActiveChapterId(entryChapterId);
       } catch {
-        if (!cancelled) setPages([]);
+        if (!cancelled) setSegments([]);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -206,90 +269,135 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, chapterId, source, isGated, hasAccess]);
+  }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess]);
 
   const uiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
 
   useEffect(() => {
-    if (loading || renderedPages.length === 0) return;
+    if (loading || activeTotalPages === 0) return;
     // Adult reading is never surfaced in Continue Reading or lock-screen
     // activity (it would leak past the settings toggle and the reopen path has
     // no source). Scraped-but-SFW sources like manhwa are surfaced normally.
     if (isAdult) return;
-    const pageNumber = currentPage + 1;
-    const total = renderedPages.length;
+    const pageNumber = activePageIndex + 1;
+    const total = activeTotalPages;
     upsertReadingActivity(
       {
         title: 'Manga Reader',
-        subtitle: chapterId ? `Chapter ${chapterId}` : 'Reading chapter',
+        subtitle: chapterLabel,
         progressText: `${pageNumber}/${total}`,
         progressPercent: total > 0 ? pageNumber / total : 0,
         kind: 'manga',
       },
-      id
-        ? `sakura://chapter/${id}?p=${pageNumber}` +
-          (source ? `&source=${source}` : '') +
-          (offline === '1' ? '&offline=1' : '')
+      // Deep-links back to the chapter being read, which may not be the one the
+      // route was opened on.
+      mangaId && activeChapterId
+        ? `sakura://chapter/${mangaId}~${activeChapterId}?p=${pageNumber}` +
+          (source ? `&source=${source}` : '')
         : undefined,
     );
-  }, [chapterId, currentPage, id, loading, renderedPages.length, isAdult, source, offline]);
+  }, [
+    activeChapterId,
+    activePageIndex,
+    activeTotalPages,
+    chapterLabel,
+    mangaId,
+    loading,
+    isAdult,
+    source,
+  ]);
 
   useEffect(() => {
+    // Only when the route itself changes — never when a neighbouring chapter
+    // joins the session, which would re-run the initial jump mid-read.
     didInitialScroll.current = false;
-  }, [mangaId, chapterId]);
+  }, [mangaId, entryChapterId]);
 
-  const jumpToPage = useCallback(
-    (sourceIndex: number, animated = false) => {
-      if (renderedPages.length === 0) return;
-      const clamped = Math.min(Math.max(sourceIndex, 0), renderedPages.length - 1);
-      const renderedIdx = mapSourceToRenderedIndex(clamped, renderedPages.length);
+  /** Scroll to a flattened row index. No RTL mapping — the list is mirrored. */
+  const jumpToRow = useCallback(
+    (rowIndex: number, animated = false) => {
+      const total = rowsRef.current.length;
+      if (total === 0) return;
+      const index = Math.min(Math.max(rowIndex, 0), total - 1);
       if (readingMode === 'page') {
         // Uniform page width, so offset math is exact.
-        flatListRef.current?.scrollToOffset({ offset: SCREEN_WIDTH * renderedIdx, animated });
+        flatListRef.current?.scrollToOffset({ offset: SCREEN_WIDTH * index, animated });
       } else {
         // Webtoon mode has variable page heights — let FlatList resolve the
         // index itself (onScrollToIndexFailed covers unmeasured items).
-        flatListRef.current?.scrollToIndex({ index: renderedIdx, animated });
+        flatListRef.current?.scrollToIndex({ index, animated });
       }
-      setCurrentPage(clamped);
     },
-    [isRtlPageMode, readingMode, renderedPages.length],
+    [readingMode],
+  );
+
+  /**
+   * Scroll to a page within a specific chapter.
+   *
+   * Anchoring on chapter + page rather than a flat index is what lets a restore
+   * survive a neighbouring chapter being attached mid-flight; a raw index would
+   * point somewhere else the moment the list grew.
+   */
+  const jumpToChapterPage = useCallback(
+    (chapterId: string, pageIndex: number, animated = false) => {
+      const rowIndex = rowIndexFor(boundsRef.current, chapterId, pageIndex);
+      if (rowIndex < 0) return;
+      jumpToRow(rowIndex, animated);
+      setActiveChapterId(chapterId);
+      setActivePageIndex(pageIndex);
+    },
+    [jumpToRow],
   );
 
   useEffect(() => {
-    if (loading || renderedPages.length === 0 || didInitialScroll.current) return;
-    const sourceTarget = Math.min(Math.max(requestedPage - 1, 0), renderedPages.length - 1);
+    if (loading || rows.length === 0 || didInitialScroll.current) return;
+    const target = Math.min(Math.max(requestedPage - 1, 0), Math.max(activeTotalPages - 1, 0));
     requestAnimationFrame(() => {
-      jumpToPage(sourceTarget, false);
+      jumpToChapterPage(entryChapterId, target, false);
       didInitialScroll.current = true;
     });
-  }, [loading, requestedPage, renderedPages.length, jumpToPage]);
-
-  pageCountRef.current = renderedPages.length;
-  // Lets the deferred scroll retry below re-find its target by identity rather
-  // than replaying a stale index.
-  const renderedPagesRef = useRef(renderedPages);
-  renderedPagesRef.current = renderedPages;
+  }, [loading, requestedPage, rows.length, activeTotalPages, entryChapterId, jumpToChapterPage]);
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-    const renderedIndex = Number(viewableItems[0]?.index ?? -1);
-    if (renderedIndex < 0) return;
-    const total = pageCountRef.current;
-    if (total === 0) return;
-    const sourceIndex = isRtlRef.current ? total - 1 - renderedIndex : renderedIndex;
-    if (sourceIndex >= 0) setCurrentPage(sourceIndex);
+    // Reads refs only: this callback is held in a useRef and can never see
+    // fresh state through a closure.
+    const first = viewableItems.find((v) => v.index != null);
+    const index = Number(first?.index ?? -1);
+    if (index < 0) return;
+    const row = rowsRef.current[index];
+    if (!row) return;
+    setActiveChapterId(row.chapterId);
+    // A divider carries no page of its own; the chapter change is the signal.
+    if (row.kind === 'page') setActivePageIndex(row.pageIndex);
   }).current;
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
 
   const renderPage = useCallback(
-    ({ item }: { item: { id: string; url: string } }) => {
+    ({ item }: { item: ReaderRow }) => {
+      if (item.kind === 'marker') {
+        // A labelled hairline, not a card: the ask was that crossing into the
+        // next chapter shouldn't feel like a stop, while still saying where you
+        // are. Only ever rendered in webtoon mode.
+        return (
+          <View style={styles.chapterDivider}>
+            <View style={styles.chapterDividerRule} />
+            <Text style={styles.chapterDividerLabel}>{item.label}</Text>
+            <View style={styles.chapterDividerRule} />
+          </View>
+        );
+      }
       // Paged mode: one full screen per page, letterboxed so the whole page fits.
       if (readingMode === 'page') {
         return (
           <Image
             source={{ uri: item.url }}
-            style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT }}
+            // Un-mirrors the list's scaleX in RTL so the artwork reads the right
+            // way round while the geometry stays left-to-right.
+            style={[
+              { width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
+              isRtlPageMode && styles.mirrored,
+            ]}
             contentFit="contain"
             transition={0}
             recyclingKey={item.id}
@@ -311,43 +419,41 @@ export default function ChapterReader() {
         />
       );
     },
-    [readingMode, pageRatios, handlePageLoad],
+    [readingMode, isRtlPageMode, pageRatios, handlePageLoad],
   );
 
-  const mangaTitle = typeof title === 'string' ? title : 'Manga';
-  const mangaCover = typeof cover === 'string' ? cover : undefined;
-  const chapterLabel =
-    typeof chapter === 'string' && chapter
-      ? chapter
-      : chapterId
-        ? `Chapter ${chapterId}`
-        : 'Chapter';
 
   useEffect(() => {
-    if (!mangaId || !chapterId || renderedPages.length === 0) return;
+    if (!mangaId || !activeChapterId || activeTotalPages === 0) return;
     // Adult reading progress is never persisted (keeps it out of Continue
     // Reading). Manhwa and comics are persisted like ordinary manga.
     if (isAdult) return;
-    const page = currentPage + 1;
-    if (page < 2 && renderedPages.length > 3) return;
+    const page = activePageIndex + 1;
+    // A glance at page 1 shouldn't overwrite real progress — but only while
+    // still on the chapter the route opened. Once reading has crossed into a
+    // new chapter, its page 1 is a genuine position and must be saved at once,
+    // or backing out right after a boundary would resume at the old chapter.
+    const stillOnEntryChapter = activeChapterId === entryChapterId;
+    if (stillOnEntryChapter && page < 2 && activeTotalPages > 3) return;
     const t = setTimeout(() => {
       void setMangaReadProgress({
         mangaId,
-        chapterId,
+        chapterId: activeChapterId,
         title: mangaTitle,
         cover: mangaCover,
         chapterLabel,
         page,
-        totalPages: renderedPages.length,
+        totalPages: activeTotalPages,
         source: typeof source === 'string' ? source : undefined,
       });
     }, 400);
     return () => clearTimeout(t);
   }, [
     mangaId,
-    chapterId,
-    currentPage,
-    renderedPages.length,
+    activeChapterId,
+    entryChapterId,
+    activePageIndex,
+    activeTotalPages,
     mangaTitle,
     mangaCover,
     chapterLabel,
@@ -367,15 +473,15 @@ export default function ChapterReader() {
   useEffect(() => {
     suppressProgressRef.current = isAdult;
     progressRef.current =
-      mangaId && chapterId && renderedPages.length > 0
+      mangaId && activeChapterId && activeTotalPages > 0
         ? {
             mangaId,
-            chapterId,
+            chapterId: activeChapterId,
             title: mangaTitle,
             cover: mangaCover,
             chapterLabel,
-            page: currentPage + 1,
-            totalPages: renderedPages.length,
+            page: activePageIndex + 1,
+            totalPages: activeTotalPages,
             source: typeof source === 'string' ? source : undefined,
           }
         : null;
@@ -391,34 +497,71 @@ export default function ChapterReader() {
     };
   }, []);
 
-  // ── Reading gamification: report the read on exit (dwell + completion). ──
-  const gamStartRef = useRef(Date.now());
-  const gamPageRef = useRef(0);
-  const gamTotalRef = useRef(0);
+  // ── Reading gamification: one event per chapter actually read. ──
+  //
+  // Tracked per chapter rather than once for the whole session. Reading five
+  // chapters in one sitting is now normal, and a single exit event would credit
+  // the reader for one — losing four chapters of XP and streak progress.
+  // Everything is ref-held so the unmount handler can see it.
+  type ChapterStat = { startedAt: number; maxPage: number; total: number };
+  const chapterStatsRef = useRef<Map<string, ChapterStat>>(new Map());
+  const emittedRef = useRef<Set<string>>(new Set());
+  const isAdultRef = useRef(isAdult);
+  isAdultRef.current = isAdult;
+  const mangaIdRef = useRef(mangaId);
+  mangaIdRef.current = mangaId;
+
   useEffect(() => {
-    gamStartRef.current = Date.now();
-  }, [chapterId]);
-  useEffect(() => {
-    gamPageRef.current = currentPage + 1;
-    gamTotalRef.current = renderedPages.length;
+    if (!activeChapterId || activeTotalPages === 0) return;
+    const stats = chapterStatsRef.current;
+    const existing = stats.get(activeChapterId);
+    if (!existing) {
+      stats.set(activeChapterId, {
+        startedAt: Date.now(),
+        maxPage: activePageIndex + 1,
+        total: activeTotalPages,
+      });
+      return;
+    }
+    // Furthest page reached, not the current one — scrolling back up must not
+    // reduce how much of the chapter counts as read.
+    existing.maxPage = Math.max(existing.maxPage, activePageIndex + 1);
+    existing.total = activeTotalPages;
   });
+
+  const flushGamification = useCallback((chapterId: string) => {
+    if (isAdultRef.current || !mangaIdRef.current || !chapterId) return;
+    if (emittedRef.current.has(chapterId)) return;
+    const stat = chapterStatsRef.current.get(chapterId);
+    if (!stat || stat.total <= 0) return;
+    emittedRef.current.add(chapterId);
+    const progress = Math.min(1, stat.maxPage / stat.total);
+    void recordReadingEvent({
+      kind: 'manga',
+      contentId: mangaIdRef.current,
+      chapterId,
+      seriesId: mangaIdRef.current,
+      progress,
+      dwellMs: Date.now() - stat.startedAt,
+      completed: progress >= 0.9,
+    });
+  }, []);
+
+  // Flush the chapter just left as soon as the reader crosses a boundary, so a
+  // long session reports as it goes rather than all at once on exit.
+  const prevActiveChapterRef = useRef('');
+  useEffect(() => {
+    const previous = prevActiveChapterRef.current;
+    if (previous && previous !== activeChapterId) flushGamification(previous);
+    prevActiveChapterRef.current = activeChapterId;
+  }, [activeChapterId, flushGamification]);
+
   useEffect(() => {
     return () => {
-      if (isAdult || !mangaId || !chapterId) return;
-      const total = gamTotalRef.current;
-      if (total <= 0) return;
-      const progress = Math.min(1, gamPageRef.current / total);
-      void recordReadingEvent({
-        kind: 'manga',
-        contentId: mangaId,
-        chapterId,
-        seriesId: mangaId,
-        progress,
-        dwellMs: Date.now() - gamStartRef.current,
-        completed: progress >= 0.9,
-      });
+      // Whatever chapter is still open on the way out.
+      flushGamification(prevActiveChapterRef.current);
     };
-  }, [mangaId, chapterId, isAdult]);
+  }, [flushGamification]);
 
   // Switch reading mode in place: remember where you are, flip the mode, then
   // restore that same page once the list has re-laid-out in the new geometry.
@@ -429,15 +572,25 @@ export default function ChapterReader() {
   // onScrollToIndexFailed, and lands *near* the page you were on rather than on
   // it. Instead, record the target and re-land on it from every layout pass
   // until the geometry settles.
-  const pendingRestoreRef = useRef<{ page: number; tries: number } | null>(null);
+  // The anchor is a chapter plus a page, never a flat row index, so a
+  // neighbouring chapter attaching mid-restore cannot redirect it.
+  const pendingRestoreRef = useRef<{
+    chapterId: string;
+    page: number;
+    tries: number;
+  } | null>(null);
 
   const toggleReadingMode = useCallback(() => {
     const next = readingMode === 'page' ? 'scroll' : 'page';
-    pendingRestoreRef.current = { page: currentPage, tries: 0 };
+    pendingRestoreRef.current = {
+      chapterId: activeChapterId,
+      page: activePageIndex,
+      tries: 0,
+    };
     setReadingMode(next);
     void AppSettings.setMangaReadingMode(next);
     didInitialScroll.current = true; // don't let the initial-scroll effect fight us
-  }, [readingMode, currentPage]);
+  }, [readingMode, activeChapterId, activePageIndex]);
 
   const runPendingRestore = useCallback(() => {
     const pending = pendingRestoreRef.current;
@@ -449,8 +602,8 @@ export default function ChapterReader() {
       pendingRestoreRef.current = null;
       return;
     }
-    jumpToPage(pending.page, false);
-  }, [jumpToPage]);
+    jumpToChapterPage(pending.chapterId, pending.page, false);
+  }, [jumpToChapterPage]);
 
   const toggleUI = () => {
     const next = !uiVisible;
@@ -459,10 +612,10 @@ export default function ChapterReader() {
   };
 
   useEffect(() => {
-    if (!indicatorRef.current || pages.length === 0) return;
-    const x = currentPage * THUMB_STEP - SCREEN_WIDTH / 2 + THUMB_W / 2 + 12;
+    if (!indicatorRef.current || activeTotalPages === 0) return;
+    const x = activePageIndex * THUMB_STEP - SCREEN_WIDTH / 2 + THUMB_W / 2 + 12;
     indicatorRef.current.scrollTo({ x: Math.max(0, x), animated: false });
-  }, [currentPage, pages.length]);
+  }, [activePageIndex, activeTotalPages]);
 
   if (isGated && accessChecked && !hasAccess) {
     return (
@@ -514,7 +667,7 @@ export default function ChapterReader() {
     );
   }
 
-  if (renderedPages.length === 0) {
+  if (rows.length === 0) {
     return (
       <View style={[styles.screen, styles.center]}>
         <StatusBar hidden />
@@ -531,7 +684,12 @@ export default function ChapterReader() {
       <StatusBar hidden />
       <FlatList
         ref={flatListRef}
-        data={renderedPages}
+        data={rows}
+        // Mirrors the whole list for right-to-left paged reading; each page
+        // un-mirrors itself in renderPage. This replaces reversing the data,
+        // which cannot express per-chapter direction once a session holds more
+        // than one chapter.
+        style={isRtlPageMode ? styles.mirrored : undefined}
         keyExtractor={(p) => p.id}
         // Only valid in paged mode (uniform width). Webtoon pages have their own
         // heights, so FlatList must measure them instead of assuming a constant.
@@ -565,10 +723,10 @@ export default function ChapterReader() {
           // reordered or replaced in the 350ms gap (switching direction, or a
           // chapter finishing its load), and a stale index would then scroll to
           // the wrong page or throw.
-          const targetId = renderedPagesRef.current[info.index]?.id;
+          const targetId = rowsRef.current[info.index]?.id;
           setTimeout(() => {
             const index = targetId
-              ? renderedPagesRef.current.findIndex((pg) => pg.id === targetId)
+              ? rowsRef.current.findIndex((pg) => pg.id === targetId)
               : info.index;
             if (index < 0) return; // that page is no longer in the list
             try {
@@ -588,7 +746,11 @@ export default function ChapterReader() {
         <TouchableOpacity onPress={onTap(() => router.back())} style={styles.backBtn}>
           <BackIcon />
         </TouchableOpacity>
-        <Text style={styles.pageCount}>{currentPage + 1} / {renderedPages.length}</Text>
+        {/* Counts within the chapter on screen, not across the whole session —
+            "page 14 of 3200" would be meaningless once neighbours attach. */}
+        <Text style={styles.pageCount}>
+          {activePageIndex + 1} / {activeTotalPages}
+        </Text>
         {/* Switch webtoon <-> paged without leaving the chapter. Keeps your
             place across the switch and persists as the new default. */}
         <TouchableOpacity onPress={onTap(toggleReadingMode)} style={styles.modeBtn}>
@@ -599,7 +761,9 @@ export default function ChapterReader() {
       </Animated.View>
 
       {/* Page indicator strip — page/swipe mode only */}
-      {readingMode === 'page' && pages.length > 0 && (
+      {/* Scoped to the active chapter: a strip spanning every resident chapter
+          would be thousands of un-virtualised thumbnails. */}
+      {readingMode === 'page' && activeTotalPages > 0 && (
         <Animated.View
           style={[styles.indicatorWrap, { bottom: insets.bottom + 8 }, uiStyle]}
           pointerEvents={uiVisible ? 'auto' : 'none'}
@@ -610,13 +774,13 @@ export default function ChapterReader() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.indicatorList}
           >
-            {pages.map((page, i) => {
-              const active = i === currentPage;
+            {(activeSegment?.pages ?? []).map((page, i) => {
+              const active = i === activePageIndex;
               return (
                 <TouchableOpacity
                   key={page.id}
                   activeOpacity={0.75}
-                  onPress={() => jumpToPage(i, false)}
+                  onPress={() => jumpToChapterPage(page.chapterId, i, false)}
                 >
                   <Image
                     source={{ uri: page.url }}
@@ -636,6 +800,24 @@ export default function ChapterReader() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
+  /** Applied to the list and re-applied per page, so RTL flips geometry only. */
+  mirrored: { transform: [{ scaleX: -1 }] },
+  chapterDivider: {
+    width: SCREEN_WIDTH,
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 32,
+    backgroundColor: '#0A0A0A',
+  },
+  chapterDividerRule: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.18)' },
+  chapterDividerLabel: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 12,
+    fontWeight: FontWeight.semibold,
+  },
   topOverlay: {
     position: 'absolute',
     top: 0,
