@@ -10,6 +10,9 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useRouter } from 'expo-router';
+// Type-only, so the mutual reference with the source registry is erased at
+// compile time and creates no runtime cycle.
+import type { ScrapedSource } from '@/lib/scraped-sources';
 import { Colors, Radius, FontSize, FontWeight, Shadow } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 
@@ -22,8 +25,12 @@ export interface ContentItem {
   title: string;
   cover: string;
   type: 'anime' | 'manga' | 'novel';
-  /** For manga-type items, which backing source to read from. Defaults to atsu manga. */
-  source?: 'manga' | 'comics' | 'hentai';
+  /**
+   * For manga-type items, which backing source to read from. Defaults to atsu
+   * manga. Widened from the source registry so adding a scraper can't leave a
+   * card silently unable to represent it.
+   */
+  source?: 'manga' | ScrapedSource;
   badge?: string;
   score?: number;
 }

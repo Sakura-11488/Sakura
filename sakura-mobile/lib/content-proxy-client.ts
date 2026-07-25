@@ -1,7 +1,14 @@
 import { supabase } from '@/lib/supabase';
 import { isDropletHost } from './content-hosts';
 
-export type ContentProxySource = 'atsu' | 'comics' | 'hentai' | 'consumet' | 'novel' | 'upstream';
+export type ContentProxySource =
+  | 'atsu'
+  | 'comics'
+  | 'hentai'
+  | 'manhwa'
+  | 'consumet'
+  | 'novel'
+  | 'upstream';
 
 export type ContentProxyRequest = {
   source: ContentProxySource;

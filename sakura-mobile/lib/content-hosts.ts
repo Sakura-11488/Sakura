@@ -12,9 +12,11 @@
  *  - sakura-mobile/ios/Sakura/Info.plist
  *  - sakura-mobile/android/.../network_security_config.xml
  *  - supabase/functions/web-media-proxy + web-content-proxy (or set their
- *    SAKURA_MEDIA_BASE / COMICS_PROXY_BASE / HENTAI_PROXY_BASE / CONSUMET_BASE
- *    secrets)
+ *    SAKURA_MEDIA_BASE / COMICS_PROXY_BASE / HENTAI_PROXY_BASE /
+ *    MANHWA_PROXY_BASE / CONSUMET_BASE secrets)
  *  - scripts/psyop-*.mjs (or set PSYOP_REMOTE)
+ *  - the sakura-web repo's api/media-proxy.js path allowlist (separate repo,
+ *    separate deploy — web images 400 without an entry there)
  */
 
 export const DROPLET_IP = '165.232.83.159';
@@ -30,5 +32,6 @@ export function isDropletHost(hostname: string): boolean {
 export const MEDIA_BASE_DEFAULT = `http://${DROPLET_NIP_HOST}`;
 export const COMICS_PROXY_DEFAULT = `http://${DROPLET_IP}/comics/v1`;
 export const HENTAI_PROXY_DEFAULT = `http://${DROPLET_IP}/hentai/v1`;
+export const MANHWA_PROXY_DEFAULT = `http://${DROPLET_IP}/manhwa/v1`;
 export const CONSUMET_URL_DEFAULT = `http://${DROPLET_NIP_HOST}:3000`;
 export const CONSUMET_URL_LEGACY = `http://${DROPLET_IP}:3000`;

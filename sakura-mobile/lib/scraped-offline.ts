@@ -1,13 +1,16 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { fetchComicPages } from '@/lib/comics';
-import { fetchHentaiPages } from '@/lib/hentai';
+import { SCRAPED_SOURCES, type ScrapedSource } from '@/lib/scraped-sources';
 
-// Offline store for the droplet-scraped image sources (comics + 18+/hentai).
-// Mirrors manga-offline.ts but is keyed by source so a single lib backs both.
-// The chapter record is intentionally shape-compatible with OfflineMangaChapter
-// (same field names) so the manga detail screen can reuse its offlineMap/row UI.
+// Offline store for the droplet-scraped image sources (comics, 18+/hentai and
+// manhwa). Mirrors manga-offline.ts but is keyed by source so a single lib
+// backs all of them. The chapter record is intentionally shape-compatible with
+// OfflineMangaChapter (same field names) so the manga detail screen can reuse
+// its offlineMap/row UI.
 
-export type ScrapedSource = 'comics' | 'hentai';
+// Re-exported so existing importers keep working; the union itself now lives
+// with the source registry, which is what guarantees a new source can't be
+// added without every consumer being forced to handle it.
+export type { ScrapedSource };
 export type OfflineScrapedStatus = 'downloading' | 'paused' | 'ready' | 'error';
 
 export interface OfflineScrapedChapter {
@@ -96,7 +99,7 @@ async function fileHasContent(path: string, minBytes = 100): Promise<boolean> {
 }
 
 function fetchPageUrls(source: ScrapedSource, contentId: string, chapterId: string): Promise<string[]> {
-  return source === 'hentai' ? fetchHentaiPages(contentId, chapterId) : fetchComicPages(contentId, chapterId);
+  return SCRAPED_SOURCES[source].pages(contentId, chapterId);
 }
 
 export function pauseScrapedChapterDownload(source: ScrapedSource, contentId: string, chapterId: string) {

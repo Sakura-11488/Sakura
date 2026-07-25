@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 import { Radius, FontSize, FontWeight, Fonts, Shadow } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { MAX_CAROUSEL_CARD_WIDTH, contentWidth } from '@/constants/layout';
+import type { ScrapedSource } from '@/lib/scraped-sources';
 
 const INFO_H = 72;
 const GAP = 16;
@@ -55,7 +56,7 @@ export interface CarouselItem {
   genres: string[];
   type: 'anime' | 'manga' | 'novel';
   /** For manga-type items, which backing source to read from. Defaults to atsu manga. */
-  source?: 'manga' | 'comics' | 'hentai';
+  source?: 'manga' | ScrapedSource;
 }
 
 // ─── Card ─────────────────────────────────────────────────────────────────────

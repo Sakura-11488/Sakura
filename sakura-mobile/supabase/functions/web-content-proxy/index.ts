@@ -1,7 +1,7 @@
 import { corsHeaders, jsonResponse } from '../_shared/wallet-auth.ts';
 
 type ProxyBody = {
-  source?: 'atsu' | 'comics' | 'hentai' | 'consumet' | 'novel' | 'upstream';
+  source?: 'atsu' | 'comics' | 'hentai' | 'manhwa' | 'consumet' | 'novel' | 'upstream';
   path?: string;
   /** Full URL for upstream source (allowlisted hosts only). */
   url?: string;
@@ -17,9 +17,10 @@ const cors = corsHeaders('POST, OPTIONS');
 const ATSU_BASE = 'https://atsu.moe';
 // Droplet host duplicated here (Deno can't import app lib). Canonical:
 // sakura-mobile/lib/content-hosts.ts. Override via COMICS_PROXY_BASE /
-// HENTAI_PROXY_BASE / CONSUMET_BASE secrets.
+// HENTAI_PROXY_BASE / MANHWA_PROXY_BASE / CONSUMET_BASE secrets.
 const DEFAULT_COMICS_BASE = 'http://165.232.83.159/comics/v1';
 const DEFAULT_HENTAI_BASE = 'http://165.232.83.159/hentai/v1';
+const DEFAULT_MANHWA_BASE = 'http://165.232.83.159/manhwa/v1';
 const DEFAULT_CONSUMET_BASE = 'http://165-232-83-159.nip.io:3000';
 const NOVEL_BASE = 'https://allnovel.org';
 
@@ -45,6 +46,10 @@ function comicsBase(): string {
 
 function hentaiBase(): string {
   return (Deno.env.get('HENTAI_PROXY_BASE') || DEFAULT_HENTAI_BASE).replace(/\/+$/, '');
+}
+
+function manhwaBase(): string {
+  return (Deno.env.get('MANHWA_PROXY_BASE') || DEFAULT_MANHWA_BASE).replace(/\/+$/, '');
 }
 
 function consumetBase(): string {
@@ -111,6 +116,10 @@ Deno.serve(async (req) => {
       const path = payload.path?.trim() ?? '';
       if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);
       targetUrl = buildUrl(hentaiBase(), path, payload.query);
+    } else if (source === 'manhwa') {
+      const path = payload.path?.trim() ?? '';
+      if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);
+      targetUrl = buildUrl(manhwaBase(), path, payload.query);
     } else if (source === 'consumet') {
       const path = payload.path?.trim() ?? '';
       if (!path.startsWith('/')) return jsonResponse(400, { error: 'path must start with /.' }, cors);
