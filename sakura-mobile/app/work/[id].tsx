@@ -15,6 +15,7 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import Svg, { Path } from 'react-native-svg';
 import { onTap } from '@/lib/sound';
+import { formatReleaseDate } from '@/lib/format-release-date';
 import { useTheme } from '@/lib/theme';
 import {
   fetchWorkForReading,
@@ -128,7 +129,9 @@ export default function WorkScreen() {
       gap: 10,
     },
     rowNum: { width: 28, color: colors.textTertiary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-    rowTitle: { flex: 1, color: colors.text, fontSize: FontSize.sm },
+    rowText: { flex: 1, minWidth: 0 },
+    rowTitle: { color: colors.text, fontSize: FontSize.sm },
+    rowDate: { color: colors.textTertiary, fontSize: 10, marginTop: 2 },
     readerText: { color: colors.text, fontSize: 17, lineHeight: 27, padding: Spacing.md },
     page: { width: W, height: W * 1.5, backgroundColor: colors.surfaceSecondary },
     video: { width: W, height: W * 0.5625, backgroundColor: '#000' },
@@ -242,7 +245,14 @@ export default function WorkScreen() {
             releases.map((r) => (
               <TouchableOpacity key={r.id} style={s.row} activeOpacity={0.7} onPress={onTap(() => setSelected(r))}>
                 <Text style={s.rowNum}>{r.sequence_number}</Text>
-                <Text style={s.rowTitle} numberOfLines={1}>{r.title}</Text>
+                {/* Title and date stack, so the row needs a wrapper — it is a
+                    horizontal flex. Unpublished releases have no date. */}
+                <View style={s.rowText}>
+                  <Text style={s.rowTitle} numberOfLines={1}>{r.title}</Text>
+                  {!!formatReleaseDate(r.published_at) && (
+                    <Text style={s.rowDate}>{formatReleaseDate(r.published_at)}</Text>
+                  )}
+                </View>
               </TouchableOpacity>
             ))
           )}

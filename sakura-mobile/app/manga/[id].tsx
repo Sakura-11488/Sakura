@@ -44,6 +44,7 @@ import {
   MangaChapter,
 } from '@/lib/manga';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
+import { formatReleaseDate } from '@/lib/format-release-date';
 import {
   downloadScrapedChapter,
   getScrapedOfflineMap,
@@ -265,6 +266,16 @@ const ChapterRow = memo(function ChapterRow({
   const { colors } = useTheme();
   const [thumbUri, setThumbUri] = useState<string | null>(ch.coverUrl ?? null);
 
+  // "12 pages · Jul 18, 2026", or whichever half exists. Both are optional:
+  // some sources report no page count until a chapter is opened, and
+  // synthesised chapters and offline-rebuilt lists carry no date.
+  const metaLine = [
+    ch.pageCount > 0 ? `${ch.pageCount} pages` : '',
+    formatReleaseDate(ch.createdAt),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   useEffect(() => {
     let cancelled = false;
     if (ch.coverUrl) {
@@ -389,7 +400,10 @@ const ChapterRow = memo(function ChapterRow({
       )}
       <View style={ch_s.info}>
         <Text style={ch_s.title} numberOfLines={1}>{ch.title}</Text>
-        {ch.pageCount > 0 && <Text style={ch_s.sub}>{ch.pageCount} pages</Text>}
+        {/* One line, not two: the row height is fixed by CHAPTER_ITEM_H, which
+            also feeds getItemLayout, so a third line would clip and
+            desynchronise scroll offsets. */}
+        {!!metaLine && <Text style={ch_s.sub}>{metaLine}</Text>}
         {offline?.status === 'downloading' && (
           <Text style={ch_s.dlLabel}>Downloading {Math.round(offline.progress * 100)}% · tap to pause</Text>
         )}

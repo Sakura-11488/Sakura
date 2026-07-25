@@ -237,6 +237,54 @@ function mangareadSlugFromHref(href) {
     return slug;
 }
 
+/**
+ * mangaread's chapter dates, which come in two shapes on the same page.
+ *
+ * Recent rows render a relative phrase ("3 days ago"); older rows render
+ * DD.MM.YYYY ("16.07.2026", "19.01.2023"). Both appear in one response, so
+ * both have to be handled.
+ *
+ * DD.MM.YYYY is DAY FIRST. Reading it month-first silently produces a wrong
+ * date for every chapter whose day is 12 or lower — 05.11.2025 is 5 November,
+ * not 11 May — and nothing downstream would flag it.
+ *
+ * Relative phrases are converted by subtracting from now. Exact for hours,
+ * days and weeks; months and years are approximate by nature, so they land on
+ * a real instant rather than pretending to a precision the source never had.
+ */
+const RELATIVE_UNIT_MS = {
+    second: 1000,
+    minute: 60 * 1000,
+    hour: 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+    month: 30 * 24 * 60 * 60 * 1000,
+    year: 365 * 24 * 60 * 60 * 1000,
+};
+
+function parseChapterDate(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return null;
+
+    const dmy = text.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
+    if (dmy) {
+        const [, day, month, year] = dmy;
+        const d = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+        return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+
+    const rel = text.match(/(\d+)\s*(second|minute|hour|day|week|month|year)s?\s*ago/i);
+    if (rel) {
+        const unit = RELATIVE_UNIT_MS[rel[2].toLowerCase()];
+        if (unit) return new Date(Date.now() - Number(rel[1]) * unit).toISOString();
+    }
+
+    // "just now", "a day ago" and anything unrecognised: better no date than a
+    // wrong one, and the client renders nothing for an empty value.
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
 // The site prefixes its image alt text with SEO boilerplate, e.g. an alt of
 // "Read Manhwa Baek XX" for the series "Baek XX".
 const TITLE_BOILERPLATE = /^\s*(?:read\s+)?(?:manhwa|manga|manhua|webtoon)(?:\s+read)?\s+/i;
@@ -391,9 +439,7 @@ function mangareadParseChapters(html) {
             id: chapterSlug,
             title: label || chapterSlug,
             number: numMatch ? numMatch[1].replace("-", ".") : null,
-            // The site only renders relative dates ("2 days ago"), which aren't
-            // worth mis-parsing into a wrong absolute timestamp.
-            publishAt: null,
+            publishAt: parseChapterDate($li.find(".chapter-release-date").text()),
         });
     });
     // Upstream lists newest-first; the client expects reading order.
