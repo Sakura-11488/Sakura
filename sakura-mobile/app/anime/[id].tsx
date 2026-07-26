@@ -629,7 +629,14 @@ export default function AnimeDetail() {
       try {
         let data = await fetchAnimeInfo(id);
         if (data && data.episodes.length === 0) {
-          data = await fetchAnimeInfo(id, { force: true });
+          // Retry uncached in case the empty episode list came from a stale or
+          // half-built cache entry — but never let the retry destroy a result
+          // we already have. It used to assign straight over `data`, so when
+          // the second call failed (Jikan 504s persistently on /episodes, which
+          // only currently-airing shows ever reach) a perfectly good page
+          // turned into "Could not load anime".
+          const retried = await fetchAnimeInfo(id, { force: true }).catch(() => null);
+          if (retried && retried.episodes.length > 0) data = retried;
         }
         if (data) setAnime(data);
       } catch {
