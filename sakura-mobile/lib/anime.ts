@@ -426,7 +426,6 @@ interface JikanFull {
  */
 const JIKAN_MIN_GAP_MS = 400;
 const JIKAN_MAX_ATTEMPTS = 3;
-let jikanChain: Promise<unknown> = Promise.resolve();
 let jikanLastAt = 0;
 
 /**
@@ -479,14 +478,18 @@ async function jikanRequest(path: string): Promise<Record<string, unknown>> {
 }
 
 async function jikanGet(path: string): Promise<Record<string, unknown>> {
-  // Queue behind whatever is already in flight so concurrent screens can't
-  // burst. Failures must not break the chain for everyone after them.
-  const next = jikanChain.then(
-    () => jikanRequest(path),
-    () => jikanRequest(path),
-  );
-  jikanChain = next.catch(() => undefined);
-  return next;
+  // Deliberately NOT serialised through a shared chain.
+  //
+  // An earlier version queued every Jikan request behind a single promise to
+  // avoid bursting past the rate limit. That created head-of-line blocking: a
+  // persistently dead endpoint (/episodes has 504'd for hours) took ~6s to
+  // exhaust its retries, and every other Jikan call in the app — including the
+  // ones needed to start playback — waited behind it. Episodes appeared but
+  // never played.
+  //
+  // Burst protection now comes from the per-path circuit breaker plus the gap
+  // inside jikanRequest, neither of which can stall an unrelated request.
+  return jikanRequest(path);
 }
 
 function jikanToResult(r: Record<string, unknown>): AnimeResult {
