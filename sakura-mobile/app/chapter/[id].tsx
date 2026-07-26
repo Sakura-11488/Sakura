@@ -40,6 +40,9 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 // (often 3–15), so every page is measured and sized to its own ratio — assuming
 // 1.5 for everything is what made manhwa pages render cropped.
 const DEFAULT_PAGE_RATIO = 1.5;
+/** Window for the reader's double tap. Long enough to be unhurried, short
+ *  enough that two unrelated taps a beat apart don't count as one gesture. */
+const DOUBLE_TAP_MS = 300;
 const THUMB_W = 44;
 const THUMB_H = 60;
 const THUMB_GAP = 8;
@@ -1032,11 +1035,36 @@ export default function ChapterReader() {
     jumpToChapterPage(pending.chapterId, pending.page, false);
   }, [jumpToChapterPage]);
 
-  const toggleUI = () => {
-    const next = !uiVisible;
-    setUiVisible(next);
-    uiOpacity.value = withTiming(next ? 1 : 0, { duration: 200 });
-  };
+  const toggleUI = useCallback(() => {
+    setUiVisible((prev) => {
+      const next = !prev;
+      uiOpacity.value = withTiming(next ? 1 : 0, { duration: 200 });
+      return next;
+    });
+  }, [uiOpacity]);
+
+  /**
+   * The overlay toggles on a DOUBLE tap, not a single one.
+   *
+   * Reading is a long sequence of touches — every flick and every finger rest
+   * ends in a touch event, and on a single tap the top bar and page strip kept
+   * appearing over the page mid-read. A second tap is a deliberate act;
+   * scrolling never produces one.
+   *
+   * Taps landing while the list is still moving are ignored outright, so
+   * settling a fling with a finger down can't count as the first tap of a pair.
+   */
+  const lastTapRef = useRef(0);
+  const handleReaderTap = useCallback(() => {
+    if (isScrollingRef.current) return;
+    const now = Date.now();
+    if (now - lastTapRef.current <= DOUBLE_TAP_MS) {
+      lastTapRef.current = 0;
+      toggleUI();
+      return;
+    }
+    lastTapRef.current = now;
+  }, [toggleUI]);
 
   useEffect(() => {
     if (!indicatorRef.current || activeTotalPages === 0) return;
@@ -1129,7 +1157,7 @@ export default function ChapterReader() {
         decelerationRate={readingMode === 'page' ? 'fast' : 'normal'}
         horizontal={readingMode === 'page'}
         snapToInterval={readingMode === 'page' ? SCREEN_WIDTH : undefined}
-        onTouchEnd={toggleUI}
+        onTouchEnd={handleReaderTap}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         // Second, independent trigger for attaching the next chapter. The
