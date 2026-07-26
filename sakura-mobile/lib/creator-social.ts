@@ -132,6 +132,46 @@ export async function createCreatorPost(input: {
   return data.post as CreatorFeedPost;
 }
 
+/**
+ * A refusal from creator-coin-launch, with the server's structured detail kept
+ * intact so callers can render progress ("7 of 10 followers") rather than a
+ * dead end.
+ */
+export type CoinLaunchRefusal = Error & {
+  status?: number;
+  followerCount?: number;
+  required?: number;
+  coinId?: string;
+  coinStatus?: string;
+};
+
+/**
+ * supabase.functions.invoke rejects with a generic "non-2xx status code" and
+ * never reads the response body, so every distinct refusal — short of the
+ * follower threshold, already has a coin, rate limited — arrived at the UI as
+ * the same meaningless string. Same shape as parseInvokeError in lib/user-avatar.ts.
+ */
+async function coinLaunchError(error: {
+  message?: string;
+  context?: Response;
+}): Promise<CoinLaunchRefusal> {
+  const refusal = new Error(error.message || 'Coin launch request failed.') as CoinLaunchRefusal;
+  refusal.status = error.context?.status;
+  if (error.context) {
+    try {
+      const body = await error.context.json();
+      if (body?.error) refusal.message = String(body.error);
+      if (typeof body?.follower_count === 'number') refusal.followerCount = body.follower_count;
+      if (typeof body?.required === 'number') refusal.required = body.required;
+      if (body?.coin_id) refusal.coinId = String(body.coin_id);
+      if (body?.status) refusal.coinStatus = String(body.status);
+    } catch {
+      // Keep the generic message.
+    }
+  }
+  return refusal;
+}
+
 export async function requestCreatorCoinLaunch(input: {
   name: string;
   symbol: string;
@@ -150,7 +190,7 @@ export async function requestCreatorCoinLaunch(input: {
     },
     headers: input.authHeaders,
   });
-  if (error) throw error;
+  if (error) throw await coinLaunchError(error as { message?: string; context?: Response });
   return data as {
     ok: boolean;
     coin_id: string;
