@@ -73,13 +73,21 @@ const ThemeContext = createContext<ThemeCtx>({
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [isDark, setIsDark] = useState(true);
 
+  // Appearance.setColorScheme only exists on native. On web it is undefined, so
+  // calling it threw an uncaught TypeError from inside the theme init promise
+  // and took the render tree down with it — which is why navigating back
+  // sometimes landed on a blank white page that only a refresh recovered.
+  const applyColorScheme = useCallback((dark: boolean) => {
+    Appearance.setColorScheme?.(dark ? 'dark' : 'light');
+  }, []);
+
   useEffect(() => {
     (async () => {
       const raw = await AppSettings.getDarkModeRaw();
       const saved = raw === null ? true : raw === 'true';
       if (raw === null) await AppSettings.setDarkMode(true);
       setIsDark(saved);
-      Appearance.setColorScheme(saved ? 'dark' : 'light');
+      applyColorScheme(saved);
     })();
   }, []);
 
@@ -87,7 +95,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const next = !isDark;
     setIsDark(next);
     await AppSettings.setDarkMode(next);
-    Appearance.setColorScheme(next ? 'dark' : 'light');
+    applyColorScheme(next);
   }, [isDark]);
 
   const colors = useMemo(() => (isDark ? DarkColors : LightColors), [isDark]);

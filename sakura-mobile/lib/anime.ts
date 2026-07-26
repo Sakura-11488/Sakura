@@ -438,8 +438,13 @@ async function jikanRequest(path: string): Promise<Record<string, unknown>> {
     jikanLastAt = Date.now();
 
     const res = await fetch(`${JIKAN_API}${path}`);
-    if (res.status === 429) {
-      // Honour Retry-After when present, otherwise back off progressively.
+
+    // Retry rate limits AND upstream 5xx. Jikan is a free community API that
+    // 504s regularly under its own load — the /episodes and search endpoints
+    // were doing so consistently while direct id lookups were fine. Retrying
+    // only 429 meant a transient gateway timeout surfaced to the caller as a
+    // hard failure, which the anime screen reports as "Could not load anime".
+    if (res.status === 429 || res.status >= 500) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
       await delay(retryAfter > 0 ? retryAfter * 1000 : 1000 * (attempt + 1));
       continue;
