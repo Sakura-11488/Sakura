@@ -429,9 +429,30 @@ const JIKAN_MAX_ATTEMPTS = 3;
 let jikanChain: Promise<unknown> = Promise.resolve();
 let jikanLastAt = 0;
 
+/**
+ * Endpoints that have exhausted their retries recently.
+ *
+ * Some Jikan endpoints stay down for long stretches — /anime/{id}/episodes has
+ * been 504ing persistently — and retrying a dead endpoint on every page open
+ * costs seconds of load time and fills the console with failed requests that
+ * look like a bug in the app. Once a path has exhausted its retries, skip it
+ * outright for a while and let the caller take its fallback immediately.
+ */
+const JIKAN_BREAKER_MS = 5 * 60 * 1000;
+const jikanBreaker = new Map<string, number>();
+
+function breakerOpen(path: string): boolean {
+  const until = jikanBreaker.get(path) ?? 0;
+  if (Date.now() < until) return true;
+  if (until) jikanBreaker.delete(path);
+  return false;
+}
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function jikanRequest(path: string): Promise<Record<string, unknown>> {
+  if (breakerOpen(path)) throw new Error(`Jikan unavailable: ${path}`);
+
   for (let attempt = 0; attempt < JIKAN_MAX_ATTEMPTS; attempt += 1) {
     const gap = JIKAN_MIN_GAP_MS - (Date.now() - jikanLastAt);
     if (gap > 0) await delay(gap);
@@ -452,7 +473,9 @@ async function jikanRequest(path: string): Promise<Record<string, unknown>> {
     if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
     return res.json();
   }
-  throw new Error('Jikan rate limited');
+  // Every attempt failed — stop asking this endpoint for a while.
+  jikanBreaker.set(path, Date.now() + JIKAN_BREAKER_MS);
+  throw new Error(`Jikan unavailable: ${path}`);
 }
 
 async function jikanGet(path: string): Promise<Record<string, unknown>> {
