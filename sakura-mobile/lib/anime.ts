@@ -5,6 +5,7 @@ import {
   getActiveConsumetUrl,
   setActiveConsumetUrl,
 } from '@/lib/consumet-client';
+import { Platform } from 'react-native';
 import {
   HIANIME_BASE,
   fetchUpstreamText,
@@ -136,6 +137,21 @@ export function getAnimeStreamUserAgent() {
 }
 
 /** HiAnime web player — Megaplay embed often returns 410 inside WebView */
+/**
+ * The player hianime's wrapper page embeds.
+ *
+ * `hianime.dk/player/...` is a 595-byte page whose entire body is an iframe
+ * pointing here. On native that indirection is harmless — a WebView is not a
+ * frame and is not subject to framing policy. On web it is fatal: the wrapper
+ * serves `x-frame-options: SAMEORIGIN`, so any origin that is not hianime.dk is
+ * refused, and the result is a player area that loads without error and renders
+ * nothing. That is precisely the blank screen this was reported as.
+ *
+ * The inner player has no framing restrictions at all — verified against its
+ * response headers — so on web we address it directly and skip the wrapper.
+ */
+const MEGAPLAY_BASE = 'https://megaplay.buzz';
+
 export function buildStreamEmbedUrl(
   malId: string,
   epNum: string,
@@ -150,6 +166,11 @@ export function buildStreamEmbedUrl(
   }
 
   if (streamMalId && streamMalId !== '0') {
+    // Web goes straight to the player; native keeps the wrapper, which is what
+    // its injected shield and progress scripts are written against.
+    if (Platform.OS === 'web') {
+      return `${MEGAPLAY_BASE}/stream/mal/${streamMalId}/${epNum}/${category}`;
+    }
     return `${HIANIME_BASE}/player/mal/${streamMalId}/${epNum}/${category}`;
   }
 
@@ -157,6 +178,9 @@ export function buildStreamEmbedUrl(
     return `${HIANIME_BASE}/watch/${encodeURIComponent(slug)}?ep=${epNum}`;
   }
 
+  if (Platform.OS === 'web') {
+    return `${MEGAPLAY_BASE}/stream/mal/${malId}/${epNum}/${category}`;
+  }
   return `${HIANIME_BASE}/player/mal/${malId}/${epNum}/${category}`;
 }
 
