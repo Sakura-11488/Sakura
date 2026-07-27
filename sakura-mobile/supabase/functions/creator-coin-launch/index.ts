@@ -74,14 +74,20 @@ const LAUNCH_RATE_LIMIT = 5;
 const LAUNCH_WINDOW_SEC = 86_400;
 
 /**
- * Followers required before a creator may launch. Raise without a redeploy via
+ * Followers required before a creator may launch. Change without a redeploy via
  * `supabase secrets set CREATOR_COIN_MIN_FOLLOWERS=25`. Read per request rather
- * than into a module const, so a change lands on the next call instead of the
- * next cold start.
+ * than into a module const, so it lands on the next call instead of the next
+ * cold start.
+ *
+ * Set to 5 rather than the 10 originally planned: the most-followed creator on
+ * the platform has 7 followers, so 10 would have refused literally everyone.
+ * This is a low bar and it is not Sybil-resistant — follows are free, unlimited,
+ * and need only a fresh keypair — so it gates convenience, not abuse. Raise it
+ * before the launch path can actually mint.
  */
 function minFollowers(): number {
-  const raw = Number(Deno.env.get('CREATOR_COIN_MIN_FOLLOWERS') || '10');
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 10;
+  const raw = Number(Deno.env.get('CREATOR_COIN_MIN_FOLLOWERS') || '5');
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5;
 }
 
 Deno.serve(async (req) => {
