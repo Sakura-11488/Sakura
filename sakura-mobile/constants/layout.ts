@@ -22,6 +22,8 @@ export const MAX_ANIME_HOME_HERO_HEIGHT_WEB = 520;
 // (mobile web) the original layout is preserved untouched.
 export const DESKTOP_BREAKPOINT = 1000;
 export const SIDEBAR_WIDTH = 232;
+/** Height of the desktop-web top navigation bar. */
+export const TOP_NAV_HEIGHT = 64;
 // 1180 left ~250px of dead gutter on each side at 1920x1080 (the content column
 // is centered in the space beside the sidebar), which read as a broken layout.
 // 1440 keeps line lengths sane while making the margins look like intentional
@@ -41,7 +43,10 @@ export function isWideWeb(windowWidth: number): boolean {
  */
 export function contentWidth(windowWidth: number): number {
   if (isWideWeb(windowWidth)) {
-    return Math.min(windowWidth - SIDEBAR_WIDTH, MAX_CONTENT_WIDTH_DESKTOP);
+    // No sidebar subtraction any more: navigation moved to a top bar, so the
+    // full window width is available to content. The old rail cost 232px of
+    // every viewport permanently.
+    return Math.min(windowWidth, MAX_CONTENT_WIDTH_DESKTOP);
   }
   return Math.min(windowWidth, MAX_CONTENT_WIDTH);
 }
