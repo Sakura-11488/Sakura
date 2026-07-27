@@ -64,8 +64,18 @@ export function EmbedPlayer({ source, style, onReady, onFailed }: EmbedPlayerPro
         title="Video player"
         allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
         allowFullScreen
-        sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
-        referrerPolicy="no-referrer"
+        // No `sandbox` and no `referrerPolicy`, both deliberately.
+        //
+        // The first version of this file set `sandbox` to block pop-unders and
+        // `referrerPolicy="no-referrer"` for privacy. Together they rendered an
+        // empty player. Neither was needed to fix the bug at hand, and both are
+        // plausible causes: these embed hosts commonly use hotlink protection
+        // that rejects a request with no Referer, and players routinely refuse
+        // to run inside a sandboxed frame.
+        //
+        // Getting playback working comes first. Hardening goes back on
+        // afterwards, one attribute at a time, each verified against a real
+        // embed rather than added speculatively — which is what happened here.
         style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
         onLoad={() => readyRef.current?.()}
         onError={() => {
