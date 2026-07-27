@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, type ErrorBoundaryProps } from 'expo-router';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -16,7 +16,14 @@ import {
 import { WalletProvider } from '@/lib/wallet/context';
 import { WebTransactionAuthProvider } from '@/lib/wallet/web-transaction-auth';
 import HttpImageShim from '@/components/web/HttpImageShim';
-import { Platform } from 'react-native';
+import {
+  Platform,
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+} from 'react-native';
 import { UnreadMessagesProvider } from '@/lib/unread-messages-context';
 import { ThemeProvider, useTheme } from '@/lib/theme';
 import { I18nProvider } from '@/lib/i18n';
@@ -102,6 +109,61 @@ function LiveActivityDeepLinkBridge() {
 
   return null;
 }
+
+/**
+ * Root error boundary.
+ *
+ * Without this, any render-time crash leaves a blank screen and sends the reason
+ * to a console. That is fine in a browser tab and useless in an installed PWA,
+ * where the app runs in its own window with no easy devtools — which is exactly
+ * the situation this was added in, after a blank screen that could not be
+ * diagnosed because the only evidence was somewhere unreachable.
+ *
+ * The message is selectable so it can be copied into a bug report, and the stack
+ * is included because "which component" is usually the entire question.
+ *
+ * Same principle as surfacing the real reason behind "Could not load anime":
+ * a failure nobody can see is a failure nobody can fix.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <View style={ebStyles.root}>
+      <ScrollView contentContainerStyle={ebStyles.scroll}>
+        <Text style={ebStyles.title}>Something broke</Text>
+        <Text selectable style={ebStyles.message}>
+          {error?.message ?? String(error)}
+        </Text>
+        {error?.stack ? (
+          <Text selectable style={ebStyles.stack}>
+            {error.stack.slice(0, 900)}
+          </Text>
+        ) : null}
+        <TouchableOpacity onPress={() => retry()} style={ebStyles.button}>
+          <Text style={ebStyles.buttonText}>Try again</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    </View>
+  );
+}
+
+const ebStyles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#0F0F13' },
+  scroll: { flexGrow: 1, justifyContent: 'center', padding: 24, gap: 14 },
+  title: { color: '#F2F2F7', fontSize: 20, fontWeight: '800' },
+  message: { color: '#FF6B6B', fontSize: 14, lineHeight: 20 },
+  stack: { color: '#98989F', fontSize: 11, lineHeight: 16 },
+  button: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 999,
+    backgroundColor: '#252529',
+    borderWidth: 1,
+    borderColor: '#3A3A3E',
+  },
+  buttonText: { color: '#F2F2F7', fontWeight: '700' },
+});
 
 export default function RootLayout() {
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
