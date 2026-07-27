@@ -47,7 +47,12 @@ import ContinueWatchingRow from '@/components/ui/ContinueWatchingRow';
 import EmptyState from '@/components/ui/EmptyState';
 import { getContinueWatching, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 
-import { MAX_HERO_HEIGHT_WEB, contentWidth } from '@/constants/layout';
+import {
+  MAX_ANIME_HOME_HERO_HEIGHT_WEB,
+  MAX_HERO_HEIGHT_WEB,
+  contentWidth,
+  isWideWeb,
+} from '@/constants/layout';
 
 const CARD_W = 108;
 const CARD_H = CARD_W * 1.44;
@@ -56,7 +61,10 @@ function useLayoutMetrics() {
   const { width: windowW } = useWindowDimensions();
   return useMemo(() => {
     const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
-    const HERO_H = Platform.OS === 'web' ? Math.min(W * 0.62, MAX_HERO_HEIGHT_WEB) : W * 0.62;
+    const HERO_H =
+      Platform.OS === 'web'
+        ? Math.min(W * 0.62, isWideWeb(windowW) ? MAX_ANIME_HOME_HERO_HEIGHT_WEB : MAX_HERO_HEIGHT_WEB)
+        : W * 0.62;
     return { W, HERO_H };
   }, [windowW]);
 }
@@ -504,10 +512,28 @@ function AnimeCard({ anime, onPress }: { anime: AnimeResult; onPress: () => void
   );
 }
 
-// ─── Grid card (2-col search/genre results) ───────────────────────────────────
+
+/**
+ * Width of one card in the search/genre results grid.
+ *
+ * Two columns is right for a phone and absurd for a desktop: at a 1920px window
+ * `(contentWidth - padding) / 2` produced cards roughly 700px across, two per
+ * row, so a search for anything looked like two billboards. Column count now
+ * follows the available width, targeting a card of about 170px — close to the
+ * 152px Originals card, so the grid and the rows read as the same shelf.
+ */
+function gridCardWidth(contentW: number): number {
+  const GUTTER = 10;
+  const TARGET = 170;
+  const available = contentW - Spacing.md * 2;
+  const columns = Math.max(2, Math.floor((available + GUTTER) / (TARGET + GUTTER)));
+  return (available - GUTTER * (columns - 1)) / columns;
+}
+
+// ─── Grid card (search/genre results) ─────────────────────────────────────────
 function GridCard({ anime, onPress }: { anime: AnimeResult; onPress: () => void }) {
   const { grid, W } = useAnimeStyles();
-  const w = (W - Spacing.md * 2 - 10) / 2;
+  const w = gridCardWidth(W);
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={[grid.wrap, { width: w }]}>
       <View style={[grid.imgWrap, { height: w * 1.42 }]}>
@@ -734,7 +760,7 @@ export default function AnimeScreen() {
             {searchLoading ? (
               <View style={s.gridRow}>
                 {Array.from({ length: 6 }).map((_, i) => {
-                  const w = (W - Spacing.md * 2 - 10) / 2;
+                  const w = gridCardWidth(W);
                   return <SkeletonCard key={i} width={w} height={w * 1.42} />;
                 })}
               </View>
@@ -759,7 +785,7 @@ export default function AnimeScreen() {
             {genreLoading ? (
               <View style={s.gridRow}>
                 {Array.from({ length: 6 }).map((_, i) => {
-                  const w = (W - Spacing.md * 2 - 10) / 2;
+                  const w = gridCardWidth(W);
                   return <SkeletonCard key={i} width={w} height={w * 1.42} />;
                 })}
               </View>

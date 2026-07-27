@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -14,13 +14,25 @@ import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { contentWidth } from '@/constants/layout';
 import type { AnimeWatchProgress } from '@/lib/watch-progress';
 import { playTap } from '@/lib/sound';
 import SectionHeader from '@/components/ui/SectionHeader';
 
-const CARD_W = Dimensions.get('window').width * 0.65;
-const CARD_H = CARD_W * 0.48;
-const THUMB_W = CARD_H * 1.15;
+/**
+ * Card width for the current window.
+ *
+ * This used to be `Dimensions.get('window').width * 0.65` evaluated at module
+ * load. Two things were wrong with that: the fraction is a phone heuristic, so
+ * on a 1920px desktop it produced cards over 1200px wide; and because it ran at
+ * import it never re-measured, so resizing the window did nothing.
+ *
+ * The cap is what makes it a row rather than one enormous card per screen.
+ */
+function cardWidth(windowW: number): number {
+  const available = contentWidth(windowW);
+  return Math.min(available * 0.65, 360);
+}
 
 interface ContinueWatchingRowProps {
   items: AnimeWatchProgress[];
@@ -29,6 +41,10 @@ interface ContinueWatchingRowProps {
 
 export default function ContinueWatchingRow({ items, title = 'Continue Watching' }: ContinueWatchingRowProps) {
   const { colors } = useTheme();
+  const { width: windowW } = useWindowDimensions();
+  const CARD_W = cardWidth(windowW);
+  const CARD_H = CARD_W * 0.48;
+  const s = useMemo(() => makeStyles(CARD_W, CARD_H), [CARD_W, CARD_H]);
   const router = useRouter();
 
   if (items.length === 0) return null;
@@ -107,7 +123,9 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
   );
 }
 
-const s = StyleSheet.create({
+const makeStyles = (CARD_W: number, CARD_H: number) => {
+  const THUMB_W = CARD_H * 1.15;
+  return StyleSheet.create({
   wrap: { marginBottom: Spacing.sm },
   list: {
     paddingHorizontal: Spacing.md,
@@ -211,3 +229,4 @@ const s = StyleSheet.create({
     borderRadius: 2,
   },
 });
+};

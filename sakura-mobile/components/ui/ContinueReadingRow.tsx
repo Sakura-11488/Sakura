@@ -1,17 +1,36 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
+import React, { useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  useWindowDimensions,
+} from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { contentWidth } from '@/constants/layout';
 import type { ContinueReadingItem } from '@/lib/reader-progress';
 import { playTap } from '@/lib/sound';
 import SectionHeader from '@/components/ui/SectionHeader';
 
-const CARD_W = Dimensions.get('window').width * 0.58;
-const CARD_H = CARD_W * 0.38;
-const THUMB_W = CARD_H * 0.62;
+/**
+ * Card width for the current window.
+ *
+ * This used to be `Dimensions.get('window').width * 0.58` evaluated at module
+ * load. Two things were wrong with that: the fraction is a phone heuristic, so
+ * on a 1920px desktop it produced cards over 1200px wide; and because it ran at
+ * import it never re-measured, so resizing the window did nothing.
+ *
+ * The cap is what makes it a row rather than one enormous card per screen.
+ */
+function cardWidth(windowW: number): number {
+  const available = contentWidth(windowW);
+  return Math.min(available * 0.58, 320);
+}
 
 interface ContinueReadingRowProps {
   items: ContinueReadingItem[];
@@ -20,6 +39,10 @@ interface ContinueReadingRowProps {
 
 export default function ContinueReadingRow({ items, title = 'Continue Reading' }: ContinueReadingRowProps) {
   const { colors } = useTheme();
+  const { width: windowW } = useWindowDimensions();
+  const CARD_W = cardWidth(windowW);
+  const CARD_H = CARD_W * 0.38;
+  const s = useMemo(() => makeStyles(CARD_W, CARD_H), [CARD_W, CARD_H]);
   const router = useRouter();
 
   if (items.length === 0) return null;
@@ -96,7 +119,9 @@ export default function ContinueReadingRow({ items, title = 'Continue Reading' }
   );
 }
 
-const s = StyleSheet.create({
+const makeStyles = (CARD_W: number, CARD_H: number) => {
+  const THUMB_W = CARD_H * 0.62;
+  return StyleSheet.create({
   wrap: { marginBottom: Spacing.sm },
   list: {
     paddingHorizontal: Spacing.md,
@@ -150,3 +175,4 @@ const s = StyleSheet.create({
     borderRadius: 2,
   },
 });
+};

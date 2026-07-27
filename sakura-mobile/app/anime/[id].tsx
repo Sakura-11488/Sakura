@@ -45,11 +45,27 @@ import {
 import { playTap, onTap } from '@/lib/sound';
 import { Library } from '@/lib/storage';
 import { useTheme } from '@/lib/theme';
+import { isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 import CreatorTab from '@/components/ui/CreatorTab';
 import { getSakuraOriginalAuthor } from '@/lib/sakura-originals';
 
 const { width: W } = Dimensions.get('window');
-const HERO_H = W * 0.88;
+
+/**
+ * Hero height.
+ *
+ * `W * 0.88` is a portrait-poster ratio and it is right on a phone. On a 1920px
+ * desktop window it computed to roughly 1690px — taller than the viewport — so
+ * the hero swallowed the entire screen, nothing below it was reachable without
+ * scrolling, and the sticky call-to-action ended up pinned to the bottom edge
+ * looking like a banner. That is the layout in the bug report.
+ *
+ * On desktop the hero becomes a band instead: tall enough to be cinematic,
+ * short enough that the episode list is visible underneath, which is the whole
+ * point of having more screen.
+ */
+const DESKTOP_HERO_H = 560;
+const HERO_H = isWideWeb(W) ? Math.min(W * 0.88, DESKTOP_HERO_H) : W * 0.88;
 const HEADER_TRIGGER = Math.round(HERO_H * 0.35);
 const HEADER_FADE_DISTANCE = 48;
 
@@ -557,7 +573,20 @@ export default function AnimeDetail() {
     infoRow: { borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 12, gap: 3 },
     infoLabel: { color: colors.textTertiary, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium, textTransform: 'uppercase', letterSpacing: 0.5 },
     infoValue: { color: colors.text, fontSize: FontSize.sm, fontFamily: Fonts.body },
-    cta: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 15, overflow: 'hidden' },
+    cta: {
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      zIndex: 15,
+      overflow: 'hidden',
+      // Centre and cap it on desktop. Stretched edge to edge across a 1920px
+      // window the button reads as a site-wide banner rather than an action
+      // belonging to this title.
+      ...(isWideWeb(W)
+        ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH, left: undefined, right: undefined }
+        : null),
+    },
     saveBtn: {
       width: 46, height: 46,
       borderRadius: 23,
