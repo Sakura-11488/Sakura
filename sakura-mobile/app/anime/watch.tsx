@@ -9,6 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import EmbedPlayer from '@/components/anime/EmbedPlayer';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as NavigationBar from 'expo-navigation-bar';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -844,7 +845,7 @@ export default function AnimeWatch() {
       )}
 
       {showWebEmbedPlayer && (
-        <WebView
+        <EmbedPlayer
           key={`${embedUrl}-${category}`}
           source={{ uri: embedUrl }}
           style={s.player}
@@ -859,6 +860,7 @@ export default function AnimeWatch() {
           setSupportMultipleWindows={false}
           onShouldStartLoadWithRequest={shouldAllowPlayerRequest}
           allowsBackForwardNavigationGestures={false}
+          onReady={() => setWebReady(true)}
           onLoadStart={() => setWebReady(false)}
           onLoadEnd={() => setWebReady(true)}
           onMessage={(e) => handleWebMessage(e.nativeEvent.data)}
