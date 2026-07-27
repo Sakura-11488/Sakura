@@ -1,9 +1,13 @@
 import { invokeContentProxy } from '@/lib/content-proxy-client';
+// NOT from '@/lib/consumet-client'. On web that specifier resolves to this very
+// file — Metro picks the `.web` variant regardless of who is asking — so the
+// re-export bound to itself and every call recursed until the stack overflowed.
+// `consumet-config` has no platform sibling and cannot be shadowed.
 import {
   consumetCandidates,
   getActiveConsumetUrl,
   setActiveConsumetUrl,
-} from '@/lib/consumet-client';
+} from '@/lib/consumet-config';
 
 export { consumetCandidates, getActiveConsumetUrl, setActiveConsumetUrl };
 

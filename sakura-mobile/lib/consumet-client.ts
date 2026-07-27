@@ -1,23 +1,13 @@
-import { CONSUMET_URL_DEFAULT, CONSUMET_URL_LEGACY } from './content-hosts';
+import {
+  consumetCandidates,
+  getActiveConsumetUrl,
+  setActiveConsumetUrl,
+} from './consumet-config';
 
-const DEFAULT_CONSUMET_URL = CONSUMET_URL_DEFAULT;
-const LEGACY_CONSUMET_URL = CONSUMET_URL_LEGACY;
-
-export function consumetCandidates(): string[] {
-  const fromEnv = (process.env.EXPO_PUBLIC_CONSUMET_URL || '').replace(/\/+$/, '');
-  const list = [fromEnv, DEFAULT_CONSUMET_URL, LEGACY_CONSUMET_URL].filter(Boolean);
-  return [...new Set(list)];
-}
-
-let activeConsumetUrl = consumetCandidates()[0] || DEFAULT_CONSUMET_URL;
-
-export function getActiveConsumetUrl(): string {
-  return activeConsumetUrl;
-}
-
-export function setActiveConsumetUrl(url: string): void {
-  activeConsumetUrl = url;
-}
+// Re-exported so callers keep importing everything Consumet-related from one
+// place. The shared state itself lives in `consumet-config`, which has no
+// platform sibling — see the note there for why that separation is load-bearing.
+export { consumetCandidates, getActiveConsumetUrl, setActiveConsumetUrl };
 
 export async function consuGet(
   path: string,
@@ -27,9 +17,10 @@ export async function consuGet(
   const bases = consumetCandidates();
   if (bases.length === 0) throw new Error('CONSUMET_URL not set');
 
+  const active = getActiveConsumetUrl();
   const orderedBases = [
-    activeConsumetUrl,
-    ...bases.filter((b) => b !== activeConsumetUrl),
+    active,
+    ...bases.filter((b) => b !== active),
   ].filter(Boolean) as string[];
 
   let lastErr: unknown;
@@ -63,7 +54,7 @@ export async function consuGet(
           lastErr = new Error(errMsg);
           break;
         }
-        activeConsumetUrl = base;
+        setActiveConsumetUrl(base);
         return data;
       } catch (e) {
         lastErr = e;
