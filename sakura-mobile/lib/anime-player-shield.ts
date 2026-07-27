@@ -1,5 +1,5 @@
 const BLOCKED_HOST_RE =
-  /(?:^|[.-])(?:1xbet|melbet|betwinner|mostbet|parimatch|pinup|pin-up|glorycasino|stake|bet365|betway|22bet|linebet|1win|vulkanvegas|izzi|adsterra|propellerads|exoclick|popads|clickaine|trafficjunky|outbrain|taboola|mgid|revcontent|adnxs|doubleclick|googlesyndication|popcash|hilltopads|richads|clickadu|adcash|monetag)(?:[.-]|$)/i;
+  /(?:^|[.-])(?:1xbet|melbet|betwinner|mostbet|parimatch|pinup|pin-up|glorycasino|stake|bet365|betway|22bet|linebet|1win|vulkanvegas|izzi|adsterra|propellerads|exoclick|popads|clickaine|trafficjunky|outbrain|taboola|mgid|revcontent|adnxs|doubleclick|googlesyndication|popcash|hilltopads|richads|clickadu|adcash|monetag|statlytic|histats|onclickA|onclckads|adsco|admaven|galaksion|adservme|zeydoo|bidgear|adprofex|luckyads|coinzilla)(?:[.-]|$)/i;
 
 const BLOCKED_PATH_RE = /(?:^|[/?&])(?:affiliate|affid|promo|redirect|click|track)(?:[/?&]|$)/i;
 
@@ -121,11 +121,21 @@ export function buildAnimePlayerShieldScript(): string {
       function scrub(root) {
         if (!root || !root.querySelectorAll) return;
 
+        // ALLOWLIST, not a denylist. Any nested frame that is not the stream
+        // itself or same-origin with the player is removed, whether or not
+        // anybody has catalogued it. A denylist only blocks the ad networks
+        // somebody already knew about, and these players rotate hosts weekly --
+        // which is why ads kept appearing despite a list that looked thorough.
         root.querySelectorAll('iframe').forEach(function(frame) {
-          var src = frame.src || frame.getAttribute('src') || '';
-          if (isBlocked(src) && !isStream(src)) {
-            frame.remove();
+          var raw = frame.src || frame.getAttribute('src') || '';
+          if (!raw || raw.indexOf('about:blank') === 0 || raw.indexOf('blob:') === 0 || raw.indexOf('data:') === 0) {
+            return;
           }
+          if (isStream(raw)) return;
+          try {
+            if (new URL(raw, window.location.href).origin === window.location.origin) return;
+          } catch (e) {}
+          frame.remove();
         });
 
         root.querySelectorAll('a[href], [onclick]').forEach(function(el) {

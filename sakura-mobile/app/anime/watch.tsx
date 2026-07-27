@@ -951,8 +951,25 @@ export default function AnimeWatch() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: D.bg },
-  playerWrap: { flex: 1, position: 'relative', backgroundColor: D.bg },
-  player: { flex: 1, width: '100%', backgroundColor: D.bg },
+  // The wrapper fills the space; the player itself is pinned to 16:9 and
+  // centred inside it. Both were `flex: 1`, which made the player take the
+  // shape of whatever box it landed in -- a tall column in portrait -- so the
+  // video was stretched rather than letterboxed. Nearly all anime is 16:9, so
+  // constraining the frame and letting the black fill the remainder is both
+  // correct and what every video app does.
+  playerWrap: {
+    flex: 1,
+    position: 'relative',
+    backgroundColor: D.bg,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  player: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    maxHeight: '100%',
+    backgroundColor: D.bg,
+  },
   loaderOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.82)',
