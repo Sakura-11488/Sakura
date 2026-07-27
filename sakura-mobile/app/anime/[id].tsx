@@ -599,6 +599,17 @@ export default function AnimeDetail() {
 
   const [anime, setAnime] = useState<AnimeInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  /**
+   * Why the load failed, shown to the user rather than discarded.
+   *
+   * The catch below used to swallow the error and do nothing. That is the reason
+   * "Could not load anime" outlived three attempts to fix it: a rate limit, a
+   * network failure and a genuinely missing title all produced the same blank
+   * page, so every fix was a guess about which one it was.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Bumped by "Try again" to re-run the load effect. */
+  const [reloadKey, setReloadKey] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<'episodes' | 'info' | 'authors'>('episodes');
   const originalAuthor = id ? getSakuraOriginalAuthor(String(id)) : null;
@@ -654,6 +665,7 @@ export default function AnimeDetail() {
 
   useEffect(() => {
     if (!id) return;
+    setLoadError(null);
     (async () => {
       try {
         let data = await fetchAnimeInfo(id);
@@ -667,15 +679,30 @@ export default function AnimeDetail() {
           const retried = await fetchAnimeInfo(id, { force: true }).catch(() => null);
           if (retried && retried.episodes.length > 0) data = retried;
         }
-        if (data) setAnime(data);
-      } catch {
-        // ignore
+        if (data) {
+          setAnime(data);
+        } else {
+          // Not a throw: the fetch completed and had nothing for this id.
+          setLoadError('No data returned for this title.');
+        }
+      } catch (err) {
+        // Deliberately NOT swallowed.
+        //
+        // This used to swallow the error entirely, which is why "Could not load
+        // anime" survived three separate attempts to fix it: every one was a
+        // guess, because the code threw away the only evidence of what actually
+        // went wrong. Rate limits, network failures, and a genuinely missing
+        // title all rendered the identical dead page.
+        //
+        // Now the reason reaches the screen. Whatever the cause turns out to be,
+        // the next report will name it instead of requiring another theory.
+        setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);
       }
     })();
     Library.isSaved(String(id), 'anime').then(setSaved);
-  }, [id]);
+  }, [id, reloadKey]);
 
   const handleSave = async () => {
     if (!anime) return;
@@ -733,6 +760,37 @@ export default function AnimeDetail() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <Text style={{ color: colors.text, fontSize: FontSize.lg, fontWeight: '700' }}>Could not load anime</Text>
+        {loadError ? (
+          <Text
+            selectable
+            style={{
+              color: colors.textSecondary,
+              fontSize: FontSize.sm,
+              textAlign: 'center',
+              paddingHorizontal: Spacing.xl,
+            }}
+          >
+            {loadError}
+          </Text>
+        ) : null}
+        <TouchableOpacity
+          onPress={onTap(() => {
+            setLoading(true);
+            setLoadError(null);
+            setReloadKey((k) => k + 1);
+          })}
+          style={{
+            marginTop: 4,
+            paddingHorizontal: 20,
+            paddingVertical: 10,
+            borderRadius: Radius.full,
+            backgroundColor: colors.surfaceSecondary,
+            borderWidth: 1,
+            borderColor: colors.border,
+          }}
+        >
+          <Text style={{ color: colors.text, fontWeight: '700' }}>Try again</Text>
+        </TouchableOpacity>
         <TouchableOpacity onPress={onTap(() => router.back())} style={s.backBtnAbsolute}>
           <BackIcon />
         </TouchableOpacity>
