@@ -1,11 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, Animated, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Image } from 'expo-image';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-} from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -127,7 +122,24 @@ export default function ChapterReader() {
   // Real per-page aspect ratios (height/width), filled in as each image loads so
   // tall manhwa strips get their full height instead of being cropped to 1.5.
   const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
-  const uiOpacity = useSharedValue(1);
+  /**
+   * Overlay fade, on React Native's own Animated rather than Reanimated.
+   *
+   * Reanimated drove this originally and the fade does not run on web: verified
+   * on the deployed bundle, where the hide completed correctly — the timer
+   * fired, `setUiInteractive(false)` applied — while Reanimated kept writing
+   * `opacity: 1` inline, leaving the overlay fully painted and completely dead.
+   * It went unnoticed because the only way to trigger it was a double tap, and
+   * a mouse never fires touch events, so on desktop the overlay simply persisted
+   * and nothing ever asked it to fade.
+   *
+   * A cross-fade of one value does not need the UI thread, and RN's Animated is
+   * the one implementation both react-native-web and native agree on. It also
+   * has no objection to a single value driving two views, which Reanimated does.
+   * This was the file's only Reanimated usage.
+   */
+  const uiOpacity = useRef(new Animated.Value(1)).current;
+  const uiFadeRef = useRef<Animated.CompositeAnimation | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerOffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** >0 means something is holding the overlay open. A COUNTER, not a boolean:
@@ -341,19 +353,23 @@ export default function ChapterReader() {
     };
   }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess]);
 
-  /**
-   * One animated style per overlay, both reading the same shared value.
-   *
-   * Deliberately NOT a single `uiStyle` shared by both `Animated.View`s.
-   * Reanimated binds an animated style to one component; attach the same object
-   * to two and only one of them ever updates. That was latent while the second
-   * consumer — the old thumbnail strip — rendered in paged mode only, so webtoon
-   * mode had a single consumer and the fade worked. The seek bar renders in both
-   * modes, which made the collision real: the overlay went non-interactive on
-   * schedule while staying fully painted.
-   */
-  const topUiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
-  const bottomUiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
+  /** Shared by both overlays — legal here, unlike a Reanimated animated style. */
+  const uiFadeStyle = useMemo(() => ({ opacity: uiOpacity }), [uiOpacity]);
+
+  const fadeUiTo = useCallback(
+    (to: 0 | 1) => {
+      uiFadeRef.current?.stop();
+      uiFadeRef.current = Animated.timing(uiOpacity, {
+        toValue: to,
+        duration: UI_FADE_MS,
+        // Opacity is native-drivable, and on web react-native-web falls back to
+        // its own timing loop.
+        useNativeDriver: true,
+      });
+      uiFadeRef.current.start();
+    },
+    [uiOpacity],
+  );
 
   useEffect(() => {
     if (loading || activeTotalPages === 0) return;
@@ -1134,7 +1150,7 @@ export default function ChapterReader() {
     clearHideTimer();
     if (!uiVisibleRef.current) return;
     uiVisibleRef.current = false;
-    uiOpacity.value = withTiming(0, { duration: UI_FADE_MS });
+    fadeUiTo(0);
     // pointerEvents lags the fade. If it flipped now the controls would go dead
     // while still fully painted, and a finger already in flight would press a
     // visible button and get nothing. Invisible when the user dismisses the bar
@@ -1164,10 +1180,10 @@ export default function ChapterReader() {
     }
     uiVisibleRef.current = true; // order matters: scheduleHide reads this
     setUiInteractive(true);
-    // Assigned unconditionally: reading uiOpacity.value from the JS thread is
-    // either stale or a blocking hop, and this runs on a touch path. Timing from
-    // the current value to the same value is a no-op frame.
-    uiOpacity.value = withTiming(1, { duration: UI_FADE_MS });
+    // Started unconditionally: a fade from the current value to the same value
+    // costs one frame, and this runs on a touch path where checking first would
+    // mean reading the animated value back.
+    fadeUiTo(1);
     scheduleHide();
   }, [uiOpacity, scheduleHide]);
 
@@ -1605,7 +1621,7 @@ export default function ChapterReader() {
 
       {/* Top UI overlay */}
       <Animated.View
-        style={[styles.topOverlay, topUiStyle]}
+        style={[styles.topOverlay, uiFadeStyle]}
         pointerEvents={uiInteractive ? 'auto' : 'none'}
         onTouchStart={noteUiTouch}
       >
@@ -1660,7 +1676,7 @@ export default function ChapterReader() {
           buttons work identically in both modes. */}
       {activeTotalPages > 0 ? (
         <Animated.View
-          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, bottomUiStyle]}
+          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiFadeStyle]}
           // box-none, not auto. The strip this replaces was paged-only, where
           // swipes start mid-screen. This band is full width and now present in
           // webtoon mode, where a vertical flick very often starts low on the
