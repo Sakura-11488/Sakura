@@ -104,14 +104,17 @@ export default function ChapterReader() {
   // is simply off and the reader behaves exactly as it always did.
   const [orderedChapters, setOrderedChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
+  /* The overlay starts HIDDEN and is only ever summoned by a double tap.
+     A reader opens a chapter to read it, not to look at chrome, and anything
+     that appears on entry has to be waited out over the first page. */
   /** Drives pointerEvents, and deliberately lags the fade — see hideUI. */
-  const [uiInteractive, setUiInteractive] = useState(true);
+  const [uiInteractive, setUiInteractive] = useState(false);
   /** The truth about visibility, for timers and callbacks that can't see state. */
-  const uiVisibleRef = useRef(true);
+  const uiVisibleRef = useRef(false);
   /** Same fact as uiVisibleRef, in state, because web's fade is a rendered
    *  opacity rather than an animated one. Flips immediately on show/hide —
    *  unlike uiInteractive, which deliberately lags the fade-out. */
-  const [uiShown, setUiShown] = useState(true);
+  const [uiShown, setUiShown] = useState(false);
   // Which chapter the reader is looking at right now — not necessarily the one
   // the route was opened on, once reading has crossed a boundary.
   const [activeChapterId, setActiveChapterId] = useState('');
@@ -132,15 +135,14 @@ export default function ChapterReader() {
    * Reanimated dependency, and sidesteps Reanimated's rule that one animated
    * style may not drive two components (the two overlays fade together).
    */
-  const uiOpacity = useRef(new Animated.Value(1)).current;
+  const uiOpacity = useRef(new Animated.Value(0)).current;
   const uiFadeRef = useRef<Animated.CompositeAnimation | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerOffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** >0 means something is holding the overlay open. A COUNTER, not a boolean:
    *  a slider drag and the settings modal can overlap. */
   const uiHoldRef = useRef(0);
-  /** Which chapter route the hide timer has already been armed for. */
-  const armedForRef = useRef('');
+  /** Timestamp of the last pointerdown, for web's double-click detection. */
   const lastRevealRef = useRef(0);
   /** Lets onScroll, declared far above hideUI, dismiss the overlay without a
    *  use-before-declaration dependency. Assigned in the auto-hide block. */
@@ -1238,16 +1240,28 @@ export default function ChapterReader() {
   }, [scheduleHide, showUI]);
 
   /**
-   * Mouse input never fires onTouchEnd, so on desktop web the double-tap toggle
-   * is unreachable and the overlay simply persists. Auto-hiding it there without
-   * this would strand the top bar and the slider permanently.
+   * Desktop's double tap is a double click.
+   *
+   * A mouse fires no touch events, so `onTouchEnd` never reaches the list and
+   * the toggle would be unreachable — with the overlay now starting hidden,
+   * that would leave a desktop reader no way to summon it at all. This is
+   * deliberately the same gesture rather than a mouse-specific affordance like
+   * reveal-on-move: "only on a double tap" should mean the same thing on both.
+   *
+   * Wired to pointerdown rather than a dblclick prop because React Native's View
+   * exposes the Pointer Events API, and pointerdown is what a click is made of.
    */
-  const handlePointerReveal = useCallback(() => {
+  const handlePointerTap = useCallback(() => {
     const now = Date.now();
-    if (now - lastRevealRef.current < 400) return; // pointermove fires per pixel
+    if (now - lastRevealRef.current <= DOUBLE_TAP_MS) {
+      lastRevealRef.current = 0;
+      toggleUI();
+      return;
+    }
     lastRevealRef.current = now;
-    showUI();
-  }, [showUI]);
+    // A first click while the bar is up is still interaction.
+    scheduleHide();
+  }, [toggleUI, scheduleHide]);
 
   /**
    * The overlay toggles on a DOUBLE tap, not a single one.
@@ -1430,20 +1444,18 @@ export default function ChapterReader() {
   }, [settingsOpen, holdUI, releaseUI]);
 
   /**
-   * Arm the auto-hide once there is genuinely something on screen.
+   * Hide the overlay when the chapter underneath changes.
    *
-   * Not a mount effect: the overlay doesn't render until past the gate, loading
-   * and empty returns below, so a slow chapter would burn the whole window
-   * before the bar had ever been painted. Keyed on the route's chapter too,
-   * because the prev/next buttons replace params WITHOUT remounting.
+   * The prev/next buttons replace the route WITHOUT remounting, so nothing else
+   * resets it — and the overlay you summoned over chapter 12 should not still be
+   * sitting there over chapter 13, reporting the wrong page count until its
+   * timer happens to run out.
    */
   useEffect(() => {
-    if (loading || rows.length === 0) return;
-    const key = `${mangaId}~${entryChapterId}`;
-    if (armedForRef.current === key) return;
-    armedForRef.current = key;
-    showUI();
-  }, [loading, rows.length, mangaId, entryChapterId, showUI]);
+    hideUIRef.current();
+    // Only on a genuine route change: `rows` grows whenever continuous reading
+    // attaches a neighbour, which must not dismiss a bar the reader just opened.
+  }, [mangaId, entryChapterId]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
@@ -1458,11 +1470,9 @@ export default function ChapterReader() {
 
   useFocusEffect(
     useCallback(() => {
-      // Gated on the same latch as the arm effect. Calling scheduleHide
-      // unconditionally here would fire at mount, while loading is still true —
-      // on a chapter slower than AUTO_HIDE_MS the bar would fade out behind the
-      // spinner and the arm effect would then fade it back in.
-      if (armedForRef.current) scheduleHide();
+      // A no-op unless the overlay is actually up: scheduleHide returns early
+      // when uiVisibleRef is false, which it is on entry and after every hide.
+      scheduleHide();
       return clearHideTimer;
     }, [scheduleHide, clearHideTimer]),
   );
@@ -1532,7 +1542,7 @@ export default function ChapterReader() {
   return (
     <View
       style={styles.screen}
-      onPointerMove={Platform.OS === 'web' ? handlePointerReveal : undefined}
+      onPointerDown={Platform.OS === 'web' ? handlePointerTap : undefined}
     >
       <StatusBar hidden />
       <FlatList
@@ -1555,7 +1565,10 @@ export default function ChapterReader() {
         decelerationRate={readingMode === 'page' ? 'fast' : 'normal'}
         horizontal={readingMode === 'page'}
         snapToInterval={readingMode === 'page' ? SCREEN_WIDTH : undefined}
-        onTouchEnd={handleReaderTap}
+        // Web drives the toggle from pointerdown on the root instead, so that a
+        // tap on mobile web isn't counted twice — once here and once there,
+        // which would turn a single tap into a toggle.
+        onTouchEnd={Platform.OS === 'web' ? undefined : handleReaderTap}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         // Second, independent trigger for attaching the next chapter. The
