@@ -127,18 +127,10 @@ export default function ChapterReader() {
   /**
    * Overlay fade, on React Native's own Animated rather than Reanimated.
    *
-   * Reanimated drove this originally and the fade does not run on web: verified
-   * on the deployed bundle, where the hide completed correctly — the timer
-   * fired, `setUiInteractive(false)` applied — while Reanimated kept writing
-   * `opacity: 1` inline, leaving the overlay fully painted and completely dead.
-   * It went unnoticed because the only way to trigger it was a double tap, and
-   * a mouse never fires touch events, so on desktop the overlay simply persisted
-   * and nothing ever asked it to fade.
-   *
-   * A cross-fade of one value does not need the UI thread, and RN's Animated is
-   * the one implementation both react-native-web and native agree on. It also
-   * has no objection to a single value driving two views, which Reanimated does.
-   * This was the file's only Reanimated usage.
+   * A cross-fade of one value does not need the UI thread, so this uses RN's
+   * Animated rather than Reanimated — which also removes the file's only
+   * Reanimated dependency, and sidesteps Reanimated's rule that one animated
+   * style may not drive two components (the two overlays fade together).
    */
   const uiOpacity = useRef(new Animated.Value(1)).current;
   const uiFadeRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -358,21 +350,16 @@ export default function ChapterReader() {
   /**
    * Web gets its fade from a CSS transition on a state-driven opacity.
    *
-   * Neither animation library drives this element on react-native-web. Measured
-   * on the deployed bundle with a MutationObserver on the style attribute
-   * across a full hide cycle: Reanimated wrote `opacity: 1` and never revised
-   * it, and RN's Animated produced **zero** style mutations while still logging
-   * its `useNativeDriver` fallback warning — so the timing ran and simply never
-   * reached the DOM. The inline `opacity: 1` is just the initial render
-   * serialising the value.
+   * A plain opacity plus `transition` is what a browser is good at, and it means
+   * the committed style reaches its final value immediately rather than being
+   * interpolated frame by frame — so the overlay still ends up in the right
+   * state on a page that is throttled or not compositing. Native keeps the
+   * Animated value.
    *
-   * A plain number plus `transition` is what the browser is good at anyway.
-   * Native keeps the Animated value, where it genuinely works.
-   *
-   * The two are mutually exclusive rather than layered. Supplying both put an
-   * Animated.Value and a CSS opacity in the same style array, and the animated
-   * node wins on web regardless of array order — so the CSS transition was
-   * applied and then immediately overwritten with the stuck value of 1.
+   * The two are mutually exclusive rather than layered: an Animated.Value and a
+   * CSS opacity in the same style array leaves the animated node writing the
+   * element's opacity on web regardless of array order, which cancels out the
+   * transition.
    */
   const overlayFadeStyle = useMemo(
     () =>
