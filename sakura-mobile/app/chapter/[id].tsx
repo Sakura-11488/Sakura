@@ -106,10 +106,12 @@ export default function ChapterReader() {
   const [loading, setLoading] = useState(true);
   /** Drives pointerEvents, and deliberately lags the fade — see hideUI. */
   const [uiInteractive, setUiInteractive] = useState(true);
-  /** The truth about visibility, for timers and callbacks that can't see state.
-   *  Keeping it out of state also avoids a full re-render of a screen full of
-   *  decoded page images on every show/hide. */
+  /** The truth about visibility, for timers and callbacks that can't see state. */
   const uiVisibleRef = useRef(true);
+  /** Same fact as uiVisibleRef, in state, because web's fade is a rendered
+   *  opacity rather than an animated one. Flips immediately on show/hide —
+   *  unlike uiInteractive, which deliberately lags the fade-out. */
+  const [uiShown, setUiShown] = useState(true);
   // Which chapter the reader is looking at right now — not necessarily the one
   // the route was opened on, once reading has crossed a boundary.
   const [activeChapterId, setActiveChapterId] = useState('');
@@ -353,8 +355,33 @@ export default function ChapterReader() {
     };
   }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess]);
 
-  /** Shared by both overlays — legal here, unlike a Reanimated animated style. */
+  /**
+   * Web gets its fade from a CSS transition on a state-driven opacity.
+   *
+   * Neither animation library drives this element on react-native-web. Measured
+   * on the deployed bundle with a MutationObserver on the style attribute
+   * across a full hide cycle: Reanimated wrote `opacity: 1` and never revised
+   * it, and RN's Animated produced **zero** style mutations while still logging
+   * its `useNativeDriver` fallback warning — so the timing ran and simply never
+   * reached the DOM. The inline `opacity: 1` is just the initial render
+   * serialising the value.
+   *
+   * A plain number plus `transition` is what the browser is good at anyway.
+   * Native keeps the Animated value, where it genuinely works — and this style
+   * comes last in the array, so on web it wins and on native it is null.
+   */
   const uiFadeStyle = useMemo(() => ({ opacity: uiOpacity }), [uiOpacity]);
+  const webFadeStyle = useMemo(
+    () =>
+      Platform.OS === 'web'
+        ? ({
+            opacity: uiShown ? 1 : 0,
+            transitionProperty: 'opacity',
+            transitionDuration: `${UI_FADE_MS}ms`,
+          } as never)
+        : null,
+    [uiShown],
+  );
 
   const fadeUiTo = useCallback(
     (to: 0 | 1) => {
@@ -1150,6 +1177,7 @@ export default function ChapterReader() {
     clearHideTimer();
     if (!uiVisibleRef.current) return;
     uiVisibleRef.current = false;
+    setUiShown(false);
     fadeUiTo(0);
     // pointerEvents lags the fade. If it flipped now the controls would go dead
     // while still fully painted, and a finger already in flight would press a
@@ -1179,6 +1207,7 @@ export default function ChapterReader() {
       pointerOffTimerRef.current = null;
     }
     uiVisibleRef.current = true; // order matters: scheduleHide reads this
+    setUiShown(true);
     setUiInteractive(true);
     // Started unconditionally: a fade from the current value to the same value
     // costs one frame, and this runs on a touch path where checking first would
@@ -1621,7 +1650,7 @@ export default function ChapterReader() {
 
       {/* Top UI overlay */}
       <Animated.View
-        style={[styles.topOverlay, uiFadeStyle]}
+        style={[styles.topOverlay, uiFadeStyle, webFadeStyle]}
         pointerEvents={uiInteractive ? 'auto' : 'none'}
         onTouchStart={noteUiTouch}
       >
@@ -1676,7 +1705,7 @@ export default function ChapterReader() {
           buttons work identically in both modes. */}
       {activeTotalPages > 0 ? (
         <Animated.View
-          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiFadeStyle]}
+          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiFadeStyle, webFadeStyle]}
           // box-none, not auto. The strip this replaces was paged-only, where
           // swipes start mid-screen. This band is full width and now present in
           // webtoon mode, where a vertical flick very often starts low on the
