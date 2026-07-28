@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, Animated, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Image } from 'expo-image';
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
@@ -90,6 +90,7 @@ export default function ChapterReader() {
   const isAdult = adapter?.adult === true;
   const isGated = gated === '1' && !isExternal;
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { address } = useWallet();
 
@@ -1254,7 +1255,12 @@ export default function ChapterReader() {
    */
   const goBack = useCallback(() => {
     clearHideTimer();
-    if (router.canGoBack()) {
+    // navigation.canGoBack(), NOT router.canGoBack(). The latter returned true
+    // on a directly-loaded chapter and router.back() still fell through to the
+    // app root — verified on the deployed bundle, twice. This one reports the
+    // navigator's own stack rather than anything derived from browser history,
+    // which on web is full of entries that are not this app's to pop.
+    if (navigation.canGoBack()) {
       router.back();
       return;
     }
@@ -1265,7 +1271,7 @@ export default function ChapterReader() {
         ...(typeof source === 'string' && source ? { source } : {}),
       },
     });
-  }, [clearHideTimer, router, mangaId, source]);
+  }, [clearHideTimer, navigation, router, mangaId, source]);
 
   /**
    * Desktop's double tap is a double click.
