@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, ScrollView, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Image } from 'expo-image';
 import Animated, {
   useSharedValue,
@@ -30,6 +30,7 @@ import { setMangaReadProgress } from '@/lib/reader-progress';
 import { recordReadingEvent } from '@/lib/gamification';
 import EmptyState from '@/components/ui/EmptyState';
 import ReaderSettingsSheet from '@/components/reader/ReaderSettingsSheet';
+import ReaderChapterBar from '@/components/reader/ReaderChapterBar';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib/wallet/pass';
@@ -43,10 +44,18 @@ const DEFAULT_PAGE_RATIO = 1.5;
 /** Window for the reader's double tap. Long enough to be unhurried, short
  *  enough that two unrelated taps a beat apart don't count as one gesture. */
 const DOUBLE_TAP_MS = 300;
-const THUMB_W = 44;
-const THUMB_H = 60;
-const THUMB_GAP = 8;
-const THUMB_STEP = THUMB_W + THUMB_GAP;
+/** Idle time before the reader's overlay fades itself out. Measured from the
+ *  last interaction, never from when it appeared, so reaching for the back
+ *  button keeps it alive. Short enough to stay out of the way; survivable only
+ *  because the timer restarts on every touch and a touch during the fade
+ *  cancels it outright. */
+const AUTO_HIDE_MS = 2000;
+const UI_FADE_MS = 200;
+/** How long after a jump reading-credit stays suppressed. Wide enough to outlive
+ *  the webtoon settle path (a 350ms retry plus viewability's minimum view). */
+const SEEK_GUARD_MS = 900;
+/** Scroll distance that counts as "reading resumed" rather than finger drift. */
+const SCROLL_HIDE_PX = 12;
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -93,7 +102,6 @@ export default function ChapterReader() {
   const [hasAccess, setHasAccess] = useState(!isGated);
   const [passExpiry, setPassExpiry] = useState<Date | null>(null);
   const flatListRef = useRef<FlatList<ReaderRow>>(null);
-  const indicatorRef = useRef<ScrollView>(null);
   const didInitialScroll = useRef(false);
   // One entry per chapter resident in this session, always in reading order.
   const [segments, setSegments] = useState<ChapterSegment[]>([]);
@@ -101,7 +109,12 @@ export default function ChapterReader() {
   // is simply off and the reader behaves exactly as it always did.
   const [orderedChapters, setOrderedChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
-  const [uiVisible, setUiVisible] = useState(true);
+  /** Drives pointerEvents, and deliberately lags the fade — see hideUI. */
+  const [uiInteractive, setUiInteractive] = useState(true);
+  /** The truth about visibility, for timers and callbacks that can't see state.
+   *  Keeping it out of state also avoids a full re-render of a screen full of
+   *  decoded page images on every show/hide. */
+  const uiVisibleRef = useRef(true);
   // Which chapter the reader is looking at right now — not necessarily the one
   // the route was opened on, once reading has crossed a boundary.
   const [activeChapterId, setActiveChapterId] = useState('');
@@ -115,6 +128,25 @@ export default function ChapterReader() {
   // tall manhwa strips get their full height instead of being cropped to 1.5.
   const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
   const uiOpacity = useSharedValue(1);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pointerOffTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** >0 means something is holding the overlay open. A COUNTER, not a boolean:
+   *  a slider drag and the settings modal can overlap. */
+  const uiHoldRef = useRef(0);
+  /** Which chapter route the hide timer has already been armed for. */
+  const armedForRef = useRef('');
+  const lastRevealRef = useRef(0);
+  /** Lets onScroll, declared far above hideUI, dismiss the overlay without a
+   *  use-before-declaration dependency. Assigned in the auto-hide block. */
+  const hideUIRef = useRef<() => void>(() => {});
+  /** A drag the USER started, as opposed to any programmatic scroll. */
+  const userDragRef = useRef(false);
+  const dragStartOffsetRef = useRef(0);
+  /** Set for a beat around any slider seek or chapter-button press, so a jump
+   *  can't be mistaken for having read the pages it skipped. */
+  const seekingRef = useRef(false);
+  const seekGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handlePageLoad = useCallback((pageId: string, width?: number, height?: number) => {
     if (!width || !height) return;
@@ -377,12 +409,13 @@ export default function ChapterReader() {
    * point somewhere else the moment the list grew.
    */
   const jumpToChapterPage = useCallback(
-    (chapterId: string, pageIndex: number, animated = false) => {
+    (chapterId: string, pageIndex: number, animated = false): boolean => {
       const rowIndex = rowIndexFor(boundsRef.current, chapterId, pageIndex);
-      if (rowIndex < 0) return;
+      if (rowIndex < 0) return false;
       jumpToRow(rowIndex, animated);
       setActiveChapterId(chapterId);
       setActivePageIndex(pageIndex);
+      return true;
     },
     [jumpToRow],
   );
@@ -391,8 +424,13 @@ export default function ChapterReader() {
     if (loading || rows.length === 0 || didInitialScroll.current) return;
     const target = Math.min(Math.max(requestedPage - 1, 0), Math.max(activeTotalPages - 1, 0));
     requestAnimationFrame(() => {
-      jumpToChapterPage(entryChapterId, target, false);
-      didInitialScroll.current = true;
+      // Latch only on SUCCESS. The chapter buttons replace the route without
+      // unmounting, so this effect fires once while the old chapter is still the
+      // only resident one: rowIndexFor returns -1 for the new chapter, the jump
+      // is a no-op, and latching anyway meant the new chapter was never scrolled
+      // to at all — the list kept its native offset across the data swap, so
+      // "next chapter" from page 30 of 40 opened the next one near its end.
+      if (jumpToChapterPage(entryChapterId, target, false)) didInitialScroll.current = true;
     });
   }, [loading, requestedPage, rows.length, activeTotalPages, entryChapterId, jumpToChapterPage]);
 
@@ -541,6 +579,7 @@ export default function ChapterReader() {
 
   const settleScroll = useCallback(() => {
     isScrollingRef.current = false;
+    userDragRef.current = false;
     if (pendingPrependRef.current) {
       pendingPrependRef.current = false;
       void ensurePrevRef.current();
@@ -552,6 +591,20 @@ export default function ChapterReader() {
       const { x, y } = e.nativeEvent.contentOffset;
       scrollOffsetRef.current = readingMode === 'page' ? x : y;
       isScrollingRef.current = true;
+      // Reading has genuinely resumed — dismiss the overlay. Gated on BOTH a
+      // real user drag and a real distance: onScroll fires for every
+      // programmatic scroll too (the seek itself, the initial restore, prepend
+      // compensation, every runPendingRestore retry), and an 8px finger drift
+      // inside a tap must not dismiss a bar that was just revealed.
+      if (
+        userDragRef.current &&
+        uiVisibleRef.current &&
+        Math.abs(scrollOffsetRef.current - dragStartOffsetRef.current) > SCROLL_HIDE_PX
+      ) {
+        // Through a ref, not a dependency: hideUI is declared far below and
+        // naming it here would be a use-before-declaration error.
+        hideUIRef.current();
+      }
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       // Momentum events don't fire for a slow drag that simply stops, so treat
       // a short gap with no scroll events as "at rest" too.
@@ -563,6 +616,10 @@ export default function ChapterReader() {
   useEffect(
     () => () => {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      if (pointerOffTimerRef.current) clearTimeout(pointerOffTimerRef.current);
+      if (seekGuardRef.current) clearTimeout(seekGuardRef.current);
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
     },
     [],
   );
@@ -905,6 +962,13 @@ export default function ChapterReader() {
 
   useEffect(() => {
     if (!activeChapterId || activeTotalPages === 0) return;
+    // A slider jump or a chapter button sets activePageIndex directly. This
+    // effect has NO dependency array, so it runs on the very next render and
+    // would push maxPage straight to `total` — flushGamification then computes
+    // progress = 1 and reports `completed`, a full XP and streak credit for a
+    // two-second scrub. Guarding onEndReached alone does nothing, because
+    // onEndReached is not the path this takes.
+    if (seekingRef.current) return;
     const stats = chapterStatsRef.current;
     const existing = stats.get(activeChapterId);
     if (!existing) {
@@ -962,7 +1026,9 @@ export default function ChapterReader() {
       // the viewable rows happened to report.
       const from = segmentsRef.current.find((s) => s.chapterId === previous);
       const to = segmentsRef.current.find((s) => s.chapterId === activeChapterId);
-      if (from && to && to.orderIndex > from.orderIndex) creditChapterComplete(previous);
+      if (from && to && to.orderIndex > from.orderIndex && !seekingRef.current) {
+        creditChapterComplete(previous);
+      }
       flushGamification(previous);
     }
     prevActiveChapterRef.current = activeChapterId;
@@ -1035,13 +1101,106 @@ export default function ChapterReader() {
     jumpToChapterPage(pending.chapterId, pending.page, false);
   }, [jumpToChapterPage]);
 
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Fade the overlay out.
+   *
+   * Deliberately not the old `toggleUI`. A toggle is a flip, so a timer wired to
+   * it would SHOW the bar whenever it fired while already hidden — an auto-hide
+   * that makes the overlay appear on its own two seconds after you dismissed it.
+   * Written as a plain idempotent function rather than a setState updater: the
+   * previous version mutated `uiOpacity` inside the updater, and React may
+   * double-invoke updaters.
+   */
+  const hideUI = useCallback(() => {
+    clearHideTimer();
+    if (!uiVisibleRef.current) return;
+    uiVisibleRef.current = false;
+    uiOpacity.value = withTiming(0, { duration: UI_FADE_MS });
+    // pointerEvents lags the fade. If it flipped now the controls would go dead
+    // while still fully painted, and a finger already in flight would press a
+    // visible button and get nothing. Invisible when the user dismisses the bar
+    // themselves; the most-reported class of bug once a timer does it for them.
+    if (pointerOffTimerRef.current) clearTimeout(pointerOffTimerRef.current);
+    pointerOffTimerRef.current = setTimeout(() => {
+      pointerOffTimerRef.current = null;
+      setUiInteractive(false);
+    }, UI_FADE_MS);
+  }, [clearHideTimer, uiOpacity]);
+
+  // onScroll is declared several hundred lines above this point and cannot name
+  // hideUI in a dependency array. Same pattern as ensureNextRef/ensurePrevRef.
+  hideUIRef.current = hideUI;
+
+  const scheduleHide = useCallback(() => {
+    clearHideTimer();
+    if (!uiVisibleRef.current) return; // nothing on screen to hide
+    if (uiHoldRef.current > 0) return; // a finger or a modal owns it
+    hideTimerRef.current = setTimeout(hideUI, AUTO_HIDE_MS);
+  }, [clearHideTimer, hideUI]);
+
+  const showUI = useCallback(() => {
+    if (pointerOffTimerRef.current) {
+      clearTimeout(pointerOffTimerRef.current);
+      pointerOffTimerRef.current = null;
+    }
+    uiVisibleRef.current = true; // order matters: scheduleHide reads this
+    setUiInteractive(true);
+    // Assigned unconditionally: reading uiOpacity.value from the JS thread is
+    // either stale or a blocking hop, and this runs on a touch path. Timing from
+    // the current value to the same value is a no-op frame.
+    uiOpacity.value = withTiming(1, { duration: UI_FADE_MS });
+    scheduleHide();
+  }, [uiOpacity, scheduleHide]);
+
   const toggleUI = useCallback(() => {
-    setUiVisible((prev) => {
-      const next = !prev;
-      uiOpacity.value = withTiming(next ? 1 : 0, { duration: 200 });
-      return next;
-    });
-  }, [uiOpacity]);
+    if (uiVisibleRef.current) hideUI();
+    else showUI();
+  }, [hideUI, showUI]);
+
+  /** Suspend the timer entirely — restarting it isn't enough, because a slow
+   *  scrub or a long visit to the settings sheet outlasts any window. */
+  const holdUI = useCallback(() => {
+    uiHoldRef.current += 1;
+    clearHideTimer();
+  }, [clearHideTimer]);
+
+  const releaseUI = useCallback(() => {
+    uiHoldRef.current = Math.max(0, uiHoldRef.current - 1);
+    if (uiHoldRef.current === 0) scheduleHide();
+  }, [scheduleHide]);
+
+  /**
+   * A touch landing on the overlay itself.
+   *
+   * The overlays swallow their own touches, so the list's onTouchEnd never fires
+   * for them and without this, tapping the top bar's background wouldn't extend
+   * its life. It also rescues "reached a moment too late": during the fade-out
+   * the bar is still painted and still interactive, so the touch cancels the
+   * hide instead of falling through to nothing.
+   */
+  const noteUiTouch = useCallback(() => {
+    if (uiVisibleRef.current) scheduleHide();
+    else showUI();
+  }, [scheduleHide, showUI]);
+
+  /**
+   * Mouse input never fires onTouchEnd, so on desktop web the double-tap toggle
+   * is unreachable and the overlay simply persists. Auto-hiding it there without
+   * this would strand the top bar and the slider permanently.
+   */
+  const handlePointerReveal = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRevealRef.current < 400) return; // pointermove fires per pixel
+    lastRevealRef.current = now;
+    showUI();
+  }, [showUI]);
 
   /**
    * The overlay toggles on a DOUBLE tap, not a single one.
@@ -1064,13 +1223,202 @@ export default function ChapterReader() {
       return;
     }
     lastTapRef.current = now;
-  }, [toggleUI]);
+    // The FIRST tap of a pair is interaction too. Without this the timer can
+    // expire inside the window between the two taps, so a double tap meant to
+    // dismiss the bar hides it and then immediately re-shows it.
+    scheduleHide();
+  }, [toggleUI, scheduleHide]);
+
+  const markSeeking = useCallback(() => {
+    seekingRef.current = true;
+    if (seekGuardRef.current) clearTimeout(seekGuardRef.current);
+    seekGuardRef.current = setTimeout(() => {
+      seekingRef.current = false;
+    }, SEEK_GUARD_MS);
+  }, []);
+
+  /**
+   * Move to a page in the chapter on screen, from the slider.
+   *
+   * Targets `activeSegment.chapterId`, not `activeChapterId`: activeSegment
+   * falls back to segments[0] and totalPages is derived from it, so using
+   * activeChapterId could aim at a chapter that isn't resident — rowIndexFor
+   * returns -1, the jump is a silent no-op, and the knob has already moved.
+   */
+  const seekToPage = useCallback(
+    (pageIndex: number) => {
+      const segment = activeSegment;
+      if (!segment) return;
+      markSeeking();
+      // Warm the destination before its cell mounts. The strip this bar replaces
+      // doubled as a whole-chapter prefetch — thumbnails and pages shared a URL,
+      // so the image cache was warm by the time you swiped. Pages render with no
+      // transition, so an unwarmed page paints nothing at all until fetch and
+      // decode finish; without this every paged seek lands on black.
+      for (let k = pageIndex - 1; k <= pageIndex + 2; k += 1) {
+        const pg = segment.pages[k];
+        if (pg) void Image.prefetch(pg.url).catch(() => undefined);
+      }
+      if (readingMode === 'scroll') {
+        // Webtoon has no getItemLayout, so scrollToIndex past the measured
+        // frontier bails to onScrollToIndexFailed and lands on an estimate;
+        // rows then re-measure as images load and replace the default ratio with
+        // real 3-15 ones. Re-land from every layout pass instead — the exact
+        // mechanism the mode switch already uses. A user drag cancels it.
+        pendingRestoreRef.current = { chapterId: segment.chapterId, page: pageIndex, tries: 0 };
+      } else {
+        pendingRestoreRef.current = null;
+      }
+      jumpToChapterPage(segment.chapterId, pageIndex, false);
+    },
+    [activeSegment, markSeeking, readingMode, jumpToChapterPage],
+  );
+
+  /** Warm where the finger pauses, not every page it sweeps over. */
+  const previewSeek = useCallback(
+    (pageIndex: number) => {
+      if (readingMode !== 'page') return; // webtoon rows stream in on scroll anyway
+      const segment = activeSegment;
+      if (!segment) return;
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = setTimeout(() => {
+        previewTimerRef.current = null;
+        [pageIndex, pageIndex + 1, pageIndex - 1].forEach((k) => {
+          const pg = segment.pages[k];
+          if (pg) void Image.prefetch(pg.url).catch(() => undefined);
+        });
+      }, 140);
+    },
+    [activeSegment, readingMode],
+  );
+
+  /** The chapters either side of the one on screen, from the normalised list. */
+  const adjacentChapters = useMemo(() => {
+    const at = orderedChapters.findIndex((c) => c.id === activeChapterId);
+    if (at < 0) return { prev: null, next: null };
+    return { prev: orderedChapters[at - 1] ?? null, next: orderedChapters[at + 1] ?? null };
+  }, [orderedChapters, activeChapterId]);
+
+  const goToAdjacentChapter = useCallback(
+    (dir: -1 | 1) => {
+      const target = dir === 1 ? adjacentChapters.next : adjacentChapters.prev;
+      if (!target) return;
+      markSeeking(); // a button press is a skip, never a completed read
+      scheduleHide();
+      // Continuous reading has usually already attached the neighbour, in which
+      // case this is a scroll rather than a load.
+      if (segmentsRef.current.some((s) => s.chapterId === target.id)) {
+        if (readingMode === 'scroll') {
+          pendingRestoreRef.current = { chapterId: target.id, page: 0, tries: 0 };
+        }
+        jumpToChapterPage(target.id, 0, false);
+        return;
+      }
+      pendingRestoreRef.current = null;
+      // replace, not push: otherwise every press adds a back-stack entry and
+      // backing out of a long session walks you through all of them.
+      router.replace({
+        pathname: '/chapter/[id]',
+        params: {
+          id: `${mangaId}~${target.id}`,
+          ...(typeof title === 'string' ? { title } : {}),
+          ...(typeof cover === 'string' ? { cover } : {}),
+          chapter: target.title || `Chapter ${target.number}`,
+          ...(typeof source === 'string' && source ? { source } : {}),
+        },
+      });
+    },
+    [
+      adjacentChapters,
+      jumpToChapterPage,
+      mangaId,
+      markSeeking,
+      readingMode,
+      router,
+      scheduleHide,
+      title,
+      cover,
+      source,
+    ],
+  );
+
+  // Hoisted out of the JSX so React.memo on the bar can actually bite.
+  const goPrevChapter = useCallback(() => goToAdjacentChapter(-1), [goToAdjacentChapter]);
+  const goNextChapter = useCallback(() => goToAdjacentChapter(1), [goToAdjacentChapter]);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+
+  const modeLabel = useMemo(() => {
+    if (readingMode === 'page') {
+      return `Paged (${readDirection === 'rtl' ? 'right to left' : 'left to right'})`;
+    }
+    // The caption opens the sheet that owns this switch, so it must not claim
+    // "continuous" while the switch beside it is off.
+    return continuous ? 'Webtoon (continuous)' : 'Webtoon';
+  }, [readingMode, readDirection, continuous]);
+
+  // The strip was also an accidental whole-chapter prefetch. Replace it with a
+  // bounded, forward-looking one. Skipped while seeking so it doesn't compete
+  // with seekToPage's own target warm.
+  useEffect(() => {
+    if (readingMode !== 'page' || !activeSegment || seekingRef.current) return;
+    activeSegment.pages.slice(activePageIndex + 1, activePageIndex + 4).forEach((pg) => {
+      void Image.prefetch(pg.url).catch(() => undefined);
+    });
+  }, [activeSegment, activePageIndex, readingMode]);
+
+  /**
+   * Hold the overlay open while the settings sheet is up.
+   *
+   * Declarative rather than paired hold/release calls on the "Aa" button and
+   * onClose. The sheet is a Modal with a fade animation, so during its fade-in
+   * the button underneath is still mounted and touchable — a fast double-press
+   * would take two holds against one release, the counter would never return to
+   * zero, and auto-hide would be dead for the rest of the session. An effect is
+   * idempotent by construction and covers any future close path.
+   */
+  useEffect(() => {
+    if (!settingsOpen) return;
+    holdUI();
+    return releaseUI;
+  }, [settingsOpen, holdUI, releaseUI]);
+
+  /**
+   * Arm the auto-hide once there is genuinely something on screen.
+   *
+   * Not a mount effect: the overlay doesn't render until past the gate, loading
+   * and empty returns below, so a slow chapter would burn the whole window
+   * before the bar had ever been painted. Keyed on the route's chapter too,
+   * because the prev/next buttons replace params WITHOUT remounting.
+   */
+  useEffect(() => {
+    if (loading || rows.length === 0) return;
+    const key = `${mangaId}~${entryChapterId}`;
+    if (armedForRef.current === key) return;
+    armedForRef.current = key;
+    showUI();
+  }, [loading, rows.length, mangaId, entryChapterId, showUI]);
 
   useEffect(() => {
-    if (!indicatorRef.current || activeTotalPages === 0) return;
-    const x = activePageIndex * THUMB_STEP - SCREEN_WIDTH / 2 + THUMB_W / 2 + 12;
-    indicatorRef.current.scrollTo({ x: Math.max(0, x), animated: false });
-  }, [activePageIndex, activeTotalPages]);
+    const sub = AppState.addEventListener('change', (state) => {
+      // A timer scheduled before backgrounding can't be trusted across the gap —
+      // iOS suspends JS timers, Android generally doesn't — so re-arm from now
+      // rather than letting it fire at an arbitrary moment on resume.
+      if (state === 'active') scheduleHide();
+      else clearHideTimer();
+    });
+    return () => sub.remove();
+  }, [scheduleHide, clearHideTimer]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Gated on the same latch as the arm effect. Calling scheduleHide
+      // unconditionally here would fire at mount, while loading is still true —
+      // on a chapter slower than AUTO_HIDE_MS the bar would fade out behind the
+      // spinner and the arm effect would then fade it back in.
+      if (armedForRef.current) scheduleHide();
+      return clearHideTimer;
+    }, [scheduleHide, clearHideTimer]),
+  );
 
   if (isGated && accessChecked && !hasAccess) {
     return (
@@ -1135,7 +1483,10 @@ export default function ChapterReader() {
   }
 
   return (
-    <View style={styles.screen}>
+    <View
+      style={styles.screen}
+      onPointerMove={Platform.OS === 'web' ? handlePointerReveal : undefined}
+    >
       <StatusBar hidden />
       <FlatList
         ref={flatListRef}
@@ -1168,8 +1519,12 @@ export default function ChapterReader() {
           // Reaching the bottom of the loaded content means the furthest
           // chapter has been read to its end, which viewability can't always
           // establish on its own for a short chapter.
+          // Arriving at the end by dragging the slider is not the same as
+          // reading to it. Necessary but not sufficient — the guard on the
+          // maxPage tracker below is the one that actually stops a scrub
+          // counting as a read.
           const last = segmentsRef.current[segmentsRef.current.length - 1];
-          if (last) creditChapterComplete(last.chapterId);
+          if (last && !seekingRef.current) creditChapterComplete(last.chapterId);
           void ensureNextChapter();
         }}
         onEndReachedThreshold={0.6}
@@ -1177,9 +1532,16 @@ export default function ChapterReader() {
         scrollEventThrottle={16}
         onScrollBeginDrag={() => {
           isScrollingRef.current = true;
+          userDragRef.current = true;
+          dragStartOffsetRef.current = scrollOffsetRef.current;
+          // The reader has taken the wheel; stop trying to re-land a seek or a
+          // mode switch under them. runPendingRestore never nulls its anchor on
+          // success, and it is wired to both onLayout and onContentSizeChange.
+          pendingRestoreRef.current = null;
         }}
         onMomentumScrollEnd={settleScroll}
         onScrollEndDrag={() => {
+          userDragRef.current = false;
           // A drag that ends without flinging emits no momentum event.
           if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
           idleTimerRef.current = setTimeout(settleScroll, 120);
@@ -1230,8 +1592,18 @@ export default function ChapterReader() {
       />
 
       {/* Top UI overlay */}
-      <Animated.View style={[styles.topOverlay, uiStyle]} pointerEvents={uiVisible ? 'auto' : 'none'}>
-        <TouchableOpacity onPress={onTap(() => router.back())} style={styles.backBtn}>
+      <Animated.View
+        style={[styles.topOverlay, uiStyle]}
+        pointerEvents={uiInteractive ? 'auto' : 'none'}
+        onTouchStart={noteUiTouch}
+      >
+        <TouchableOpacity
+          onPress={onTap(() => {
+            clearHideTimer();
+            router.back();
+          })}
+          style={styles.backBtn}
+        >
           <BackIcon />
         </TouchableOpacity>
         {/* Counts within the chapter on screen, not across the whole session —
@@ -1266,38 +1638,42 @@ export default function ChapterReader() {
         }}
       />
 
-      {/* Scoped to the active chapter: a strip spanning every resident chapter
-          would be thousands of un-virtualised thumbnails. */}
-      {readingMode === 'page' && activeTotalPages > 0 && (
+      {/* Seek + chapter navigation. Replaces the thumbnail strip, which mounted
+          one FULL-RESOLUTION Image per page of the chapter — the thumbnail used
+          `page.url`, the identical string renderPage feeds the full-screen page,
+          and loadChapterPages never rewrites it — and did so on chapter entry
+          whether or not the overlay was ever painted.
+          Deliberately NOT gated on readingMode: it defaults to 'scroll', so a
+          paged-only bar would be invisible to most readers, and the chapter
+          buttons work identically in both modes. */}
+      {activeTotalPages > 0 ? (
         <Animated.View
-          style={[styles.indicatorWrap, { bottom: insets.bottom + 8 }, uiStyle]}
-          pointerEvents={uiVisible ? 'auto' : 'none'}
+          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiStyle]}
+          // box-none, not auto. The strip this replaces was paged-only, where
+          // swipes start mid-screen. This band is full width and now present in
+          // webtoon mode, where a vertical flick very often starts low on the
+          // screen — with 'auto' the FlatList (a sibling, not an ancestor) would
+          // never see those touches at all.
+          pointerEvents={uiInteractive ? 'box-none' : 'none'}
+          onTouchStart={noteUiTouch}
         >
-          <ScrollView
-            ref={indicatorRef}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.indicatorList}
-          >
-            {(activeSegment?.pages ?? []).map((page, i) => {
-              const active = i === activePageIndex;
-              return (
-                <TouchableOpacity
-                  key={page.id}
-                  activeOpacity={0.75}
-                  onPress={() => jumpToChapterPage(page.chapterId, i, false)}
-                >
-                  <Image
-                    source={{ uri: page.url }}
-                    style={[styles.thumb, active && styles.thumbActive]}
-                    contentFit="cover"
-                  />
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          <ReaderChapterBar
+            pageIndex={activePageIndex}
+            totalPages={activeTotalPages}
+            rtl={isRtlPageMode}
+            modeLabel={modeLabel}
+            onSeek={seekToPage}
+            onSeekPreview={previewSeek}
+            onSeekStart={holdUI}
+            onSeekEnd={releaseUI}
+            onPrevChapter={goPrevChapter}
+            onNextChapter={goNextChapter}
+            canGoPrev={adjacentChapters.prev != null}
+            canGoNext={adjacentChapters.next != null}
+            onOpenSettings={openSettings}
+          />
         </Animated.View>
-      )}
+      ) : null}
     </View>
   );
 }
@@ -1414,26 +1790,12 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     fontWeight: FontWeight.bold,
   },
-  indicatorWrap: {
+  bottomOverlay: {
     position: 'absolute',
     left: 0,
     right: 0,
+    bottom: 0,
+    paddingTop: 8,
     backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingVertical: 10,
-  },
-  indicatorList: {
-    paddingHorizontal: 12,
-    gap: THUMB_GAP,
-    alignItems: 'center',
-  },
-  thumb: {
-    width: THUMB_W,
-    height: THUMB_H,
-    borderRadius: 5,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.2)',
-  },
-  thumbActive: {
-    borderColor: '#FFFFFF',
   },
 });
