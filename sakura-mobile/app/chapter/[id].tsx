@@ -341,7 +341,19 @@ export default function ChapterReader() {
     };
   }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess]);
 
-  const uiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
+  /**
+   * One animated style per overlay, both reading the same shared value.
+   *
+   * Deliberately NOT a single `uiStyle` shared by both `Animated.View`s.
+   * Reanimated binds an animated style to one component; attach the same object
+   * to two and only one of them ever updates. That was latent while the second
+   * consumer — the old thumbnail strip — rendered in paged mode only, so webtoon
+   * mode had a single consumer and the fade worked. The seek bar renders in both
+   * modes, which made the collision real: the overlay went non-interactive on
+   * schedule while staying fully painted.
+   */
+  const topUiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
+  const bottomUiStyle = useAnimatedStyle(() => ({ opacity: uiOpacity.value }));
 
   useEffect(() => {
     if (loading || activeTotalPages === 0) return;
@@ -1593,7 +1605,7 @@ export default function ChapterReader() {
 
       {/* Top UI overlay */}
       <Animated.View
-        style={[styles.topOverlay, uiStyle]}
+        style={[styles.topOverlay, topUiStyle]}
         pointerEvents={uiInteractive ? 'auto' : 'none'}
         onTouchStart={noteUiTouch}
       >
@@ -1648,7 +1660,7 @@ export default function ChapterReader() {
           buttons work identically in both modes. */}
       {activeTotalPages > 0 ? (
         <Animated.View
-          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiStyle]}
+          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, bottomUiStyle]}
           // box-none, not auto. The strip this replaces was paged-only, where
           // swipes start mid-screen. This band is full width and now present in
           // webtoon mode, where a vertical flick very often starts low on the
