@@ -367,11 +367,14 @@ export default function ChapterReader() {
    * serialising the value.
    *
    * A plain number plus `transition` is what the browser is good at anyway.
-   * Native keeps the Animated value, where it genuinely works — and this style
-   * comes last in the array, so on web it wins and on native it is null.
+   * Native keeps the Animated value, where it genuinely works.
+   *
+   * The two are mutually exclusive rather than layered. Supplying both put an
+   * Animated.Value and a CSS opacity in the same style array, and the animated
+   * node wins on web regardless of array order — so the CSS transition was
+   * applied and then immediately overwritten with the stuck value of 1.
    */
-  const uiFadeStyle = useMemo(() => ({ opacity: uiOpacity }), [uiOpacity]);
-  const webFadeStyle = useMemo(
+  const overlayFadeStyle = useMemo(
     () =>
       Platform.OS === 'web'
         ? ({
@@ -379,8 +382,8 @@ export default function ChapterReader() {
             transitionProperty: 'opacity',
             transitionDuration: `${UI_FADE_MS}ms`,
           } as never)
-        : null,
-    [uiShown],
+        : ({ opacity: uiOpacity } as never),
+    [uiShown, uiOpacity],
   );
 
   const fadeUiTo = useCallback(
@@ -1650,7 +1653,7 @@ export default function ChapterReader() {
 
       {/* Top UI overlay */}
       <Animated.View
-        style={[styles.topOverlay, uiFadeStyle, webFadeStyle]}
+        style={[styles.topOverlay, overlayFadeStyle]}
         pointerEvents={uiInteractive ? 'auto' : 'none'}
         onTouchStart={noteUiTouch}
       >
@@ -1705,7 +1708,7 @@ export default function ChapterReader() {
           buttons work identically in both modes. */}
       {activeTotalPages > 0 ? (
         <Animated.View
-          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, uiFadeStyle, webFadeStyle]}
+          style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, overlayFadeStyle]}
           // box-none, not auto. The strip this replaces was paged-only, where
           // swipes start mid-screen. This band is full width and now present in
           // webtoon mode, where a vertical flick very often starts low on the
