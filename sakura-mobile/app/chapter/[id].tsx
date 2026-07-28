@@ -142,8 +142,9 @@ export default function ChapterReader() {
   /** >0 means something is holding the overlay open. A COUNTER, not a boolean:
    *  a slider drag and the settings modal can overlap. */
   const uiHoldRef = useRef(0);
-  /** Timestamp of the last pointerdown, for web's double-click detection. */
-  const lastRevealRef = useRef(0);
+  /** The bottom overlay's DOM node on web, so a double click aimed at its
+   *  controls isn't also read as "dismiss the overlay". */
+  const overlayHostRef = useRef<{ contains(n: Node): boolean } | null>(null);
   /** Lets onScroll, declared far above hideUI, dismiss the overlay without a
    *  use-before-declaration dependency. Assigned in the auto-hide block. */
   const hideUIRef = useRef<() => void>(() => {});
@@ -1242,26 +1243,31 @@ export default function ChapterReader() {
   /**
    * Desktop's double tap is a double click.
    *
-   * A mouse fires no touch events, so `onTouchEnd` never reaches the list and
-   * the toggle would be unreachable — with the overlay now starting hidden,
-   * that would leave a desktop reader no way to summon it at all. This is
-   * deliberately the same gesture rather than a mouse-specific affordance like
-   * reveal-on-move: "only on a double tap" should mean the same thing on both.
+   * A mouse fires no touch events, so `onTouchEnd` never reaches the list. With
+   * the overlay starting hidden that would leave a desktop reader no way to
+   * summon it at all. Deliberately the same gesture rather than a mouse-only
+   * affordance like reveal-on-hover: "only on a double tap" should mean the same
+   * thing on both.
    *
-   * Wired to pointerdown rather than a dblclick prop because React Native's View
-   * exposes the Pointer Events API, and pointerdown is what a click is made of.
+   * A DOM listener rather than a View prop. `onPointerDown` on a View is dropped
+   * by react-native-web — verified against the deployed bundle by dispatching
+   * pointerdown pairs at the list, which never reached the handler — and
+   * `dblclick` is the browser's own notion of this gesture, so there is no
+   * timing window to reimplement.
    */
-  const handlePointerTap = useCallback(() => {
-    const now = Date.now();
-    if (now - lastRevealRef.current <= DOUBLE_TAP_MS) {
-      lastRevealRef.current = 0;
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const onDoubleClick = (e: MouseEvent) => {
+      // A double click on the overlay's own controls is aimed at them, not at
+      // dismissing the thing they live in.
+      if (uiVisibleRef.current && e.target instanceof Node && overlayHostRef.current?.contains(e.target)) {
+        return;
+      }
       toggleUI();
-      return;
-    }
-    lastRevealRef.current = now;
-    // A first click while the bar is up is still interaction.
-    scheduleHide();
-  }, [toggleUI, scheduleHide]);
+    };
+    document.addEventListener('dblclick', onDoubleClick);
+    return () => document.removeEventListener('dblclick', onDoubleClick);
+  }, [toggleUI]);
 
   /**
    * The overlay toggles on a DOUBLE tap, not a single one.
@@ -1542,7 +1548,6 @@ export default function ChapterReader() {
   return (
     <View
       style={styles.screen}
-      onPointerDown={Platform.OS === 'web' ? handlePointerTap : undefined}
     >
       <StatusBar hidden />
       <FlatList
@@ -1708,6 +1713,7 @@ export default function ChapterReader() {
           buttons work identically in both modes. */}
       {activeTotalPages > 0 ? (
         <Animated.View
+          ref={overlayHostRef as never}
           style={[styles.bottomOverlay, { paddingBottom: insets.bottom + 6 }, overlayFadeStyle]}
           // box-none, not auto. The strip this replaces was paged-only, where
           // swipes start mid-screen. This band is full width and now present in
