@@ -10,6 +10,9 @@ const TWO_HE_BASE = `${MEDIA}/2heanime`;
 const DEGEGEN_BASE = `${MEDIA}/sakura-originals/degegen-files`;
 const DEGEGEN_MANIFEST_URL = `${DEGEGEN_BASE}/manifest.json`;
 const DEGEGEN_ASSET_VERSION = '20260608-3eps';
+const BURNIE_BASE = `${MEDIA}/sakura-originals/burnie-senders`;
+const BURNIE_MANIFEST_URL = `${BURNIE_BASE}/manifest.json`;
+const BURNIE_ASSET_VERSION = '20260728-ep1';
 
 // ─── Local cover images (require() for Metro bundler) ────────────────────────
 export const PSYOP_COVER = require('../assets/images/psyopanime.png');
@@ -279,6 +282,12 @@ const REMOTE_WORKS: Record<string, RemoteWorkConfig> = {
     assetVersion: DEGEGEN_ASSET_VERSION,
     fallback: () => DEGEGEN_INFO,
   },
+  'burnie-senders': {
+    manifestUrl: BURNIE_MANIFEST_URL,
+    base: BURNIE_BASE,
+    assetVersion: BURNIE_ASSET_VERSION,
+    fallback: () => BURNIE_INFO,
+  },
 };
 
 const remoteWorkState = new Map<string, RemoteWorkState>();
@@ -433,6 +442,18 @@ const TWO_HE_INFO: AnimeInfo = {
   episodes: twoHeEpisodes,
 };
 
+// Static mirror of the remote manifest, used until it loads and whenever the
+// media server can't be reached. Kept in step with
+// /var/www/html/sakura-originals/burnie-senders/manifest.json on the droplet.
+const burnieEpisodes: AnimeInfo['episodes'] = [
+  {
+    id: 'burnie-ep1',
+    number: 1,
+    title: 'Episode 1',
+    thumbnail: webImg(`${BURNIE_BASE}/episodes/ep1.jpg?v=${BURNIE_ASSET_VERSION}`),
+  },
+];
+
 const BURNIE_INFO: AnimeInfo = {
   id: 'burnie-senders',
   title: 'Burnie Senders',
@@ -440,12 +461,11 @@ const BURNIE_INFO: AnimeInfo = {
   cover: '',
   localCover: BURNIE_COVER,
   description:
-    'A new Sakura original is transmitting soon. The Burnie Senders are assembling for a meme-fueled anime drop from the edge of the chain.',
-  status: 'Coming Soon',
-  genres: ['Sakura Original', 'Meme Action', 'Coming Soon'],
+    'A meme-fueled Sakura Original from the edge of the chain. The Burnie Senders are transmitting.',
+  status: 'Ongoing',
+  genres: ['Sakura Original', 'Meme Action'],
   score: null,
-  episodes: [],
-  episodeLoadError: 'Burnie Senders is coming soon — stay tuned.',
+  episodes: burnieEpisodes,
 };
 
 const DEGEGEN_INFO: AnimeInfo = {
@@ -511,6 +531,9 @@ export function getSakuraOriginalStreamUrl(episodeId: string): string | null {
   if (episodeId === 'degegen-z-crash') {
     return proxyStreamUrlForWeb(`${DEGEGEN_BASE}/episodes/z-crash.mov`);
   }
+  if (episodeId === 'burnie-ep1') {
+    return proxyStreamUrlForWeb(`${BURNIE_BASE}/episodes/ep1.mp4`);
+  }
   return null;
 }
 
@@ -527,6 +550,7 @@ const EPISODE_PREFIX_TO_WORK: Array<[string, string]> = [
   ['degegen-', 'degegen-files'],
   ['psyop-', 'psyopanime'],
   ['2he-', '2heanime'],
+  ['burnie-', 'burnie-senders'],
 ];
 
 export async function resolveSakuraOriginalStreamUrl(
@@ -583,10 +607,9 @@ export const SAKURA_ORIGINALS: OriginalEntry[] = [
   {
     id: 'burnie-senders',
     title: 'Burnie Senders',
-    label: 'Coming Soon · Sakura',
+    label: 'Episode 1 · Sakura',
     localImage: BURNIE_COVER,
     score: null,
-    comingSoon: true,
     type: 'anime',
   },
   {
