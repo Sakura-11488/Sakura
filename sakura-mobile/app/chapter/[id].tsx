@@ -1241,6 +1241,33 @@ export default function ChapterReader() {
   }, [scheduleHide, showUI]);
 
   /**
+   * Back, without stranding the reader.
+   *
+   * `router.back()` with nothing to pop does not stay put — it lands on the app
+   * root carrying this route's params (verified: `/app/?id=<chapterId>`), which
+   * renders an indefinite spinner. That is not an edge case: the reader is
+   * reached with an empty stack by a refresh inside it, a shared or bookmarked
+   * link, a PWA shortcut, and a notification tap.
+   *
+   * The manga page is where back means to go anyway, so go there directly
+   * rather than asking history whether it happens to be behind us.
+   */
+  const goBack = useCallback(() => {
+    clearHideTimer();
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace({
+      pathname: '/manga/[id]',
+      params: {
+        id: mangaId,
+        ...(typeof source === 'string' && source ? { source } : {}),
+      },
+    });
+  }, [clearHideTimer, router, mangaId, source]);
+
+  /**
    * Desktop's double tap is a double click.
    *
    * A mouse fires no touch events, so `onTouchEnd` never reaches the list. With
@@ -1487,7 +1514,7 @@ export default function ChapterReader() {
     return (
       <View style={[styles.screen, styles.center]}>
         <StatusBar hidden />
-        <TouchableOpacity onPress={onTap(() => router.back())} style={styles.backBtnAbsolute}>
+        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtnAbsolute}>
           <BackIcon />
         </TouchableOpacity>
         <View style={styles.gateCard}>
@@ -1537,7 +1564,7 @@ export default function ChapterReader() {
     return (
       <View style={[styles.screen, styles.center]}>
         <StatusBar hidden />
-        <TouchableOpacity onPress={onTap(() => router.back())} style={styles.backBtn}>
+        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtn}>
           <BackIcon />
         </TouchableOpacity>
         <EmptyState inverted compact title="No pages found" />
@@ -1663,10 +1690,7 @@ export default function ChapterReader() {
         onTouchStart={noteUiTouch}
       >
         <TouchableOpacity
-          onPress={onTap(() => {
-            clearHideTimer();
-            router.back();
-          })}
+          onPress={onTap(goBack)}
           style={styles.backBtn}
         >
           <BackIcon />
