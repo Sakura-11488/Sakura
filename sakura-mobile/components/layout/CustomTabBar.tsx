@@ -233,7 +233,7 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
     );
   });
 
-  // On desktop web the WebTopNav replaces the floating bottom bar.
+  // On desktop web the WebSidebar rail replaces the floating bottom bar.
   if (hideBar || isWideWeb(windowW)) return null;
 
   // ── Glass tab bar (iOS 26+) ──────────────────────────────────────────────

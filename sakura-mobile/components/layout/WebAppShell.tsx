@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { MAX_CONTENT_WIDTH, MAX_CONTENT_WIDTH_DESKTOP, isWideWeb } from '@/constants/layout';
-import WebTopNav from './WebTopNav';
+import WebSidebar from './WebSidebar';
 
 export default function WebAppShell({ children }: { children: React.ReactNode }) {
   const { width } = useWindowDimensions();
@@ -10,14 +10,11 @@ export default function WebAppShell({ children }: { children: React.ReactNode })
     return <>{children}</>;
   }
 
-  // Desktop: top navigation bar over a centered wide content column.
-  //
-  // Was a left rail. The bar is the shape every streaming site uses and it
-  // returns 232px of horizontal space to content on every screen.
+  // Desktop: left sidebar rail + centered wide content column.
   if (isWideWeb(width)) {
     return (
-      <View style={styles.desktopCol}>
-        <WebTopNav />
+      <View style={styles.desktopRow}>
+        <WebSidebar />
         <View style={styles.desktopContentOuter}>
           <View style={styles.desktopContentCol}>{children}</View>
         </View>
@@ -43,9 +40,9 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: MAX_CONTENT_WIDTH,
   },
-  desktopCol: {
+  desktopRow: {
     flex: 1,
-    flexDirection: 'column',
+    flexDirection: 'row',
   },
   desktopContentOuter: {
     flex: 1,
