@@ -82,9 +82,19 @@ import { useFocusEffect } from 'expo-router';
 // import CreatorTab from '@/components/ui/CreatorTab';
 import { supabase } from '@/lib/supabase';
 import { getGatedChapterIds } from '@/lib/pass-gate';
+import { isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 
 const { width: W, height: SCREEN_H } = Dimensions.get('window');
-const HERO_H = W * 0.68;
+/**
+ * Cap on the hero at desktop widths.
+ *
+ * `W * 0.68` is a phone ratio: on a 1920px window it resolves to a 1306px-tall
+ * cover, so the title, the chapter count and the read button all start below
+ * the fold and the page opens as a full-screen image with no visible content.
+ * The anime detail screen caps at 560 for the same reason.
+ */
+const DESKTOP_HERO_H = 560;
+const HERO_H = isWideWeb(W) ? Math.min(W * 0.68, DESKTOP_HERO_H) : W * 0.68;
 const HEADER_TRIGGER = Math.round(HERO_H * 0.35);
 const HEADER_FADE_DISTANCE = 48;
 const CHAPTER_LIST_MAX_H = Math.min(SCREEN_H * 0.42, 400);
@@ -813,6 +823,12 @@ export default function MangaDetail() {
       marginTop: -24,
       paddingTop: 20,
       paddingHorizontal: 16,
+      // Cap and centre the body on desktop for the same reason as the CTA: a
+      // synopsis and a chapter list run edge to edge across a 1920px window are
+      // unreadable line lengths, and the page stops looking like a page.
+      ...(isWideWeb(W)
+        ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH }
+        : null),
     },
 
     metaRow: {
@@ -891,6 +907,12 @@ export default function MangaDetail() {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.border,
       gap: 8,
+      // Centre and cap on desktop. Stretched edge to edge across a 1920px
+      // window the button reads as a site-wide banner rather than an action
+      // belonging to this title. Matches app/anime/[id].tsx.
+      ...(isWideWeb(W)
+        ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH, left: undefined, right: undefined }
+        : null),
     },
     bottomCtaRow: {
       flexDirection: 'row',
