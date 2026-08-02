@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
 import { submitCreatorVerification } from '@/lib/creator-social';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 export default function CreatorVerificationScreen() {
@@ -51,7 +52,7 @@ export default function CreatorVerificationScreen() {
 
   async function submit() {
     if (!address) {
-      Alert.alert('Wallet required', 'Connect your creator wallet first.');
+      showAlert('Wallet required', 'Connect your creator wallet first.');
       return;
     }
     setSubmitting(true);
@@ -71,11 +72,10 @@ export default function CreatorVerificationScreen() {
         socialLinks,
         authHeaders: buildWalletAuthHeaders(keypair, 'creator-verification-request'),
       });
-      Alert.alert('Submitted', 'Your verification request is ready for review.', [
-        { text: 'Done', onPress: () => router.replace('/creator-dashboard') },
-      ]);
+      showAlert('Submitted', 'Your verification request is ready for review.');
+      router.replace('/creator-dashboard');
     } catch (error) {
-      Alert.alert('Verification failed', error instanceof Error ? error.message : 'Please try again.');
+      showAlert('Verification failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setSubmitting(false);
     }

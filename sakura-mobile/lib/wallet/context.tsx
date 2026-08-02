@@ -30,6 +30,12 @@ export interface WalletState {
   publicKey: PublicKey | null;
   connected: boolean;
   connecting: boolean;
+  /**
+   * True until the stored session has been read back. `connected === false`
+   * alone cannot distinguish "no wallet" from "haven't looked yet", which made
+   * screens redirect connected users to the connect screen on a cold load.
+   */
+  restoring: boolean;
   solBalance: number | null;
   sakuraBalance: number | null;
   loadingBalances: boolean;
@@ -61,6 +67,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [restoring, setRestoring] = useState(true);
   const [solBalance, setSolBalance] = useState<number | null>(null);
   const [sakuraBalance, setSakuraBalance] = useState<number | null>(null);
   const [loadingBalances, setLoadingBalances] = useState(false);
@@ -97,16 +104,20 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setLoadingBalances(false);
   }, [publicKey, rpcLabel]);
 
-  // Restore session on mount
+  // Restore session on mount. The `finally` matters: without it a rejected read
+  // would leave `restoring` true forever and every gated screen would hang.
   useEffect(() => {
-    getStoredPublicKey().then((stored) => {
-      if (stored) {
-        const pk = new PublicKey(stored);
-        setPublicKey(pk);
-        setAddress(stored);
-        setConnected(true);
-      }
-    });
+    getStoredPublicKey()
+      .then((stored) => {
+        if (stored) {
+          const pk = new PublicKey(stored);
+          setPublicKey(pk);
+          setAddress(stored);
+          setConnected(true);
+        }
+      })
+      .catch((e) => console.warn('[wallet] session restore failed:', e))
+      .finally(() => setRestoring(false));
   }, []);
 
   // Refresh balances whenever connected
@@ -206,6 +217,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         publicKey,
         connected,
         connecting,
+        restoring,
         solBalance,
         sakuraBalance,
         loadingBalances,

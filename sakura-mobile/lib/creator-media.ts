@@ -1,13 +1,9 @@
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import { Platform } from 'react-native';
 import type { Keypair } from '@solana/web3.js';
 import { invokeCreatorFunction } from './creator-api';
 import { buildWalletAuthHeaders } from './wallet-auth';
 import { MEDIA_BASE_DEFAULT } from './content-hosts';
-
-// Longest-edge cap for uploaded images. Keeps the base64 request body well under
-// the edge function's 6 MB decoded cap (a 4000px phone scan was ~7-9 MB and was
-// silently rejected, which is why creator covers/pages never uploaded).
-const MAX_UPLOAD_EDGE = 1600;
+import { prepareImageBase64 } from './prepare-image';
 
 /**
  * Creator media uploads (mobile-first).
@@ -20,9 +16,26 @@ const MAX_UPLOAD_EDGE = 1600;
  *   asset_files/work_assets via the same edge function.
  */
 
-const MEDIA_INGEST_BASE = (
-  process.env.EXPO_PUBLIC_MEDIA_INGEST_BASE?.trim() || `${MEDIA_BASE_DEFAULT}/media/v1`
-).replace(/\/+$/, '');
+/**
+ * The droplet terminates TLS (Let's Encrypt, auto-renewing), so the ingest host
+ * is reachable over https. An https page cannot POST to an http origin — the
+ * browser blocks it before the request is sent — so on web the scheme is forced
+ * up rather than trusted to configuration.
+ *
+ * This is deliberately not left to EXPO_PUBLIC_MEDIA_INGEST_BASE alone: that var
+ * lives in two separate .env files (sakura-mobile and web), is inlined at build
+ * time, and silently compiles out to `undefined` against a stale Metro cache —
+ * which reintroduces the exact mixed-content failure this guards against.
+ */
+const MEDIA_INGEST_BASE = (() => {
+  const configured = (
+    process.env.EXPO_PUBLIC_MEDIA_INGEST_BASE?.trim() || `${MEDIA_BASE_DEFAULT}/media/v1`
+  ).replace(/\/+$/, '');
+  if (Platform.OS === 'web' && configured.startsWith('http://')) {
+    return `https://${configured.slice('http://'.length)}`;
+  }
+  return configured;
+})();
 
 export type WorkImageRole = 'manga_page' | 'poster' | 'cover' | 'thumbnail';
 
@@ -39,41 +52,6 @@ export interface UploadedEpisodeVideo {
   /** Absolute URLs on the media host. */
   videoUrl: string;
   posterUrl: string | null;
-}
-
-/**
- * Resize (only if oversized) + recompress an image and return raw base64 (no
- * data-URI prefix). This is the single source of image bytes for uploads:
- *  - keeps files under the edge function's 6 MB cap (the reason uploads failed),
- *  - normalizes any picker URI (ph://, content://, blob:) to a decodable image
- *    on every platform, replacing the fragile FileSystem.readAsStringAsync path,
- *  - always emits JPEG, which the edge function's ALLOWED_MIME accepts.
- */
-async function prepareImageBase64(
-  localUri: string,
-): Promise<{ base64: string; mimeType: string; width: number; height: number }> {
-  // First pass decodes the image (and normalizes the URI) so we know its real
-  // dimensions and never upscale a small image.
-  const probe = await manipulateAsync(localUri, [], { compress: 1, format: SaveFormat.JPEG });
-  const longest = Math.max(probe.width, probe.height);
-  const actions =
-    longest > MAX_UPLOAD_EDGE
-      ? [
-          {
-            resize:
-              probe.width >= probe.height
-                ? { width: MAX_UPLOAD_EDGE }
-                : { height: MAX_UPLOAD_EDGE },
-          },
-        ]
-      : [];
-  const out = await manipulateAsync(probe.uri, actions, {
-    compress: 0.8,
-    format: SaveFormat.JPEG,
-    base64: true,
-  });
-  if (!out.base64) throw new Error('Could not read the image.');
-  return { base64: out.base64, mimeType: 'image/jpeg', width: out.width, height: out.height };
 }
 
 function videoMimeForName(name: string): string {
@@ -164,11 +142,78 @@ export async function uploadMangaPages(input: {
   return { results, failed };
 }
 
+/** True when the ingest host cannot be reached from this platform at all. */
+export function mediaIngestBlockedReason(): string | null {
+  if (Platform.OS !== 'web') return null;
+  // An http:// request from an https:// page is blocked by the browser before it
+  // is sent, so no amount of retrying helps and the failure surfaces as an
+  // opaque "Failed to fetch". Detect it up front and say so.
+  const isHttps = typeof window !== 'undefined' && window.location?.protocol === 'https:';
+  if (isHttps && MEDIA_INGEST_BASE.startsWith('http://')) {
+    return 'Video uploads need a secure connection to the media server, which is not set up for the web app yet. Publish episodes from the Sakura mobile app for now.';
+  }
+  return null;
+}
+
+/**
+ * Cheap liveness probe for the ingest host. Used to fail BEFORE a work row is
+ * created, so a dead media server does not leave an orphan draft behind.
+ * Returns null when reachable, else a human-readable reason.
+ */
+export async function checkMediaIngestReachable(): Promise<string | null> {
+  const blocked = mediaIngestBlockedReason();
+  if (blocked) return blocked;
+  try {
+    // Probe the health route and require an AFFIRMATIVE JSON ok. Checking for a
+    // failure signal instead does not work: Express answers unknown routes with
+    // an HTML 404 exactly like nginx does, so "content-type is text/html" is
+    // true both when the service is missing AND when it is running fine but the
+    // probed path isn't a GET route — which would block publishing outright.
+    const res = await fetch(`${MEDIA_INGEST_BASE}/healthz`, {
+      method: 'GET',
+      // Never let a dead host hold the publish button hostage.
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      return 'Video hosting is offline right now, so episodes cannot be uploaded. Your work has not been created — try again later.';
+    }
+    const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+    if (!body?.ok) {
+      return 'Video hosting is offline right now, so episodes cannot be uploaded. Your work has not been created — try again later.';
+    }
+    return null;
+  } catch {
+    return 'Could not reach the video server. Check your connection and try again.';
+  }
+}
+
+/**
+ * Resolve the multipart body for the video.
+ *
+ * React Native's FormData accepts a `{uri, name, type}` descriptor, but a
+ * browser stringifies that object to "[object Object]" and the server then sees
+ * a text field instead of a file. On web we must append a real File/Blob.
+ */
+async function resolveVideoBody(
+  localUri: string,
+  name: string,
+  mime: string,
+  file?: unknown,
+): Promise<Blob | { uri: string; name: string; type: string }> {
+  if (Platform.OS !== 'web') return { uri: localUri, name, type: mime };
+  if (file instanceof Blob) return file;
+  // expo-image-picker hands back a blob:/data: URI on web; fetch it back to bytes.
+  const res = await fetch(localUri);
+  return res.blob();
+}
+
 /**
  * Upload an anime episode video to the droplet (large-file path) and record
  * the asset. A poster frame is generated automatically by ffmpeg on the
- * server. Note: web builds can't call the plain-http media host directly —
- * this flow is mobile-first by design.
+ * server.
+ *
+ * Pass `file` on web (expo-image-picker's `asset.file`) — see resolveVideoBody
+ * for why the native descriptor shape cannot be used there.
  */
 export async function uploadAnimeEpisodeVideo(input: {
   keypair: Keypair;
@@ -176,18 +221,23 @@ export async function uploadAnimeEpisodeVideo(input: {
   releaseId: string;
   localUri: string;
   fileName?: string;
+  file?: unknown;
 }): Promise<UploadedEpisodeVideo> {
+  const blocked = mediaIngestBlockedReason();
+  if (blocked) throw new Error(blocked);
+
   const name = input.fileName?.trim() || input.localUri.split('/').pop() || 'episode.mp4';
   const mime = videoMimeForName(name);
   const headers = buildWalletAuthHeaders(input.keypair, 'upload-work-media');
 
+  const body = await resolveVideoBody(input.localUri, name, mime, input.file);
   const form = new FormData();
   form.append('workId', input.workId.toLowerCase());
-  form.append('file', {
-    uri: input.localUri,
-    name,
-    type: mime,
-  } as unknown as Blob);
+  if (body instanceof Blob) {
+    form.append('file', body, name);
+  } else {
+    form.append('file', body as unknown as Blob);
+  }
 
   const res = await fetch(`${MEDIA_INGEST_BASE}/creator/videos`, {
     method: 'POST',
@@ -202,6 +252,13 @@ export async function uploadAnimeEpisodeVideo(input: {
     error?: string;
   };
   if (!res.ok || !payload.videoUrl) {
+    // A 404 with an HTML body is nginx answering for a route that isn't
+    // configured — i.e. the ingest service isn't deployed. That is an outage,
+    // not a bad upload, and saying "Video upload failed (404)" sends creators
+    // hunting for a problem with their file.
+    if (res.status === 404 && (res.headers.get('content-type') || '').includes('text/html')) {
+      throw new Error('Video hosting is offline right now, so the episode could not be uploaded.');
+    }
     throw new Error(payload.error || `Video upload failed (${res.status})`);
   }
 

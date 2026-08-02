@@ -18,6 +18,7 @@ import Svg, { Path } from 'react-native-svg';
 import { onTap, playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { unlockForAppSession } from '@/lib/wallet/app-session';
 import { sendSakura } from '@/lib/wallet/connection';
 import {
@@ -75,7 +76,7 @@ export default function FanArtScreen() {
       setGallery(items);
       if (!series && q.series.length) setSeries(q.series[0]);
     } catch (e) {
-      Alert.alert('Fan-Art Studio', e instanceof Error ? e.message : 'Could not load.');
+      showAlert('Fan-Art Studio', e instanceof Error ? e.message : 'Could not load.');
     } finally {
       setLoading(false);
     }
@@ -134,13 +135,16 @@ export default function FanArtScreen() {
         await load();
       }
     } catch (e) {
-      Alert.alert('Generation failed', e instanceof Error ? e.message : 'Try again.');
+      showAlert('Generation failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
       setBusy(false);
     }
   }, [quote, busy, subjectType, series, character, freePrompt, style, load]);
 
   const onItemAction = useCallback(async (item: FanArtItem) => {
+    // Stays on Alert.alert: this one needs selectable buttons, which showAlert
+    // (window.alert on web) cannot render. Still inert on web — a proper action
+    // sheet is the real fix, tracked separately.
     Alert.alert(
       'Use this artwork',
       undefined,
@@ -152,9 +156,9 @@ export default function FanArtScreen() {
               const kp = await unlockForAppSession();
               if (!kp) return;
               await setFanArtAsAvatar(item.id, buildFanArtAuthHeaders(kp));
-              Alert.alert('Done', 'Avatar updated.');
+              showAlert('Done', 'Avatar updated.');
             } catch (e) {
-              Alert.alert('Failed', e instanceof Error ? e.message : 'Try again.');
+              showAlert('Failed', e instanceof Error ? e.message : 'Try again.');
             }
           },
         },
@@ -165,9 +169,9 @@ export default function FanArtScreen() {
               const kp = await unlockForAppSession();
               if (!kp) return;
               await setFanArtAsBanner(item.id, buildFanArtAuthHeaders(kp));
-              Alert.alert('Done', 'Banner updated.');
+              showAlert('Done', 'Banner updated.');
             } catch (e) {
-              Alert.alert('Failed', e instanceof Error ? e.message : 'Try again.');
+              showAlert('Failed', e instanceof Error ? e.message : 'Try again.');
             }
           },
         },

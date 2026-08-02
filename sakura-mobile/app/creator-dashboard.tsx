@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Dimensions,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -20,13 +19,16 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { onTap } from '@/lib/sound';
 import { CreatorDashboardSkeleton } from '@/components/creator/CreatorSkeletons';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import {
   getCreatorProfile,
+
   getCreatorWorks,
   statusLabel,
+
   uploadCreatorAvatar,
   workCoverUrl,
   type CreatorProfile,
@@ -55,7 +57,7 @@ function avatarColor(seed: string): string {
 export default function CreatorDashboardScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { connected, address, shortAddress, signWithBiometrics } = useWallet();
+  const { connected, address, shortAddress, restoring, signWithBiometrics } = useWallet();
 
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -89,12 +91,14 @@ export default function CreatorDashboardScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      // See creator-upload.tsx: don't judge the session until it has loaded.
+      if (restoring) return;
       if (!connected) {
         router.replace('/become-creator');
         return;
       }
       refresh();
-    }, [connected, refresh, router]),
+    }, [restoring, connected, refresh, router]),
   );
 
   const stats = useMemo(() => {
@@ -114,7 +118,7 @@ export default function CreatorDashboardScreen() {
 
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Photos', 'Allow photo access to upload your profile picture.');
+      showAlert('Photos', 'Allow photo access to upload your profile picture.');
       return;
     }
 
@@ -130,7 +134,7 @@ export default function CreatorDashboardScreen() {
     try {
       const keypair = await signWithBiometrics();
       if (!keypair) {
-        Alert.alert('Wallet', 'Unlock your wallet to update your profile photo.');
+        showAlert('Wallet', 'Unlock your wallet to update your profile photo.');
         return;
       }
 
@@ -159,7 +163,7 @@ export default function CreatorDashboardScreen() {
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
-      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Try again.');
+      showAlert('Upload failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
       setUploadingAvatar(false);
     }

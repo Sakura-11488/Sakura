@@ -235,13 +235,25 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  // x-wallet-address / x-signature / x-message are how creator uploads
+  // authenticate (requireCreator). Omitting them makes the browser reject the
+  // request AFTER a 204 preflight, which looks like a network error rather than
+  // a CORS problem — the web PWA cannot upload at all without them listed.
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Authorization, Content-Type, x-wallet-address, x-signature, x-message',
+  );
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   next();
 });
 app.options('*', (_req, res) => res.sendStatus(204));
 
 app.get('/healthz', (_req, res) => res.json({ ok: true, service: 'sakura-media-ingest' }));
+// nginx maps /media/v1/ -> /v1/, so this is what clients can actually reach as
+// GET /media/v1/healthz. Clients preflight against it to tell "service is up"
+// from "route not deployed" — Express answers unknown routes with an HTML 404
+// just like nginx does, so only an affirmative JSON body distinguishes them.
+app.get('/v1/healthz', (_req, res) => res.json({ ok: true, service: 'sakura-media-ingest' }));
 
 /** Upsert work-level metadata in the manifest. */
 app.post('/v1/works', requireAdmin, async (req, res) => {

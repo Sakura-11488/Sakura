@@ -732,6 +732,12 @@ export default function ProfileScreen() {
             colors={colors}
           />
           <MenuRow
+            label="Pose Studio"
+            icon={<IconBadge bg="#F5C518"><LibraryIcon color="#fff" /></IconBadge>}
+            onPress={onTap(() => router.push('/pose-studio' as any))}
+            colors={colors}
+          />
+          <MenuRow
             label="Settings"
             icon={<IconBadge bg={colors.surfaceTertiary}><SettingsIcon color="#fff" /></IconBadge>}
             onPress={onTap(() => router.push('/settings'))}

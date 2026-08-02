@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Dimensions,
@@ -22,6 +21,7 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import WalletModal from '@/components/wallet/WalletModal';
 import { onTap, playTap } from '@/lib/sound';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
@@ -108,7 +108,7 @@ export default function BecomeCreatorScreen() {
       setDisplayName(profile.profile?.display_name || '');
       setBio(profile.profile?.bio || '');
     } catch {
-      Alert.alert('Creator', 'Could not load your creator profile.');
+      showAlert('Creator', 'Could not load your creator profile.');
     } finally {
       setLoading(false);
     }
@@ -124,7 +124,7 @@ export default function BecomeCreatorScreen() {
     if (!address) return;
     const usernameErr = validateUsername(username);
     if (usernameErr) {
-      Alert.alert('Username', usernameErr);
+      showAlert('Username', usernameErr);
       return;
     }
     setSaving(true);
@@ -139,7 +139,7 @@ export default function BecomeCreatorScreen() {
       playTap();
       router.replace('/creator-dashboard');
     } catch (e) {
-      Alert.alert('Could not create profile', e instanceof Error ? e.message : 'Try again.');
+      showAlert('Could not create profile', e instanceof Error ? e.message : 'Try again.');
     } finally {
       setSaving(false);
     }

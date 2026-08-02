@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
+import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
 import { requestCreatorCoinLaunch } from '@/lib/creator-social';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 export default function CreatorCoinLaunchScreen() {
@@ -45,7 +46,7 @@ export default function CreatorCoinLaunchScreen() {
 
   async function submit() {
     if (!address) {
-      Alert.alert('Wallet required', 'Connect your creator wallet first.');
+      showAlert('Wallet required', 'Connect your creator wallet first.');
       return;
     }
     setSubmitting(true);
@@ -60,15 +61,13 @@ export default function CreatorCoinLaunchScreen() {
         imageUrl: imageUrl.trim() || undefined,
         authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-launch'),
       });
-      Alert.alert(
-        'Launch requested',
+      showAlert('Launch requested',
         result.unsigned_transaction
           ? 'Unsigned launch transaction is ready for the next signing step.'
-          : 'Your launch request is queued for review/building.',
-        [{ text: 'Done', onPress: () => router.replace('/creator-dashboard') }],
-      );
+          : 'Your launch request is queued for review/building.');
+      router.replace('/creator-dashboard');
     } catch (error) {
-      Alert.alert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
+      showAlert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setSubmitting(false);
     }

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
@@ -8,6 +8,7 @@ import { createCreatorPost, fetchCreatorFeed, type CreatorFeedPost } from '@/lib
 import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 
 function creatorName(post: CreatorFeedPost): string {
@@ -66,7 +67,7 @@ export default function CreatorFeedScreen() {
 
   const submitPost = useCallback(async () => {
     if (!address) {
-      Alert.alert('Wallet required', 'Connect your creator wallet to post.');
+      showAlert('Wallet required', 'Connect your creator wallet to post.');
       return;
     }
     setPosting(true);
@@ -89,7 +90,7 @@ export default function CreatorFeedScreen() {
       setCaption('');
       setMediaUrl('');
     } catch (error) {
-      Alert.alert('Post failed', error instanceof Error ? error.message : 'Please try again.');
+      showAlert('Post failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setPosting(false);
     }

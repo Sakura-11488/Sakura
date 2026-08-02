@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -34,7 +33,13 @@ import {
   getCreatorProfile,
   type CreatorWorkKind,
 } from '@/lib/creator';
-import { uploadMangaPages, uploadAnimeEpisodeVideo, uploadWorkImage } from '@/lib/creator-media';
+import {
+  uploadMangaPages,
+  uploadAnimeEpisodeVideo,
+  uploadWorkImage,
+  checkMediaIngestReachable,
+} from '@/lib/creator-media';
+import { showAlert } from '@/lib/confirm-alert';
 import {
   publishWorkViaApi,
   registerWorkMintOnChain,
@@ -45,7 +50,7 @@ export default function CreatorUploadScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { connected, address, signWithBiometrics } = useWallet();
+  const { connected, address, restoring, signWithBiometrics } = useWallet();
 
   const [checking, setChecking] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -58,11 +63,16 @@ export default function CreatorUploadScreen() {
   const [mangaPageUris, setMangaPageUris] = useState<string[]>([]);
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoName, setVideoName] = useState<string | null>(null);
+  const [videoFile, setVideoFile] = useState<unknown>(null);
   const [mediaProgress, setMediaProgress] = useState<string | null>(null);
   const [mintAsNft, setMintAsNft] = useState(true);
 
   useFocusEffect(
     useCallback(() => {
+      // Wait for the stored session to load before judging. On a cold load
+      // (PWA relaunch, direct URL, refresh) this ran before the restore had even
+      // started, bouncing an already-connected creator to "Connect your account".
+      if (restoring) return;
       if (!connected || !address) {
         router.replace('/become-creator');
         return;
@@ -73,7 +83,7 @@ export default function CreatorUploadScreen() {
           if (!p.username) router.replace('/become-creator');
         })
         .finally(() => setChecking(false));
-    }, [connected, address, router]),
+    }, [restoring, connected, address, router]),
   );
 
   const step = useMemo((): 1 | 2 | 3 => {
@@ -85,7 +95,7 @@ export default function CreatorUploadScreen() {
   const pickCover = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Photos', 'Allow photo access to upload a cover.');
+      showAlert('Photos', 'Allow photo access to upload a cover.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -102,7 +112,7 @@ export default function CreatorUploadScreen() {
   const pickMangaPages = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Photos', 'Allow photo access to add chapter pages.');
+      showAlert('Photos', 'Allow photo access to add chapter pages.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -120,7 +130,7 @@ export default function CreatorUploadScreen() {
   const pickEpisodeVideo = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Videos', 'Allow media access to add your episode.');
+      showAlert('Videos', 'Allow media access to add your episode.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -131,25 +141,46 @@ export default function CreatorUploadScreen() {
     if (asset?.uri) {
       setVideoUri(asset.uri);
       setVideoName(asset.fileName ?? asset.uri.split('/').pop() ?? 'episode.mp4');
+      // On web the picker returns a real File. Keep it — a browser cannot upload
+      // from the {uri,name,type} descriptor the native path uses.
+      setVideoFile((asset as { file?: unknown }).file ?? null);
     }
   };
 
   const handleUpload = async () => {
     if (!address) return;
     if (!workTitle.trim()) {
-      Alert.alert('Title required', 'Give your work a title.');
+      showAlert('Title required', 'Give your work a title.');
       return;
     }
     if (!releaseTitle.trim()) {
-      Alert.alert('Release required', 'Add a chapter or episode title.');
+      showAlert('Release required', 'Add a chapter or episode title.');
       return;
     }
     if (workKind === 'novel' && !releaseBody.trim()) {
-      Alert.alert('Content required', 'Paste or write your chapter text.');
+      showAlert('Content required', 'Paste or write your chapter text.');
       return;
     }
 
+    // Disable the button BEFORE the network probe below. The probe is a real
+    // round trip, and leaving the button live across it let a second tap start a
+    // parallel handleUpload — two works, two releases, two mints.
     setUploading(true);
+
+    // Anime publishing depends on an external media host. Probe it BEFORE any
+    // rows are created: a dead host used to throw midway through, after the work
+    // and release already existed, stranding an unpublished draft every attempt.
+    if (workKind === 'anime' && videoUri) {
+      setMediaProgress('Checking video server…');
+      const blocked = await checkMediaIngestReachable();
+      setMediaProgress(null);
+      if (blocked) {
+        setUploading(false);
+        showAlert('Cannot publish episode', blocked);
+        return;
+      }
+    }
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
       const work = await createCreatorWork({
@@ -212,6 +243,7 @@ export default function CreatorUploadScreen() {
           releaseId: release.id,
           localUri: videoUri,
           fileName: videoName ?? undefined,
+          file: videoFile ?? undefined,
         });
       }
       setMediaProgress(null);
@@ -246,13 +278,13 @@ export default function CreatorUploadScreen() {
         : `Your work is live on Sakura.${notified}`;
       const body = warnings.length ? `${base}\n\n⚠️ ${warnings.join('\n')}` : base;
 
-      Alert.alert(
-        mintAsNft ? 'Published & minted' : 'Published',
-        body,
-        [{ text: 'View dashboard', onPress: () => router.replace('/creator-dashboard') }],
-      );
+      // RN Alert is a no-op on web, so this button's onPress never fired there —
+      // a successful publish left the creator sitting on the form with no
+      // confirmation and no navigation. Navigate unconditionally instead.
+      showAlert(mintAsNft ? 'Published & minted' : 'Published', body);
+      router.replace('/creator-dashboard');
     } catch (e) {
-      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Try again.');
+      showAlert('Upload failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
       setMediaProgress(null);
       setUploading(false);

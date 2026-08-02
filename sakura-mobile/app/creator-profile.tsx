@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -16,6 +15,7 @@ import Animated, { FadeInUp } from 'react-native-reanimated';
 import LottieView from 'lottie-react-native';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
+import { showAlert } from '@/lib/confirm-alert';
 import { onTap } from '@/lib/sound';
 import { CreatorProfileSkeleton } from '@/components/creator/CreatorSkeletons';
 import { CreatorScreenHeader, FormField, FormSection } from '@/components/creator/CreatorForm';
@@ -26,7 +26,7 @@ export default function CreatorProfileScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { connected, address, shortAddress } = useWallet();
+  const { connected, address, shortAddress, restoring } = useWallet();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -50,7 +50,7 @@ export default function CreatorProfileScreen() {
       setDisplayName(profile.username.display_name || profile.profile?.display_name || '');
       setBio(profile.profile?.bio || '');
     } catch {
-      Alert.alert('Profile', 'Could not load your creator profile.');
+      showAlert('Profile', 'Could not load your creator profile.');
     } finally {
       setLoading(false);
     }
@@ -58,12 +58,14 @@ export default function CreatorProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      // See creator-upload.tsx: don't judge the session until it has loaded.
+      if (restoring) return;
       if (!connected) {
         router.replace('/become-creator');
         return;
       }
       refresh();
-    }, [connected, refresh, router]),
+    }, [restoring, connected, refresh, router]),
   );
 
   const handleSave = async () => {
@@ -71,10 +73,10 @@ export default function CreatorProfileScreen() {
     setSaving(true);
     try {
       await updateCreatorProfile({ walletAddress: address, displayName, bio });
-      Alert.alert('Saved', 'Your creator profile was updated.');
+      showAlert('Saved', 'Your creator profile was updated.');
       router.back();
     } catch (e) {
-      Alert.alert('Update failed', e instanceof Error ? e.message : 'Try again.');
+      showAlert('Update failed', e instanceof Error ? e.message : 'Try again.');
     } finally {
       setSaving(false);
     }
