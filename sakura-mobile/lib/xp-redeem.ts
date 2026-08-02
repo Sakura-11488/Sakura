@@ -28,7 +28,7 @@ export const XP_REDEEM_MIN = 100;
  */
 export const XP_SWAP_ENABLED = true;
 
-export type RedemptionStatus = 'pending' | 'sent' | 'failed';
+export type RedemptionStatus = 'pending' | 'processing' | 'sent' | 'failed';
 
 export interface XpRedemption {
   id: string;

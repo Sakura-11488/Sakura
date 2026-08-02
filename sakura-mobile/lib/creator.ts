@@ -371,9 +371,12 @@ export function publicCoverUrl(bucket: string, objectPath: string): string {
 
 export function workCoverUrl(work: CreatorWork): string | null {
   const meta = work.release_metadata || {};
-  if (typeof meta.cover_url === 'string') return meta.cover_url;
-  if (typeof meta.cover_path === 'string') {
-    return publicCoverUrl('creator-covers', meta.cover_path);
+  // Must be non-EMPTY, not merely a string: legacy rows carry `cover_url: ""`,
+  // and returning that renders a blank image instead of falling through to
+  // cover_path or to the caller's placeholder.
+  if (typeof meta.cover_url === 'string' && meta.cover_url.trim()) return meta.cover_url.trim();
+  if (typeof meta.cover_path === 'string' && meta.cover_path.trim()) {
+    return publicCoverUrl('creator-covers', meta.cover_path.trim());
   }
   return null;
 }

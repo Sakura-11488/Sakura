@@ -25,10 +25,8 @@ import { CreatorDashboardSkeleton } from '@/components/creator/CreatorSkeletons'
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import {
   getCreatorProfile,
-
   getCreatorWorks,
   statusLabel,
-
   uploadCreatorAvatar,
   workCoverUrl,
   type CreatorProfile,
