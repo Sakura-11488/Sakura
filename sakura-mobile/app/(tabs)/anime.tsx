@@ -11,7 +11,6 @@ import {
   RefreshControl,
   ActionSheetIOS,
   Platform,
-  Share,
 } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { Image } from 'expo-image';
@@ -42,6 +41,7 @@ import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 const ANIME_ORIGINALS = SAKURA_ORIGINALS.filter((o) => o.type === 'anime');
 import { playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
+import { shareContentLink } from '@/lib/share-link';
 import * as Haptics from 'expo-haptics';
 import ContinueWatchingRow from '@/components/ui/ContinueWatchingRow';
 import EmptyState from '@/components/ui/EmptyState';
@@ -480,11 +480,11 @@ function AnimeCard({ anime, onPress }: { anime: AnimeResult; onPress: () => void
       ActionSheetIOS.showActionSheetWithOptions(
         { options: ['Cancel', 'Share'], cancelButtonIndex: 0 },
         (idx) => {
-          if (idx === 1) Share.share({ message: `Check out "${anime.title}" on Sakura!` });
+          if (idx === 1) shareContentLink(`Check out "${anime.title}" on Sakura!`, `/anime/${encodeURIComponent(String(anime.id))}`);
         },
       );
     } else {
-      Share.share({ message: `Check out "${anime.title}" on Sakura!` });
+      shareContentLink(`Check out "${anime.title}" on Sakura!`, `/anime/${encodeURIComponent(String(anime.id))}`);
     }
   };
 

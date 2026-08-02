@@ -12,7 +12,6 @@ import {
   RefreshControl,
   ActionSheetIOS,
   Platform,
-  Share,
 } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,6 +32,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import { Spacing, FontSize, Fonts, Radius, Shadow } from '@/constants/theme';
 import { playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
+import { shareContentLink } from '@/lib/share-link';
 import { useWallet } from '@/lib/wallet/context';
 import { addFavorite } from '@/lib/supabase';
 import {
@@ -271,11 +271,11 @@ function NovelCard({
       ActionSheetIOS.showActionSheetWithOptions(
         { options: ['Cancel', 'Share'], cancelButtonIndex: 0 },
         (idx) => {
-          if (idx === 1) Share.share({ message: `Check out "${novel.name}" on Sakura!` });
+          if (idx === 1) shareContentLink(`Check out "${novel.name}" on Sakura!`, `/novel/ext?path=${encodeURIComponent(novel.path)}`);
         },
       );
     } else {
-      Share.share({ message: `Check out "${novel.name}" on Sakura!` });
+      shareContentLink(`Check out "${novel.name}" on Sakura!`, `/novel/ext?path=${encodeURIComponent(novel.path)}`);
     }
   };
 
