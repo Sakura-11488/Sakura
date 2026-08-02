@@ -6,7 +6,6 @@ import {
   Dimensions,
   TouchableOpacity,
   FlatList,
-  Share,
   Platform,
   type ListRenderItemInfo,
 } from 'react-native';
@@ -31,6 +30,7 @@ import Svg, { Path, Polygon } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { shareContentLink } from '@/lib/share-link';
 import { Toast } from '@/components/ui/Toast';
 import { playTap, onTap } from '@/lib/sound';
 import { parseNovelDetail, parseChapterContent, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
@@ -405,7 +405,7 @@ export default function NovelExtDetail() {
   const handleShare = () => {
     if (!detail) return;
     playTap();
-    Share.share({ message: `Read "${detail.name}" on Sakura!\nsakura://novel/ext?path=${encodeURIComponent(decodedPath)}` });
+    shareContentLink(`Read "${detail.name}" on Sakura!`, `/novel/ext?path=${encodeURIComponent(decodedPath)}`);
   };
 
   const refreshOffline = useCallback(() => {

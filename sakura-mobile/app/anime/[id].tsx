@@ -7,7 +7,6 @@ import {
   ScrollView,
   Dimensions,
   StatusBar,
-  Share,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -45,6 +44,7 @@ import {
 import { playTap, onTap } from '@/lib/sound';
 import { Library } from '@/lib/storage';
 import { useTheme } from '@/lib/theme';
+import { shareContentLink } from '@/lib/share-link';
 import { isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 import CreatorTab from '@/components/ui/CreatorTab';
 import { getSakuraOriginalAuthor } from '@/lib/sakura-originals';
@@ -722,7 +722,7 @@ export default function AnimeDetail() {
   const handleShare = () => {
     if (!anime) return;
     playTap();
-    Share.share({ message: `Watch "${anime.title}" on Sakura!\nsakura://anime/${id}` });
+    shareContentLink(`Watch "${anime.title}" on Sakura!`, `/anime/${encodeURIComponent(String(id))}`);
   };
 
   const scrollHandler = useAnimatedScrollHandler((e) => { scrollY.value = e.contentOffset.y; });

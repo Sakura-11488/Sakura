@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   StatusBar,
   Platform,
-  Share,
   FlatList,
   type ListRenderItemInfo,
 } from 'react-native';
@@ -35,6 +34,7 @@ import * as Haptics from 'expo-haptics';
 import { Toast } from '@/components/ui/Toast';
 import { Radius, FontSize, FontWeight, Fonts, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { shareContentLink } from '@/lib/share-link';
 import { Library } from '@/lib/storage';
 import {
   fetchMangaDetail,
@@ -723,7 +723,7 @@ export default function MangaDetail() {
   const handleShare = () => {
     if (!manga) return;
     playTap();
-    Share.share({ message: `Check out "${manga.title}" on Sakura!\nsakura://manga/${mangaId}` });
+    shareContentLink(`Check out "${manga.title}" on Sakura!`, `/manga/${encodeURIComponent(String(mangaId))}`);
   };
 
   const backAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: backScale.value }] }));
