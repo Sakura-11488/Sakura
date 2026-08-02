@@ -93,16 +93,28 @@ type RedemptionRow = {
 // @solana/spl-token's esm.sh build exceeds the edge worker's boot budget (the
 // function died with WORKER_RESOURCE_LIMIT on every request), so the four
 // primitives used here are implemented directly. The byte layouts are part of
-// the SPL Token / ATA program interfaces and have never changed.
+// the SPL Token / ATA program interfaces, shared by classic and Token-2022, and
+// have never changed; verified byte-identical to @solana/spl-token 0.4.9 output
+// across the real pending recipients and amounts. The SAKURA mint carries no
+// transfer-fee extension, so TransferChecked delivers full amounts.
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const ATA_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 const SYSTEM_PROGRAM_ID = new PublicKey('11111111111111111111111111111111');
 
+/**
+ * The token program is a PARAMETER, detected from the mint account at runtime,
+ * because the SAKURA mint is Token-2022 — its ATA derivation seeds and its
+ * instruction target both differ from classic SPL. Assuming classic (as the
+ * original code and spl-token's defaults both do) derives an account that
+ * doesn't exist, and the treasury looks empty while fully funded.
+ */
+
 /** Associated token account PDA for owner+mint (canonical derivation). */
-function ataFor(owner: PublicKey, mint: PublicKey): PublicKey {
+function ataFor(owner: PublicKey, mint: PublicKey, tokenProgramId: PublicKey): PublicKey {
   const [ata] = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    [owner.toBuffer(), tokenProgramId.toBuffer(), mint.toBuffer()],
     ATA_PROGRAM_ID,
   );
   return ata;
@@ -114,6 +126,7 @@ function createAtaIdempotentIx(
   ata: PublicKey,
   owner: PublicKey,
   mint: PublicKey,
+  tokenProgramId: PublicKey,
 ): TransactionInstruction {
   return new TransactionInstruction({
     programId: ATA_PROGRAM_ID,
@@ -123,7 +136,7 @@ function createAtaIdempotentIx(
       { pubkey: owner, isSigner: false, isWritable: false },
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     ],
     data: Buffer.from([1]),
   });
@@ -137,13 +150,14 @@ function transferCheckedIx(
   owner: PublicKey,
   amount: bigint,
   decimals: number,
+  tokenProgramId: PublicKey,
 ): TransactionInstruction {
   const data = new Uint8Array(10);
   data[0] = 12;
   new DataView(data.buffer).setBigUint64(1, amount, true);
   data[9] = decimals;
   return new TransactionInstruction({
-    programId: TOKEN_PROGRAM_ID,
+    programId: tokenProgramId,
     keys: [
       { pubkey: source, isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: false },
@@ -158,17 +172,32 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
 
-  // Operator-only. Without this any caller could drive treasury spend timing.
-  const expected = Deno.env.get('XP_PAYOUT_ADMIN_SECRET')?.trim();
-  const provided = req.headers.get('x-admin-secret')?.trim() ?? '';
-  if (!expected || !(await secretsMatch(provided, expected))) {
-    return jsonResponse(401, { error: 'Unauthorized.' }, cors);
-  }
-
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
+
+  // Operator-only. Without this any caller could drive treasury spend timing.
+  // Two accepted sources for the gate secret, both fail-closed:
+  //  - XP_PAYOUT_ADMIN_SECRET env var — a human operator triggering manually.
+  //  - the `xp-payout-gate` Vault secret, read via a service-role-only RPC —
+  //    the pg_cron settlement job. Generated inside Postgres, never seen by a
+  //    human, and shared by construction between the job and this check.
+  const provided = req.headers.get('x-admin-secret')?.trim() ?? '';
+  let authorized = false;
+  if (provided) {
+    const envSecret = Deno.env.get('XP_PAYOUT_ADMIN_SECRET')?.trim();
+    if (envSecret) authorized = await secretsMatch(provided, envSecret);
+    if (!authorized) {
+      const { data: vaultSecret } = await supabase.rpc('xp_payout_gate_secret');
+      if (typeof vaultSecret === 'string' && vaultSecret.trim()) {
+        authorized = await secretsMatch(provided, vaultSecret.trim());
+      }
+    }
+  }
+  if (!authorized) {
+    return jsonResponse(401, { error: 'Unauthorized.' }, cors);
+  }
 
   let authority: Keypair;
   try {
@@ -179,7 +208,44 @@ Deno.serve(async (req) => {
 
   const connection = new Connection(getSolanaRpcUrl(), 'confirmed');
   const mint = new PublicKey(sakuraMint());
-  const fromAta = ataFor(authority.publicKey, mint);
+
+  // Detect which token program owns the mint (SAKURA is Token-2022) rather
+  // than assume — a wrong assumption here silently derives empty accounts.
+  const mintAcct = await connection.getAccountInfo(mint).catch(() => null);
+  if (!mintAcct) {
+    return jsonResponse(503, { error: 'Could not read the SAKURA mint account.' }, cors);
+  }
+  const tokenProgramId = mintAcct.owner;
+  if (!tokenProgramId.equals(TOKEN_PROGRAM_ID) && !tokenProgramId.equals(TOKEN_2022_PROGRAM_ID)) {
+    return jsonResponse(503, { error: 'Mint is not owned by a known token program.' }, cors);
+  }
+  const fromAta = ataFor(authority.publicKey, mint, tokenProgramId);
+
+  // Auth-gated, read-only treasury probe: reports which address the configured
+  // key controls and what it holds, touching no rows. Exists because "payout
+  // wallet holds no SAKURA account" is undiagnosable from outside — the
+  // operator funds an address, the function derives one from its secret, and
+  // only this can say whether they are the same wallet.
+  const reqBody = (await req.json().catch(() => ({}))) as { probe?: boolean };
+  if (reqBody.probe) {
+    const sol = await connection.getBalance(authority.publicKey).catch(() => null);
+    const sakura = await connection
+      .getTokenAccountBalance(fromAta)
+      .then((r) => r.value.uiAmountString)
+      .catch(() => null);
+    return jsonResponse(
+      200,
+      {
+        ok: true,
+        probe: true,
+        authority: authority.publicKey.toBase58(),
+        payout_token_account: fromAta.toBase58(),
+        sol_balance: sol === null ? null : sol / 1e9,
+        sakura_balance: sakura,
+      },
+      cors,
+    );
+  }
 
   const results: { id: string; status: string; signature?: string; error?: string }[] = [];
   const now = () => new Date().toISOString();
@@ -325,7 +391,7 @@ Deno.serve(async (req) => {
       }
 
       const recipient = new PublicKey(row.wallet_address);
-      const toAta = ataFor(recipient, mint);
+      const toAta = ataFor(recipient, mint, tokenProgramId);
 
       const tx = new Transaction();
       // First-time recipients have no SAKURA account yet; the payer creates it.
@@ -335,10 +401,18 @@ Deno.serve(async (req) => {
       // would then fail the whole transfer on-chain.
       const toInfo = await connection.getAccountInfo(toAta).catch(() => null);
       if (!toInfo) {
-        tx.add(createAtaIdempotentIx(authority.publicKey, toAta, recipient, mint));
+        tx.add(createAtaIdempotentIx(authority.publicKey, toAta, recipient, mint, tokenProgramId));
       }
       tx.add(
-        transferCheckedIx(fromAta, mint, toAta, authority.publicKey, rawAmount, SAKURA_DECIMALS),
+        transferCheckedIx(
+          fromAta,
+          mint,
+          toAta,
+          authority.publicKey,
+          rawAmount,
+          SAKURA_DECIMALS,
+          tokenProgramId,
+        ),
       );
 
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
