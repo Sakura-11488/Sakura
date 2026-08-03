@@ -190,6 +190,18 @@ const TWO_HE_EP_RAW: Array<[string, string, string]> = [
   ['sienna-star', 'STAR.mov', 'Sienna Star'],
   ['neet', 'neet.mov', 'NEET'],
   ['trillionaire', 'trillionaire.mov', 'Trillionaire'],
+  // Jul 29 batch — the droplet manifest is the source of truth (with
+  // descriptions + thumbs); these rows only keep the offline fallback complete.
+  ['fat-anime', 'fatanime.mov', 'Fat Anime'],
+  ['every-launch-rewrites-tomorrow', 'everylaunch.mov', 'Every Launch Rewrites Tomorrow'],
+  ['the-save', 'thesave.mov', 'The Save'],
+  ['optimus', 'optimus.mov', 'Optimus'],
+  ['solangeles-debut', 'solangeles.mov', '2HE x Solangeles: Debut'],
+  ['robinhood', 'robinhood.mov', 'Robinhood'],
+  ['bruno', 'bruno1.mov', '2HE x Bruno'],
+  ['bruno-fight', 'brunofight.mov', '2HE x Bruno: The Fight'],
+  ['the-black-bull', 'blackbull1.mov', 'The Black Bull'],
+  ['black-bull-2', 'blackbull2.mov', 'The Black Bull: Episode 2'],
 ];
 
 const twoHeEpisodes: AnimeInfo['episodes'] = TWO_HE_EP_RAW.map(([slug, , title], idx) => ({
@@ -226,6 +238,7 @@ type RemoteWorkEpisode = {
   number?: number;
   title: string;
   thumbnail?: string;
+  description?: string;
   videoUrl: string;
 };
 
@@ -345,6 +358,7 @@ function normalizeRemoteManifest(
       number: Number.isFinite(ep.number) ? Number(ep.number) : idx + 1,
       title,
       thumbnail: cacheBustUrl(absoluteMediaUrl(ep.thumbnail, cfg.base), cfg.assetVersion),
+      description: typeof ep.description === 'string' && ep.description.trim() ? ep.description.trim() : undefined,
     });
     streams.set(epId, videoUrl);
   }

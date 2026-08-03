@@ -373,6 +373,7 @@ function EpisodeRow({
     info: { flex: 1 },
     num: { color: colors.primary, fontSize: 10, fontFamily: Fonts.bodyBold, textTransform: 'uppercase', letterSpacing: 0.5 },
     title: { color: colors.text, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium, marginTop: 2, lineHeight: 16 },
+    desc: { color: colors.textSecondary, fontSize: 10, fontFamily: Fonts.body, marginTop: 2, lineHeight: 14 },
     progressTrack: {
       position: 'absolute',
       left: 0,
@@ -419,6 +420,9 @@ function EpisodeRow({
       <View style={epS.info}>
         <Text style={epS.num}>Ep {ep.number}</Text>
         <Text style={epS.title} numberOfLines={2}>{ep.title}</Text>
+        {!!ep.description && (
+          <Text style={epS.desc} numberOfLines={2}>{ep.description}</Text>
+        )}
         {pct > 0 && <Text style={epS.progressLabel}>{pct}% watched</Text>}
         {offline?.status === 'downloading' && (
           <Text style={epS.progressLabel}>Downloading {Math.round(offline.progress * 100)}% · tap to pause</Text>

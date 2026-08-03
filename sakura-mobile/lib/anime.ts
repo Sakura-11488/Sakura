@@ -98,6 +98,8 @@ export interface AnimeEpisode {
   title: string;
   /** Episode still from AniList streaming metadata when available */
   thumbnail?: string;
+  /** Per-episode synopsis (Sakura Originals manifests provide these). */
+  description?: string;
 }
 
 export interface AnimeInfo extends AnimeResult {
