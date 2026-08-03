@@ -85,7 +85,24 @@ export default function SwapXpScreen() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ xp: number; sakura: number } | null>(null);
 
-  const spendable = Math.max(0, (state?.xp ?? 0) - (state?.xp_spent ?? 0));
+  const totalEarned = state?.xp ?? 0;
+  /**
+   * Falls back to the wallet's own redemption history when the server omits
+   * xp_spent. read-gamification shipped without that field, so `?? 0` made
+   * spendable equal lifetime XP: the hero read "Swappable 18,550" for a reader
+   * with 2,000 actually left, Max filled the full amount, and the swap was
+   * refused server-side after promising ~59k SAKURA. Deploying the function
+   * fixes the source; this keeps older/stale deployments honest too.
+   */
+  const swappedFromHistory = useMemo(
+    () =>
+      history
+        .filter((h) => h.status !== 'failed')
+        .reduce((sum, h) => sum + Number(h.xp_spent || 0), 0),
+    [history],
+  );
+  const alreadySwapped = Math.max(state?.xp_spent ?? 0, swappedFromHistory);
+  const spendable = Math.max(0, totalEarned - alreadySwapped);
   const preview = previewSakura(amount);
   const canSwap = connected && amount >= XP_REDEEM_MIN && amount <= spendable && !busy;
 
@@ -176,6 +193,14 @@ export default function SwapXpScreen() {
               <Text style={s.heroLabel}>Swappable XP</Text>
             </View>
             <Text style={s.heroValue}>{spendable.toLocaleString()}</Text>
+            {/* Lifetime total alongside the spendable figure: without it the
+                number drops after a swap with nothing on screen explaining why,
+                which reads as lost XP rather than spent XP. */}
+            {totalEarned > spendable && (
+              <Text style={s.heroSub}>
+                {totalEarned.toLocaleString()} earned all-time · {alreadySwapped.toLocaleString()} swapped
+              </Text>
+            )}
             <View style={s.rateRow}>
               <Text style={s.rateText}>1 XP</Text>
               <View style={s.rateDot} />
@@ -344,6 +369,11 @@ function makeStyles(colors: ReturnType<typeof useTheme>['colors']) {
       fontWeight: FontWeight.semibold,
       letterSpacing: 0.4,
       textTransform: 'uppercase',
+    },
+    heroSub: {
+      color: 'rgba(255,255,255,0.52)',
+      fontSize: FontSize.xs,
+      marginTop: 2,
     },
     heroValue: {
       fontFamily: Fonts.display,
