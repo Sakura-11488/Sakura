@@ -12,7 +12,19 @@ import {
 } from '@/lib/sakura-novels';
 import { fetchNovelHtml } from '@/lib/allnovel-html';
 
-const SITE = 'https://allnovel.org/';
+/**
+ * Novel source.
+ *
+ * Was `allnovel.org`, which now 302-redirects every path to novelfull.com —
+ * including the list pages. The redirect resolves to a homepage the list parser
+ * finds no entries in, so the tab went silently empty rather than erroring:
+ * a 200 with unparseable markup looks exactly like a site with no novels.
+ *
+ * novelfull.com serves the same paths (`most-popular`, `latest-release-novel`,
+ * the genre slugs) with the same markup — an `archive` container and
+ * `h3.truyen-title > a` per entry — so only the origin changes.
+ */
+const SITE = 'https://novelfull.com/';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

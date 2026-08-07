@@ -22,7 +22,12 @@ const DEFAULT_COMICS_BASE = 'http://165.232.83.159/comics/v1';
 const DEFAULT_HENTAI_BASE = 'http://165.232.83.159/hentai/v1';
 const DEFAULT_MANHWA_BASE = 'http://165.232.83.159/manhwa/v1';
 const DEFAULT_CONSUMET_BASE = 'http://165-232-83-159.nip.io:3000';
-const NOVEL_BASE = 'https://allnovel.org';
+// Was allnovel.org, which now 302s every path to novelfull.com and drops the
+// path doing it — so `/most-popular?page=1` resolved to the novelfull homepage,
+// the list parser found no entries, and the novel tab went silently empty. A
+// 200 carrying unparseable markup is indistinguishable from a site with no
+// novels, which is why this failed quietly. Override with NOVEL_BASE.
+const NOVEL_BASE = Deno.env.get('NOVEL_BASE')?.trim() || 'https://novelfull.com';
 
 const UPSTREAM_ALLOWLIST = [
   'hianime.dk',
