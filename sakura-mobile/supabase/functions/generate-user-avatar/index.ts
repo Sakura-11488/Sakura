@@ -316,7 +316,7 @@ async function buildApologyGrantStatus(
   const { data: grant, error } = await supabase
     .from('avatar_apology_grants')
     .select(
-      'incident, avatar_count, charged_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
+      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
     )
     .eq('wallet_address', walletAddress)
     .maybeSingle();
@@ -346,6 +346,7 @@ async function buildApologyGrantStatus(
     avatar_count: expected,
     minted_count: avatars.length,
     charged_sakura: Number(grant.charged_sakura ?? 0),
+    refund_sakura: Number(grant.refund_sakura ?? 0),
     received_count: Number(grant.received_count ?? 0),
     granted_at: (grant.granted_at as string) ?? null,
     already_shown: Boolean(grant.shown_at),
@@ -366,7 +367,7 @@ async function buildApologyGrantDetail(
   const { data: grant, error } = await supabase
     .from('avatar_apology_grants')
     .select(
-      'incident, avatar_count, charged_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
+      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
     )
     .eq('wallet_address', walletAddress)
     .maybeSingle();
@@ -424,6 +425,7 @@ async function buildApologyGrantDetail(
     avatar_count: expected,
     minted_count: avatars.length,
     charged_sakura: Number(grant.charged_sakura ?? 0),
+    refund_sakura: Number(grant.refund_sakura ?? 0),
     received_count: Number(grant.received_count ?? 0),
     granted_at: (grant.granted_at as string) ?? null,
     avatars,

@@ -222,6 +222,8 @@ export interface AvatarApologyGrantStatus {
   minted_count: number;
   /** What the user actually lost, in SAKURA. Drives the apology copy. */
   charged_sakura: number;
+  /** SAKURA sent back manually. >0 changes the apology copy. */
+  refund_sakura: number;
   /** How many avatars they DID receive for those payments. */
   received_count: number;
   granted_at: string | null;
@@ -245,6 +247,7 @@ function normalizeGrant(data: Record<string, unknown> | null | undefined): Avata
     avatar_count: Number(data?.avatar_count ?? 0),
     minted_count: Number(data?.minted_count ?? 0),
     charged_sakura: Number(data?.charged_sakura ?? 0),
+    refund_sakura: Number(data?.refund_sakura ?? 0),
     received_count: Number(data?.received_count ?? 0),
     granted_at: (data?.granted_at as string | null) ?? null,
     already_shown: Boolean(data?.already_shown),

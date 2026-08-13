@@ -39,11 +39,16 @@ function lostLine(grant: AvatarApologyGrantStatus): string {
   return `You sent ${amount} to forge an avatar and got nothing back. That was a bug on our side, not anything you did.`;
 }
 
-function giftLine(count: number): string {
-  if (count === 1) {
-    return 'So here is an avatar, already minted to your wallet — we did not charge you for it. To be clear: we have not sent SAKURA back to your wallet. The apology is the avatar.';
+function giftLine(grant: AvatarApologyGrantStatus, count: number): string {
+  const noun = count === 1 ? 'an avatar' : `${count} avatars`;
+  const them = count === 1 ? 'it' : 'any of them';
+  // Only claim a refund when one was actually recorded. This user noticed a
+  // missing balance once already and will check again within seconds of reading
+  // this; an unbacked promise here is the second broken promise in a row.
+  if (grant.refund_sakura > 0) {
+    return `We have sent your ${grant.refund_sakura.toLocaleString()} SAKURA back to this wallet. And here is ${noun} on top, already minted to you — we did not charge you for ${them}.`;
   }
-  return `So here are ${count} avatars, already minted to your wallet — we did not charge you for any of them. To be clear: we have not sent SAKURA back to your wallet. The apology is the avatars.`;
+  return `So here is ${noun}, already minted to your wallet — we did not charge you for ${them}. To be clear: we have not sent SAKURA back to your wallet. The apology is ${count === 1 ? 'the avatar' : 'the avatars'}.`;
 }
 
 function pickLine(count: number): string {
@@ -205,11 +210,13 @@ export default function AvatarApologyModal({
             <Text style={s.title}>Sorry — this one&apos;s on us</Text>
 
             <Text style={s.body}>{lostLine(grant)}</Text>
-            <Text style={s.body}>{giftLine(count)}</Text>
-            <Text style={s.body}>
-              Your original payment is still sitting unused on chain, so you can still forge the
-              avatar you actually paid for whenever you want.
-            </Text>
+            <Text style={s.body}>{giftLine(grant, count)}</Text>
+            {grant.refund_sakura > 0 ? null : (
+              <Text style={s.body}>
+                Your original payment is still sitting unused on chain, so you can still forge the
+                avatar you actually paid for whenever you want.
+              </Text>
+            )}
 
             {previews.length > 0 ? (
               <View style={s.thumbs}>

@@ -77,6 +77,13 @@ create table if not exists public.avatar_apology_grants (
   -- What the user actually lost, in SAKURA. Must be the real charged amount,
   -- NOT avatar_count * price. Drives the apology copy.
   charged_sakura          numeric not null default 0,
+
+  -- SAKURA sent back manually by the operator, outside this system. Non-zero
+  -- means the copy may say a refund was issued AND must drop the "your original
+  -- payment is still claimable" line — otherwise the user is invited to redeem a
+  -- payment they have already been reimbursed for, and walks away with the
+  -- money, the comped avatars, and one more avatar on top.
+  refund_sakura           numeric not null default 0,
   -- How many avatars they DID receive for those payments. 0 for GBwEZYyq;
   -- 1 for 89Jdgt/BNa19q; 2 for J4oXm. The copy branches on this, because
   -- "got nothing back" is false for three of the four wallets.
@@ -108,6 +115,7 @@ alter table if exists public.avatar_apology_grants
   add column if not exists incident               text not null default 'charged_without_delivery',
   add column if not exists avatar_count           integer not null default 4,
   add column if not exists charged_sakura         numeric not null default 0,
+  add column if not exists refund_sakura          numeric not null default 0,
   add column if not exists received_count         integer not null default 0,
   add column if not exists payment_tx_signatures  text[] not null default '{}',
   add column if not exists generation_ids         uuid[] not null default '{}',
