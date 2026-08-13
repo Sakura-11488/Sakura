@@ -2,6 +2,7 @@ import { fetchConfirmedTransaction } from './solana-rpc.ts';
 
 const DEFAULT_SAKURA_MINT = 'EWiVNxCqNatzV2paBHyfKUwGLnk7WKs9uZTA5jkTpump';
 const DEFAULT_PAYMENT_WALLET = 'G8tc69u9PVjAjaL4h8iD3t845dJrvnTKusrLrjv89EZ1';
+const DEFAULT_DECIMALS = 6;
 
 type TokenBalance = {
   accountIndex: number;
@@ -37,14 +38,40 @@ function accountKeyAt(tx: Record<string, unknown>, index: number): string | null
   return typeof entry === 'string' ? entry : entry.pubkey ?? null;
 }
 
-function tokenAmount(balance?: TokenBalance): number {
-  if (!balance?.uiTokenAmount) return 0;
-  if (typeof balance.uiTokenAmount.uiAmount === 'number') return balance.uiTokenAmount.uiAmount;
-  if (balance.uiTokenAmount.uiAmountString) return Number(balance.uiTokenAmount.uiAmountString);
-  const raw = balance.uiTokenAmount.amount;
-  const decimals = balance.uiTokenAmount.decimals ?? 6;
-  if (!raw) return 0;
-  return Number(raw) / 10 ** decimals;
+/**
+ * Balance in RAW BASE UNITS as an exact integer.
+ *
+ * Never read `uiAmount` for arithmetic. It is an IEEE-754 double, and a
+ * post-minus-pre subtraction of two such values does not land on the amount
+ * that was actually transferred. This is not theoretical: on 2026-08-11 a user
+ * paid exactly 100000 SAKURA into a treasury holding 71655.170417, and
+ * 171655.170417 - 71655.170417 evaluated to 99999.99999999999 — 1.5e-11 short
+ * of the price. The payment was rejected, the SAKURA was gone, and no row was
+ * ever written because verification runs before the insert. Three payments
+ * across three wallets were lost this way before it was found.
+ *
+ * The `amount` field is a decimal string of integer base units and is exact.
+ */
+function rawAmount(balance?: TokenBalance): bigint {
+  const raw = balance?.uiTokenAmount?.amount;
+  if (!raw) return 0n;
+  try {
+    return BigInt(raw);
+  } catch {
+    return 0n;
+  }
+}
+
+function decimalsOf(balance: TokenBalance | undefined, fallback: number): number {
+  const decimals = balance?.uiTokenAmount?.decimals;
+  return typeof decimals === 'number' && Number.isFinite(decimals) ? decimals : fallback;
+}
+
+/** Convert a human SAKURA amount to base units without going through a float. */
+function toBaseUnits(amount: number, decimals: number): bigint {
+  const [whole, frac = ''] = amount.toFixed(decimals).split('.');
+  const padded = frac.padEnd(decimals, '0').slice(0, decimals);
+  return BigInt(`${whole}${padded}`);
 }
 
 export async function verifyAvatarSakuraPayment(input: {
@@ -71,18 +98,25 @@ export async function verifyAvatarSakuraPayment(input: {
   const pre = meta?.preTokenBalances ?? [];
   const post = meta?.postTokenBalances ?? [];
 
-  let credited = 0;
+  // Sum every account the recipient owns for this mint, in exact integer base
+  // units. Summed rather than assigned: the old code overwrote `credited` each
+  // iteration, so a transfer split across two recipient accounts was scored on
+  // whichever happened to come last.
+  let creditedRaw = 0n;
+  let decimals = DEFAULT_DECIMALS;
   for (const postEntry of post) {
     if (postEntry.mint !== mint) continue;
     if (postEntry.owner !== recipient) continue;
+    decimals = decimalsOf(postEntry, decimals);
     const preEntry = pre.find(
       (entry) => entry.accountIndex === postEntry.accountIndex && entry.mint === mint,
     );
-    credited = tokenAmount(postEntry) - tokenAmount(preEntry);
-    if (credited >= minAmount) break;
+    const delta = rawAmount(postEntry) - rawAmount(preEntry);
+    if (delta > 0n) creditedRaw += delta;
   }
 
-  if (credited < minAmount) {
+  const minRaw = toBaseUnits(minAmount, decimals);
+  if (creditedRaw < minRaw) {
     throw new Error(
       `Payment must include at least ${minAmount.toLocaleString()} SAKURA to ${recipient}.`,
     );
@@ -96,5 +130,5 @@ export async function verifyAvatarSakuraPayment(input: {
     throw new Error('Payment transaction does not include the Sakura treasury wallet.');
   }
 
-  return { amount: credited, recipient };
+  return { amount: Number(creditedRaw) / 10 ** decimals, recipient };
 }

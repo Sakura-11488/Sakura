@@ -1,17 +1,17 @@
-import { Keypair } from 'https://esm.sh/@solana/web3.js@1.98.4';
+import { Keypair } from 'npm:@solana/web3.js@1.98.4';
 import {
   createNft,
   mplTokenMetadata,
-} from 'https://esm.sh/@metaplex-foundation/mpl-token-metadata@3.2.1';
+} from 'npm:@metaplex-foundation/mpl-token-metadata@3.2.1';
 import {
   generateSigner,
   keypairIdentity,
   percentAmount,
   publicKey as umiPublicKey,
-} from 'https://esm.sh/@metaplex-foundation/umi@1.5.1';
-import { createUmi } from 'https://esm.sh/@metaplex-foundation/umi-bundle-defaults@1.5.1';
-import { fromWeb3JsKeypair } from 'https://esm.sh/@metaplex-foundation/umi-web3js-adapters@1.5.1';
-import bs58 from 'https://esm.sh/bs58@6.0.0';
+} from 'npm:@metaplex-foundation/umi@1.5.1';
+import { createUmi } from 'npm:@metaplex-foundation/umi-bundle-defaults@1.5.1';
+import { fromWeb3JsKeypair } from 'npm:@metaplex-foundation/umi-web3js-adapters@1.5.1';
+import bs58 from 'npm:bs58@6.0.0';
 import { getSolanaRpcUrl } from './solana-rpc.ts';
 
 function loadMintAuthority(): Keypair {
