@@ -89,3 +89,12 @@ scripts/deploy-treasury.ps1
 .psyop-*
 release-build*.log
 sakura-mobile/.export-sync-smoke/
+
+# Droplet scraper secrets + caches — NEVER commit. These ignores existed in
+# ba43b84 and were dropped by 4b4fd03; the live ZenRows key that keeps the
+# Comics tab working is currently one `git add -A` away from a public repo.
+scripts/droplet/*/proxy-template*.txt
+scripts/droplet/*/image-proxy-template*.txt
+scripts/droplet/*/proxy-url*.txt
+scripts/droplet/*/debug-token.txt
+scripts/droplet/*/img-cache/
