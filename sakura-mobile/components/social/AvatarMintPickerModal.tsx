@@ -23,6 +23,16 @@ type Props = {
   selectingId?: string | null;
   onClose: () => void;
   onSelect: (mint: AvatarMintItem) => void;
+  /** Overridable so the apology flow can reuse this picker verbatim. */
+  title?: string;
+  subtitle?: string;
+  emptyText?: string;
+  /**
+   * Disables every card, not just the one being selected. Without this, a second
+   * tap on a different card during an in-flight select fires a second write and
+   * the user ends up with an avatar they did not choose.
+   */
+  busy?: boolean;
 };
 
 function formatMintDate(iso: string): string {
@@ -40,6 +50,10 @@ export default function AvatarMintPickerModal({
   selectingId = null,
   onClose,
   onSelect,
+  title = 'Your Sakura avatars',
+  subtitle = 'Pick which forged avatar shows on your profile.',
+  emptyText = 'No forged avatars yet.',
+  busy: allBusy = false,
 }: Props) {
   const { colors } = useTheme();
   const snapPoints = useMemo(() => ['72%'], []);
@@ -134,8 +148,8 @@ export default function AvatarMintPickerModal({
   return (
     <GorhomSheetModal visible={visible} onClose={onClose} snapPoints={snapPoints}>
       <View style={styles.header}>
-        <Text style={styles.title}>Your Sakura avatars</Text>
-        <Text style={styles.subtitle}>Pick which forged avatar shows on your profile.</Text>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.subtitle}>{subtitle}</Text>
       </View>
       {loading ? (
         <View style={styles.empty}>
@@ -143,7 +157,7 @@ export default function AvatarMintPickerModal({
         </View>
       ) : mints.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No forged avatars yet.</Text>
+          <Text style={styles.emptyText}>{emptyText}</Text>
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
@@ -154,7 +168,7 @@ export default function AvatarMintPickerModal({
                 key={mint.id}
                 style={[styles.card, mint.is_active && styles.cardActive]}
                 onPress={() => onSelect(mint)}
-                disabled={busy || mint.is_active}
+                disabled={busy || allBusy || mint.is_active}
                 activeOpacity={0.85}
               >
                 {mint.public_url ? (

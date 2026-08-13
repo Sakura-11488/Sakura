@@ -38,6 +38,7 @@ import AppUpdateBridge from '@/components/AppUpdateBridge';
 import InstallAppBanner from '@/components/InstallAppBanner';
 import WebUpdateBanner from '@/components/WebUpdateBanner';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
+import AvatarApologyBridge from '@/components/AvatarApologyBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
 import { TransferCelebrationProvider } from '@/lib/wallet/transfer-celebration';
 
@@ -235,6 +236,7 @@ export default function RootLayout() {
           <InstallAppBanner />
           <WebUpdateBanner />
           <CloudSyncBridge />
+          <AvatarApologyBridge />
           <PriceAlertBridge />
           <FloatingTradeWidget />
           <FallingLeaves />

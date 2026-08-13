@@ -417,9 +417,14 @@ export default function ProfileScreen() {
         }
       }
 
-      const eligibility = await fetchAvatarMintEligibility(authHeaders);
+      // The eligibility gate exists so we never charge for a mint the server will
+      // refuse. It must NOT gate a RESUME: that payment already left the wallet,
+      // the server reuses the row keyed on its signature, and it can never yield
+      // a second avatar. Gating it here is exactly how a paid-for forge became
+      // unreachable for 24h behind the words "No SKR was charged".
+      const eligibility = pendingPayment ? null : await fetchAvatarMintEligibility(authHeaders);
 
-      if (!eligibility.can_mint) {
+      if (eligibility && !eligibility.can_mint) {
         showAlert(
           'Mint not available yet',
           eligibility.retry_after_hours > 0

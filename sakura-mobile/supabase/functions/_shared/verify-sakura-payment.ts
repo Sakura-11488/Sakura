@@ -16,6 +16,42 @@ type TokenBalance = {
   };
 };
 
+/**
+ * Why a payment was refused, and — critically — whether the refusal can be
+ * pinned on a real, on-chain transaction paid by the caller.
+ *
+ * `attributable` is false unless we actually read the transaction AND its fee
+ * payer equals the wallet that signed the request. Only attributable failures
+ * may be written to avatar_payment_rejections: anything else would let a caller
+ * with a throwaway keypair fabricate "this wallet was charged 100,000 and
+ * refused" records for signatures that are not theirs, or do not exist.
+ */
+export type AvatarPaymentFailure =
+  | 'unverifiable' // transaction could not be read at all
+  | 'payer_mismatch' // real transaction, but somebody else paid for it
+  | 'amount_short' // paid by the caller, but under the price
+  | 'treasury_missing'; // paid by the caller, but not to us
+
+export class AvatarPaymentError extends Error {
+  readonly failure: AvatarPaymentFailure;
+  /** What actually reached the treasury, when it could be established. */
+  readonly creditedSakura: number | null;
+  /** True only when the transaction was read and its fee payer is the caller. */
+  readonly attributable: boolean;
+
+  constructor(
+    message: string,
+    failure: AvatarPaymentFailure,
+    creditedSakura: number | null = null,
+  ) {
+    super(message);
+    this.name = 'AvatarPaymentError';
+    this.failure = failure;
+    this.creditedSakura = creditedSakura;
+    this.attributable = failure === 'amount_short' || failure === 'treasury_missing';
+  }
+}
+
 function sakuraMint(): string {
   return Deno.env.get('SAKURA_MINT')?.trim() || DEFAULT_SAKURA_MINT;
 }
@@ -83,11 +119,22 @@ export async function verifyAvatarSakuraPayment(input: {
   const minAmount = input.minAmountSakura ?? avatarMintPriceSakura();
   const recipient = input.recipientWallet ?? avatarPaymentWallet();
   const mint = sakuraMint();
-  const tx = await fetchConfirmedTransaction(input.signature);
+
+  let tx: Record<string, unknown>;
+  try {
+    tx = await fetchConfirmedTransaction(input.signature);
+  } catch (rpcError) {
+    // We could not read the chain, so we know nothing about this signature and
+    // must not record anything against the caller's wallet.
+    throw new AvatarPaymentError(
+      rpcError instanceof Error ? rpcError.message : 'Payment transaction not found or not confirmed yet.',
+      'unverifiable',
+    );
+  }
 
   const feePayer = accountKeyAt(tx, 0);
   if (feePayer !== input.expectedPayer) {
-    throw new Error('Payment signer does not match your wallet.');
+    throw new AvatarPaymentError('Payment signer does not match your wallet.', 'payer_mismatch');
   }
 
   const meta = tx.meta as {
@@ -116,19 +163,30 @@ export async function verifyAvatarSakuraPayment(input: {
   }
 
   const minRaw = toBaseUnits(minAmount, decimals);
+  const creditedSakura = Number(creditedRaw) / 10 ** decimals;
   if (creditedRaw < minRaw) {
-    throw new Error(
+    throw new AvatarPaymentError(
       `Payment must include at least ${minAmount.toLocaleString()} SAKURA to ${recipient}.`,
+      'amount_short',
+      creditedSakura,
     );
   }
 
   const raw = JSON.stringify(tx);
   if (!raw.includes(input.expectedPayer)) {
-    throw new Error('Payment transaction does not include your wallet.');
+    throw new AvatarPaymentError(
+      'Payment transaction does not include your wallet.',
+      'treasury_missing',
+      creditedSakura,
+    );
   }
   if (!raw.includes(recipient) && !raw.includes(mint)) {
-    throw new Error('Payment transaction does not include the Sakura treasury wallet.');
+    throw new AvatarPaymentError(
+      'Payment transaction does not include the Sakura treasury wallet.',
+      'treasury_missing',
+      creditedSakura,
+    );
   }
 
-  return { amount: Number(creditedRaw) / 10 ** decimals, recipient };
+  return { amount: creditedSakura, recipient };
 }

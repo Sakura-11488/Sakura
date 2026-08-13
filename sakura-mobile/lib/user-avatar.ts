@@ -200,3 +200,117 @@ export async function fetchAvatarGenerationStatus(input: {
 export function buildAvatarAuthHeaders(keypair: Parameters<typeof buildWalletAuthHeaders>[0]) {
   return buildWalletAuthHeaders(keypair, 'generate-avatar');
 }
+
+/**
+ * A one-time apology grant: free avatars minted to a wallet that paid SAKURA and
+ * received nothing. `resolved` is the server-side latch — once true the prompt
+ * must never be shown again, on any device, after any reinstall.
+ *
+ * The unauthenticated status call deliberately carries NO generation ids, only
+ * public image URLs, and performs no writes. Ids and the ability to resolve the
+ * grant both require a wallet signature.
+ */
+export type AvatarApologyIncident = 'charged_without_delivery' | 'charged_twice_delivered_once';
+
+export interface AvatarApologyGrantStatus {
+  has_grant: boolean;
+  resolved: boolean;
+  /** False while the grant exists but its mints have not all landed yet. */
+  ready: boolean;
+  incident: AvatarApologyIncident;
+  avatar_count: number;
+  minted_count: number;
+  /** What the user actually lost, in SAKURA. Drives the apology copy. */
+  charged_sakura: number;
+  /** How many avatars they DID receive for those payments. */
+  received_count: number;
+  granted_at: string | null;
+  already_shown: boolean;
+  preview_urls: string[];
+}
+
+export interface AvatarApologyGrantDetail extends AvatarApologyGrantStatus {
+  avatars: AvatarMintItem[];
+}
+
+function normalizeGrant(data: Record<string, unknown> | null | undefined): AvatarApologyGrantStatus {
+  const incident = data?.incident === 'charged_twice_delivered_once'
+    ? 'charged_twice_delivered_once'
+    : 'charged_without_delivery';
+  return {
+    has_grant: Boolean(data?.has_grant),
+    resolved: Boolean(data?.resolved),
+    ready: Boolean(data?.ready),
+    incident,
+    avatar_count: Number(data?.avatar_count ?? 0),
+    minted_count: Number(data?.minted_count ?? 0),
+    charged_sakura: Number(data?.charged_sakura ?? 0),
+    received_count: Number(data?.received_count ?? 0),
+    granted_at: (data?.granted_at as string | null) ?? null,
+    already_shown: Boolean(data?.already_shown),
+    preview_urls: Array.isArray(data?.preview_urls) ? (data!.preview_urls as string[]) : [],
+  };
+}
+
+/**
+ * App-open check. Unauthenticated on purpose (same shape as
+ * fetchGamificationState) so launching the app cannot raise an unlock prompt for
+ * the overwhelming majority of users who have no grant. Swallows failures to
+ * null: a background check must never throw into the UI.
+ */
+export async function fetchAvatarApologyGrantStatus(
+  walletAddress: string,
+): Promise<AvatarApologyGrantStatus | null> {
+  try {
+    const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+      body: { action: 'grant-status', wallet_address: walletAddress },
+    });
+    if (error || !data || (data as { error?: string }).error) return null;
+    return normalizeGrant(data as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Signed fetch of the granted avatars. Calling this is what marks the apology as
+ * SHOWN server-side, which is also what unlocks resolution — the grant cannot be
+ * marked "decided" before this has happened.
+ */
+export async function fetchAvatarApologyGrantDetail(
+  authHeaders: WalletAuthHeaders,
+): Promise<AvatarApologyGrantDetail> {
+  const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+    body: { action: 'grant-detail' },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await parseInvokeError(error));
+  if (data?.error) throw new Error(String(data.error));
+  return {
+    ...normalizeGrant(data as Record<string, unknown>),
+    avatars: Array.isArray(data?.avatars) ? (data.avatars as AvatarMintItem[]) : [],
+  };
+}
+
+/**
+ * Burn the apology prompt for good. Signed, so only the owner can dismiss their
+ * own grant. Idempotent server-side: a second ack is a no-op and the first
+ * resolution stays authoritative.
+ */
+export async function acknowledgeAvatarApologyGrant(
+  authHeaders: WalletAuthHeaders,
+  input: { resolution: 'selected' | 'dismissed'; generationId?: string | null },
+): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('generate-user-avatar', {
+    body: {
+      action: 'grant-ack',
+      resolution: input.resolution,
+      ...(input.resolution === 'selected' && input.generationId
+        ? { generation_id: input.generationId }
+        : {}),
+    },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await parseInvokeError(error));
+  if (data?.error) throw new Error(String(data.error));
+}

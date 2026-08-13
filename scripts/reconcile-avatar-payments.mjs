@@ -92,22 +92,48 @@ async function sb(path) {
     }
   }
 
-  // 3. What the DB knows about
+  // 3. What the DB knows about.
+  //
+  // A generation row existing is NOT the same as an avatar being delivered:
+  // 'failed' rows are mints that blew up after the charge. And since 2026-08-13
+  // the function records every attributable refusal in avatar_payment_rejections,
+  // so most losses now surface within seconds instead of seven weeks.
   const avatarRows = await sb('user_avatar_generations?select=payment_tx_signature,wallet_address,status');
-  const claimed = new Set(avatarRows.map(r => r.payment_tx_signature).filter(Boolean));
+  const delivered = new Set(
+    avatarRows.filter(r => r.payment_tx_signature && r.status !== 'failed')
+              .map(r => r.payment_tx_signature),
+  );
 
-  // 4. Anything paid but never delivered
-  const orphans = payments.filter(p => !claimed.has(p.sig));
+  let rejections = [];
+  try {
+    rejections = await sb('avatar_payment_rejections?select=payment_tx_signature,wallet_address,stage,reason,credited_sakura,created_at');
+  } catch { /* table not migrated yet */ }
+  const recorded = new Map(rejections.map(r => [r.payment_tx_signature, r]));
+
+  // 4. Anything paid but never delivered, split by whether the server noticed.
+  const undelivered = payments.filter(p => !delivered.has(p.sig));
+  const known   = undelivered.filter(p => recorded.has(p.sig));
+  const orphans = undelivered.filter(p => !recorded.has(p.sig));
 
   console.log(`on-chain payments >=${MIN_SKR.toLocaleString()} SKR : ${payments.length}`);
-  console.log(`matched to a generation row          : ${payments.length - orphans.length}`);
-  console.log(`UNRECONCILED (paid, nothing delivered): ${orphans.length}\n`);
+  console.log(`delivered (row exists, not failed)    : ${payments.length - undelivered.length}`);
+  console.log(`RECORDED refusals (paid, refused)     : ${known.length}`);
+  console.log(`UNRECONCILED (paid, no trace at all)  : ${orphans.length}\n`);
+
+  for (const k of known) {
+    const row = recorded.get(k.sig);
+    console.log(`  [${row.stage}] ${k.when}  ${k.payer}  ${k.skr.toLocaleString()} SKR`);
+    console.log(`    ${k.sig}`);
+    console.log(`    reason: ${row.reason}`);
+  }
+  if (known.length && orphans.length) console.log('');
   for (const o of orphans) {
-    console.log(`  ${o.when}  ${o.payer}  ${o.skr.toLocaleString()} SKR`);
+    console.log(`  [no row]   ${o.when}  ${o.payer}  ${o.skr.toLocaleString()} SKR`);
     console.log(`    ${o.sig}`);
   }
-  if (orphans.length) {
-    const total = orphans.reduce((a, o) => a + o.skr, 0);
+
+  if (undelivered.length) {
+    const total = undelivered.reduce((a, o) => a + o.skr, 0);
     console.log(`\n  TOTAL OWED: ${total.toLocaleString()} SAKURA`);
     console.log('  Each signature is still claimable by its original payer (feePayer must match),');
     console.log('  so a retry through the app delivers without charging again.');
@@ -115,6 +141,30 @@ async function sb(path) {
     console.log('  Two known causes, both of which charge BEFORE the server commits anything:');
     console.log('    1. float-precision rejection in verifyAvatarSakuraPayment (fixed 2026-08-13)');
     console.log('    2. the 24h RATE_LIMIT_HOURS 429, returned after the client has already paid');
+    if (orphans.length) {
+      console.log('');
+      console.log('  "no row" entries predate the refusal audit, or the client paid and never');
+      console.log('  reached the server at all. Anything dated after 2026-08-13 is a NEW gap.');
+    }
   }
-  process.exit(orphans.length ? 1 : 0);
+
+  // 5. Apology grants issued but never actually shown to the user. A mistyped
+  // generation id in the grant row, or one mint that failed, leaves the card
+  // permanently unshowable and silent. Nothing else in the system looks.
+  let staleGrants = [];
+  try {
+    const grants = await sb('avatar_apology_grants?select=wallet_address,granted_at,shown_at,resolved_at,avatar_count,generation_ids&resolved_at=is.null');
+    const dayAgo = Date.now() - 86_400_000;
+    staleGrants = grants.filter(g => !g.shown_at && new Date(g.granted_at).getTime() < dayAgo);
+    if (staleGrants.length) {
+      console.log(`\n  STALE APOLOGY GRANTS (issued >24h ago, never shown): ${staleGrants.length}`);
+      for (const g of staleGrants) {
+        console.log(`    ${g.wallet_address}  granted ${String(g.granted_at).slice(0, 19)}  ` +
+          `${(g.generation_ids || []).length}/${g.avatar_count} generation ids`);
+      }
+      console.log('    Check every generation id is a status=ready row owned by that wallet.');
+    }
+  } catch { /* table not migrated yet */ }
+
+  process.exit(undelivered.length || staleGrants.length ? 1 : 0);
 })().catch(e => { console.error('reconcile failed:', e.message); process.exit(2); });
