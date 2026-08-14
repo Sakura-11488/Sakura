@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ScrollView,
   RefreshControl,
-  Alert,
   Linking,
   ActivityIndicator,
 } from 'react-native';
@@ -310,6 +309,8 @@ export default function ProfileScreen() {
   } | null>(null);
   const [selectingMintId, setSelectingMintId] = useState<string | null>(null);
   const [loadingAvatarMints, setLoadingAvatarMints] = useState(false);
+  /** Free avatars this wallet is owed. Read from eligibility, never assumed. */
+  const [avatarFreeCredits, setAvatarFreeCredits] = useState(0);
   const [downloadingAvatar, setDownloadingAvatar] = useState(false);
   const [sakuraHandle, setSakuraHandle] = useState<string | null>(null);
   const [generatingAvatar, setGeneratingAvatar] = useState(false);
@@ -389,7 +390,10 @@ export default function ProfileScreen() {
     });
   }, [openWalletBuy]);
 
-  const handleGenerateAvatar = useCallback(async (mode: 'tastes' | 'general') => {
+  const handleGenerateAvatar = useCallback(async (
+    mode: 'tastes' | 'general',
+    opts?: { promisedFree?: boolean },
+  ) => {
     if (!address || !connected) {
       showAlert('Connect your account', 'Sign in to forge your Sakura avatar.');
       setWalletVisible(true);
@@ -399,17 +403,52 @@ export default function ProfileScreen() {
     setGeneratingAvatar(true);
     let paymentTxSignature: string | null = null;
     try {
-      const keypair = await signWithBiometrics();
-      if (!keypair) {
+      // A free forge moves no money, so it must not raise a payment-grade
+      // biometric prompt — four of them in a row for four gifts would be absurd.
+      // Unlock the session (silent when already cached), decide what this forge
+      // actually is, and only then ask for the money-moving approval.
+      const sessionKeypair = await unlockForAppSession();
+      if (!sessionKeypair) {
         showAlert('Confirm to continue', getAvatarMintAuthPrompt());
         return;
       }
+      let keypair = sessionKeypair;
 
-      const authHeaders = buildAvatarAuthHeaders(keypair);
+      // A real pending payment always outranks a free credit: otherwise a
+      // paid-for-but-unforged mint is stranded behind the freebies while its
+      // signature sits unclaimed on chain.
       const pendingPayment = await getPendingAvatarPayment(address);
       const forgeMode = pendingPayment?.mode ?? mode;
 
-      if (!pendingPayment) {
+      // The eligibility gate exists so we never charge for a mint the server will
+      // refuse. It must NOT gate a RESUME: that payment already left the wallet,
+      // the server reuses the row keyed on its signature, and it can never yield
+      // a second avatar. Gating it here is exactly how a paid-for forge became
+      // unreachable for 24h behind the words "No SKR was charged".
+      const eligibility = pendingPayment
+        ? null
+        : await fetchAvatarMintEligibility(buildAvatarAuthHeaders(sessionKeypair));
+
+      // Free avatars this wallet is owed after being charged and given nothing.
+      // Checked BEFORE the funds guide and before the rate-limit gate: a credit
+      // needs no SAKURA and no SOL (the server's mint authority pays the network
+      // fee) and is exempt from the 24h limit server-side.
+      const freeCredits = eligibility?.free_credits ?? 0;
+      setAvatarFreeCredits(freeCredits);
+
+      // He tapped a dialog that said "costs no SKR". If the credit has since gone
+      // — forged on another device, in flight, or paused — we must NEVER fall
+      // through to sendSakura. Silently relabelling free as 100,000 SAKURA is the
+      // original incident's exact shape.
+      if (opts?.promisedFree && !pendingPayment && freeCredits <= 0) {
+        showAlert(
+          'That free avatar is not available',
+          'It looks like it was already forged, or is being forged right now. Nothing was charged. Tap your profile picture again to see where it got to.',
+        );
+        return;
+      }
+
+      if (!pendingPayment && freeCredits <= 0) {
         const funds = getForgeFundsStatus(solBalance, sakuraBalance);
         if (!funds.ok) {
           showForgeFundsGuide();
@@ -417,14 +456,7 @@ export default function ProfileScreen() {
         }
       }
 
-      // The eligibility gate exists so we never charge for a mint the server will
-      // refuse. It must NOT gate a RESUME: that payment already left the wallet,
-      // the server reuses the row keyed on its signature, and it can never yield
-      // a second avatar. Gating it here is exactly how a paid-for forge became
-      // unreachable for 24h behind the words "No SKR was charged".
-      const eligibility = pendingPayment ? null : await fetchAvatarMintEligibility(authHeaders);
-
-      if (eligibility && !eligibility.can_mint) {
+      if (eligibility && freeCredits <= 0 && !eligibility.can_mint) {
         showAlert(
           'Mint not available yet',
           eligibility.retry_after_hours > 0
@@ -436,8 +468,21 @@ export default function ProfileScreen() {
 
       if (pendingPayment) {
         paymentTxSignature = pendingPayment.paymentTxSignature;
+      } else if (freeCredits > 0) {
+        // Deliberately no sendSakura and no savePendingAvatarPayment: there is no
+        // payment to make and none to resume, and a pending-payment record here
+        // would later offer to "resume" a payment that never existed.
+        paymentTxSignature = null;
       } else {
-        paymentTxSignature = await sendSakura(keypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
+        // The one path where money moves, and the only one that asks for a
+        // payment-grade approval.
+        const payingKeypair = await signWithBiometrics();
+        if (!payingKeypair) {
+          showAlert('Confirm to continue', getAvatarMintAuthPrompt());
+          return;
+        }
+        keypair = payingKeypair;
+        paymentTxSignature = await sendSakura(payingKeypair, AVATAR_PAYMENT_WALLET, AVATAR_MINT_PRICE_SAKURA);
         await savePendingAvatarPayment({
           walletAddress: address,
           paymentTxSignature,
@@ -449,23 +494,48 @@ export default function ProfileScreen() {
       const result = await generateUserAvatar({
         mode: forgeMode,
         paymentTxSignature,
-        authHeaders,
+        authHeaders: buildAvatarAuthHeaders(keypair),
       });
 
       if (result.public_url && result.mint_address) {
-        await clearPendingAvatarPayment(address);
-        setAvatarUrl(result.public_url);
-        setAvatarMintAddress(result.mint_address);
-        const refreshed = await listAvatarMints(authHeaders);
-        setAvatarMints(refreshed);
+        if (paymentTxSignature) await clearPendingAvatarPayment(address);
+        // A credit mint deliberately does NOT become the profile picture
+        // server-side — the picker chooses — so do not install it here either.
+        if (!result.free_credit) {
+          setAvatarUrl(result.public_url);
+          setAvatarMintAddress(result.mint_address);
+        }
+        const remaining = typeof result.credits_remaining === 'number'
+          ? result.credits_remaining
+          : Math.max(0, freeCredits - (result.free_credit ? 1 : 0));
+        setAvatarFreeCredits(remaining);
+
+        // A refresh failure must NEVER be reported as a forge failure. The mint
+        // succeeded and the pending payment has already been cleared, so the
+        // "your payment signature is saved" reassurance below would be false and
+        // the user would pay a second time.
+        try {
+          setAvatarMints(await listAvatarMints(buildAvatarAuthHeaders(keypair)));
+        } catch {
+          // Cosmetic only; the picker refetches on open.
+        }
+
         showAlert(
           'Sakura avatar forged',
-          `Your Sakura-bound avatar relic is ready.\n\nCollectible: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature.slice(0, 8)}…`,
+          result.free_credit
+            ? `This one was on us — no SKR was charged.\n\nCollectible: ${result.mint_address.slice(0, 8)}…${
+                remaining > 0
+                  ? `\n\n${remaining} more free avatar${remaining === 1 ? '' : 's'} still waiting — tap your profile picture to forge ${remaining === 1 ? 'it' : 'them'}.`
+                  : '\n\nOpen your avatars to choose which one shows on your profile.'
+              }`
+            : `Your Sakura-bound avatar relic is ready.\n\nCollectible: ${result.mint_address.slice(0, 8)}…\nPayment: ${paymentTxSignature ? `${paymentTxSignature.slice(0, 8)}…` : '—'}`,
         );
       } else {
         showAlert(
           'Could not forge avatar',
-          `${result.error || 'Please try again.'}\n\nYour payment signature is saved on this device, so retrying Forge will not charge SKR again.`,
+          paymentTxSignature
+            ? `${result.error || 'Please try again.'}\n\nYour payment signature is saved on this device, so retrying Forge will not charge SKR again.`
+            : `${result.error || 'Please try again.'}\n\nNothing was charged.`,
         );
       }
     } catch (error) {
@@ -476,12 +546,20 @@ export default function ProfileScreen() {
           ? `${message}\n\nYour payment signature is saved on this device, so retrying Forge will not charge SKR again.`
           : message.includes('hour')
           ? `${message}\n\nNo additional SKR should be charged when blocked before payment.`
-          : message,
+          : `${message}\n\nNothing was charged.`,
       );
     } finally {
       setGeneratingAvatar(false);
     }
-  }, [address, connected, sakuraBalance, solBalance, signWithBiometrics, showForgeFundsGuide]);
+  }, [
+    address,
+    connected,
+    sakuraBalance,
+    solBalance,
+    signWithBiometrics,
+    unlockForAppSession,
+    showForgeFundsGuide,
+  ]);
 
   const handleSelectAvatarMint = useCallback(async (mint: AvatarMintItem) => {
     if (mint.is_active) return;
@@ -489,7 +567,7 @@ export default function ProfileScreen() {
     try {
       const keypair = await unlockForAppSession();
       if (!keypair) {
-        Alert.alert('Unlock required', 'Approve to switch your profile avatar.');
+        showAlert('Unlock required', 'Approve to switch your profile avatar.');
         return;
       }
       const result = await selectAvatarMint(buildAvatarAuthHeaders(keypair), mint.id);
@@ -500,7 +578,7 @@ export default function ProfileScreen() {
       );
       setAvatarPickerVisible(false);
     } catch (error) {
-      Alert.alert('Could not switch avatar', error instanceof Error ? error.message : 'Try again.');
+      showAlert('Could not switch avatar', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setSelectingMintId(null);
     }
@@ -518,9 +596,9 @@ export default function ProfileScreen() {
         avatar_mint_address: avatarMintAddress,
       });
       await saveProfileImageToDevice(uri, `sakura-pfp-${address.slice(0, 8)}`);
-      Alert.alert('Saved', 'Your profile photo was saved to your photo library.');
+      showAlert('Saved', 'Your profile photo was saved to your photo library.');
     } catch (error) {
-      Alert.alert('Could not save photo', error instanceof Error ? error.message : 'Try again.');
+      showAlert('Could not save photo', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setDownloadingAvatar(false);
     }
@@ -528,17 +606,33 @@ export default function ProfileScreen() {
 
   const openForgeDialog = useCallback(async () => {
     const pendingPayment = address ? await getPendingAvatarPayment(address) : null;
-    if (!pendingPayment) {
+    // A free avatar needs neither SKR nor SOL, so the funds guide would be a wall
+    // in front of something we are giving away.
+    const free = avatarFreeCredits > 0 && !pendingPayment;
+    if (!pendingPayment && !free) {
       const funds = getForgeFundsStatus(solBalance, sakuraBalance);
       if (!funds.ok) {
         showForgeFundsGuide();
         return;
       }
     }
+    // `promisedFree` carries the claim this dialog is about to make into the
+    // handler, so the handler can refuse rather than quietly charging if the
+    // credit has gone by the time he taps.
+    const freeMessage =
+      avatarFreeCredits === 1
+        ? 'You have one free avatar waiting after we charged you and delivered nothing. Forging it costs no SKR and no network fee.'
+        : `You have ${avatarFreeCredits} free avatars waiting after we charged you and delivered nothing. Forging them costs no SKR and no network fee.`;
     setAvatarSheet({
-      title: pendingPayment ? 'Resume avatar forge' : 'Forge a Sakura avatar',
+      title: pendingPayment
+        ? 'Resume avatar forge'
+        : free
+        ? 'Forge a free avatar'
+        : 'Forge a Sakura avatar',
       message: pendingPayment
         ? 'Your SKR payment was already sent. Resume forging with the saved payment signature without paying again.'
+        : free
+        ? freeMessage
         : `Spend ${formatAvatarMintPrice()} to mint a new avatar NFT. You can switch between your avatars anytime.`,
       actions: pendingPayment
         ? [
@@ -549,11 +643,19 @@ export default function ProfileScreen() {
             },
           ]
         : [
-            { id: 'tastes', label: 'From my tastes', onPress: () => handleGenerateAvatar('tastes') },
-            { id: 'general', label: 'Fresh avatar', onPress: () => handleGenerateAvatar('general') },
+            {
+              id: 'tastes',
+              label: 'From my tastes',
+              onPress: () => handleGenerateAvatar('tastes', { promisedFree: free }),
+            },
+            {
+              id: 'general',
+              label: 'Fresh avatar',
+              onPress: () => handleGenerateAvatar('general', { promisedFree: free }),
+            },
           ],
     });
-  }, [address, handleGenerateAvatar, sakuraBalance, solBalance, showForgeFundsGuide]);
+  }, [address, avatarFreeCredits, handleGenerateAvatar, sakuraBalance, solBalance, showForgeFundsGuide]);
 
   const onAvatarPress = useCallback(async () => {
     if (!connected) {
@@ -565,31 +667,44 @@ export default function ProfileScreen() {
     try {
       const keypair = await unlockForAppSession();
       if (!keypair) {
-        Alert.alert('Unlock required', 'Approve to manage your Sakura avatars.');
+        showAlert('Unlock required', 'Approve to manage your Sakura avatars.');
         return;
       }
 
       const eligibility = await fetchAvatarMintEligibility(buildAvatarAuthHeaders(keypair));
       setAvatarMints(eligibility.mints);
+      setAvatarFreeCredits(eligibility.free_credits);
+
+      // The one place a dismissed apology still surfaces. Say what is owed and
+      // why, every time, so "don't show this again" never means "and lose them".
+      const freeLine = eligibility.free_credits > 0
+        ? ` ${eligibility.free_credits === 1 ? 'One is free' : `${eligibility.free_credits} are free`} — we owe you after charging you for an avatar you never got.`
+        : '';
 
       if (eligibility.mints.length === 0) {
         const actions: ActionSheetAction[] = [
           { id: 'download', label: 'Download photo', onPress: handleDownloadProfileImage },
         ];
         if (eligibility.can_mint) {
-          actions.push({ id: 'forge', label: 'Forge avatar', onPress: openForgeDialog });
+          actions.push({
+            id: 'forge',
+            label: eligibility.free_credits > 0 ? 'Forge free avatar' : 'Forge avatar',
+            onPress: openForgeDialog,
+          });
         }
         setAvatarSheet({
           title: 'Profile photo',
           message: eligibility.can_mint
-            ? 'Save your current profile photo or forge a Sakura avatar NFT.'
+            ? `Save your current profile photo or forge a Sakura avatar NFT.${freeLine}`
             : 'Save your current profile photo to your device.',
           actions,
         });
         return;
       }
 
-      const waitLine = eligibility.retry_after_hours > 0
+      // A free credit is exempt from the 24h limit server-side, so do not tell
+      // him to wait for something he can do right now.
+      const waitLine = eligibility.retry_after_hours > 0 && eligibility.free_credits <= 0
         ? ` You can forge another in about ${eligibility.retry_after_hours} hour(s).`
         : '';
 
@@ -599,16 +714,20 @@ export default function ProfileScreen() {
       ];
 
       if (eligibility.can_mint) {
-        actions.push({ id: 'forge-another', label: 'Forge another', onPress: openForgeDialog });
+        actions.push({
+          id: 'forge-another',
+          label: eligibility.free_credits > 0 ? 'Forge a free one' : 'Forge another',
+          onPress: openForgeDialog,
+        });
       }
 
       setAvatarSheet({
         title: 'Sakura avatars',
-        message: `You have ${eligibility.mint_count} forged avatar${eligibility.mint_count === 1 ? '' : 's'}. Pick which one shows on your profile, or mint another.${waitLine}`,
+        message: `You have ${eligibility.mint_count} forged avatar${eligibility.mint_count === 1 ? '' : 's'}. Pick which one shows on your profile, or mint another.${freeLine}${waitLine}`,
         actions,
       });
     } catch (error) {
-      Alert.alert('Could not load avatars', error instanceof Error ? error.message : 'Try again.');
+      showAlert('Could not load avatars', error instanceof Error ? error.message : 'Try again.');
     } finally {
       setLoadingAvatarMints(false);
     }

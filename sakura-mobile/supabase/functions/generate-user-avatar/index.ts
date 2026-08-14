@@ -60,6 +60,33 @@ const cors = corsHeaders();
 const RATE_LIMIT_HOURS = Number(Deno.env.get('AVATAR_RATE_LIMIT_HOURS') || '24');
 const MODEL = Deno.env.get('FAL_FLUX_MODEL')?.trim() || Deno.env.get('BFL_FLUX_MODEL')?.trim() || 'fal-ai/flux/dev';
 
+/**
+ * How long a credit slot may sit in `processing` before it is treated as a dead
+ * isolate and handed back. Every generation that has ever completed on this
+ * project took 5.3-8.6 seconds end to end, so fifteen minutes cannot catch a
+ * request that is merely slow. A slot that got as far as SUBMITTING a mint
+ * transaction is never reclaimed by this at any age -- see mint_submitted_at.
+ */
+const GRANT_CREDIT_STALE_MINUTES = Number(Deno.env.get('AVATAR_CREDIT_STALE_MINUTES') || '15');
+
+/**
+ * Distinct looks for the granted avatars, indexed by credit slot. The same
+ * prompt run four times comes out near-identical, and "here are your four
+ * avatars" landing as four copies of one face is its own small insult. Chosen
+ * SERVER-side so the four differ even from a client that sends no hint -- and
+ * server-chosen text only: nft_name stays gated on paymentBypass, because a
+ * signed caller must never get to inscribe arbitrary words into an NFT we mint
+ * and pay the SOL for.
+ */
+const GRANT_SLOT_HINTS = [
+  'moonlit rooftop, cool silver tones, calm',
+  'cool blue night city, quiet confidence',
+  'warm sunset gold, gentle smile',
+  'deep violet starfield, sharp gaze',
+  'soft dawn pink, hopeful',
+  'emerald forest dusk, watchful',
+];
+
 function hoursSince(iso: string): number {
   return (Date.now() - new Date(iso).getTime()) / 3_600_000;
 }
@@ -103,11 +130,19 @@ async function buildEligibility(
     .eq('wallet_address', walletAddress)
     .maybeSingle();
 
+  // `.gt('payment_amount_sakura', 0)` restricts the 24h clock to mints that took
+  // money. Without it a wallet that forges four free apology avatars is locked
+  // out of BUYING a fifth for a day -- and since the client pays before it calls
+  // generate, that 429 would arrive with the SAKURA already gone. Free rows
+  // cannot be farmed to dodge the limit: a zero-amount row can only come from
+  // the admin bypass or from a credit slot capped by avatar_count on a
+  // service-role-only grant row this function never writes to.
   const { data: recent } = await supabase
     .from('user_avatar_generations')
     .select('created_at, status')
     .eq('wallet_address', walletAddress)
     .in('status', ['queued', 'processing', 'ready'])
+    .gt('payment_amount_sakura', 0)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -120,13 +155,34 @@ async function buildEligibility(
     }
   }
 
+  // ADVISORY, and fail-closed on purpose. `eligibility` and `list` are the same
+  // payload, and `list` runs immediately after a PAID mint succeeds. If a broken
+  // grants read threw here, that refresh would throw, the client would report a
+  // successful forge as a failure, and the user would pay a second time. Failing
+  // to 0 free credits is exactly v18 behaviour: he is asked to pay, which is
+  // what he already expects.
+  let freeCredits = 0;
+  try {
+    const creditState = await loadGrantCreditState(supabase, walletAddress);
+    freeCredits = creditState?.remaining ?? 0;
+  } catch (creditError) {
+    console.error(
+      '[avatar] credit lookup failed in eligibility (treating as 0 free):',
+      creditError instanceof Error ? creditError.message : creditError,
+    );
+  }
+
   const mints = await listReadyMints(supabase, walletAddress, profile?.avatar_generation_id ?? null);
 
   return {
     price_sakura: mintPrice,
     currency: 'SAKURA',
     rate_limit_hours: RATE_LIMIT_HOURS,
-    can_mint: retryAfterHours === 0,
+    // A wallet we owe free avatars can always forge: a credit is exempt from the
+    // 24h limit server-side. The client MUST read free_credits and skip
+    // sendSakura, or it charges 100,000 SAKURA for an avatar we are giving away.
+    can_mint: retryAfterHours === 0 || freeCredits > 0,
+    free_credits: freeCredits,
     already_minted: mints.length > 0,
     mint_count: mints.length,
     active_generation_id: profile?.avatar_generation_id ?? null,
@@ -250,13 +306,27 @@ async function resolveApologyGrantIfShown(
   try {
     const { data: grant } = await supabase
       .from('avatar_apology_grants')
-      .select('generation_ids, shown_at, resolved_at')
+      .select(
+        'avatar_count, credit_series, credits_locked, generation_ids, shown_at, resolved_at',
+      )
       .eq('wallet_address', walletAddress)
       .maybeSingle();
 
     if (!grant || grant.resolved_at || !grant.shown_at) return;
-    const ids = (grant.generation_ids ?? []) as string[];
-    if (!ids.includes(generationId)) return;
+
+    // Derived from the slot prefix, not read out of generation_ids: mints land
+    // one at a time now and a lost audit append must not stop a genuine pick
+    // from latching.
+    const state = await loadGrantCreditState(supabase, walletAddress, grant);
+    if (!state || !grantedGenerationIds(state).includes(generationId)) return;
+
+    // NEVER latch while avatars are still owed. `select` is also the ordinary
+    // profile picker: without this, a user who forged two of four, closed the
+    // card and later picked one from his profile would silently retire the
+    // apology with half the make-good unclaimed and no surface left that
+    // explains it. Only an explicit "no thanks" (grant-ack, resolution
+    // 'dismissed') may close a grant that still owes something.
+    if (state.remaining > 0 || state.reviewSlots.length > 0) return;
 
     await markApologyGrantResolved(supabase, walletAddress, 'selected', generationId);
   } catch (grantError) {
@@ -266,6 +336,299 @@ async function resolveApologyGrantIfShown(
       grantError instanceof Error ? grantError.message : grantError,
     );
   }
+}
+
+// === apology credits ========================================================
+
+/**
+ * Every credit slot a wallet's grant can ever occupy shares this prefix:
+ *
+ *   apology:<wallet>:<credit_series>:<slot 1..avatar_count>
+ *
+ * The colons are the point. Base58 cannot produce a ':', so a credit slot can
+ * never collide with, be mistaken for, or squat the UNIQUE slot of a real Solana
+ * signature -- the exact attack the avatar_payment_rejections comment above
+ * documents. It also makes the ledger self-describing: `payment_tx_signature
+ * LIKE 'apology:%'` is the precise credit-mint filter.
+ *
+ * The wallet comes from verifyWalletHeaders, never from the body, so wallet B
+ * cannot address wallet A's slot. The series comes from avatar_apology_grants,
+ * which is service-role only and which this function never inserts into, so
+ * nobody can issue himself a credit. Bumping credit_series is how an operator
+ * re-grants a wallet that has already spent its slots -- the row is PK'd on
+ * wallet_address, so a re-grant reuses it and the old slots would otherwise make
+ * the new grant instantly empty.
+ *
+ * Contrast the bypass path's `dev-bypass-${crypto.randomUUID()}`: unique by
+ * construction, so the UNIQUE index never fires and re-running a script mints
+ * duplicates. That is exactly the spare row sitting under J4oXm today. Credits
+ * are deterministic precisely so that cannot happen.
+ */
+function grantCreditPrefix(walletAddress: string, series: number): string {
+  return `apology:${walletAddress}:${series}:`;
+}
+
+type GrantSlotRow = {
+  id: string;
+  slot: number;
+  status: string;
+  createdAt: string;
+  mintSubmittedAt: string | null;
+};
+
+type GrantCreditState = {
+  avatarCount: number;
+  series: number;
+  locked: boolean;
+  prefix: string;
+  recordedIds: string[];
+  slots: GrantSlotRow[];
+  /** Slot numbers with no row at all. */
+  openSlots: number[];
+  /** Failed BEFORE any mint went out. Reclaimable in place by the retry claim. */
+  failedSlots: GrantSlotRow[];
+  /** Dead isolates: still processing, old, and provably never submitted a mint. */
+  staleSlots: GrantSlotRow[];
+  /**
+   * Slots whose mint transaction WAS submitted but never confirmed back to us.
+   * Never reclaimed and never counted as spendable: the NFT may already be in
+   * the user's wallet, and re-forging would mint a second one and spend a second
+   * lot of SOL for a single credit.
+   */
+  reviewSlots: GrantSlotRow[];
+  mintedIds: string[];
+  /** Unspent slots ignoring credits_locked. */
+  unspent: number;
+  /** Free avatars this wallet may forge right now. */
+  remaining: number;
+};
+
+/**
+ * Everything the credit scheme knows about one wallet, from two reads. Pass
+ * `grantRow` when the caller already fetched the grant so it is not read twice.
+ */
+async function loadGrantCreditState(
+  supabase: ReturnType<typeof createClient>,
+  walletAddress: string,
+  // deno-lint-ignore no-explicit-any
+  grantRow?: any,
+): Promise<GrantCreditState | null> {
+  let grant = grantRow;
+  if (grant === undefined) {
+    const { data, error } = await supabase
+      .from('avatar_apology_grants')
+      .select(
+        'avatar_count, credit_series, credits_locked, generation_ids, shown_at, resolved_at',
+      )
+      .eq('wallet_address', walletAddress)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    grant = data;
+  }
+  if (!grant) return null;
+
+  const avatarCount = Math.max(0, Math.trunc(Number(grant.avatar_count ?? 0)));
+  const series = Math.max(1, Math.trunc(Number(grant.credit_series ?? 1)));
+  const prefix = grantCreditPrefix(walletAddress, series);
+
+  // Scoped to the wallet AND the prefix. A base58 address contains no '%' or
+  // '_', so the LIKE pattern needs no escaping.
+  const { data: rows, error: slotError } = await supabase
+    .from('user_avatar_generations')
+    .select('id, status, created_at, mint_submitted_at, payment_tx_signature')
+    .eq('wallet_address', walletAddress)
+    .like('payment_tx_signature', `${prefix}%`);
+  if (slotError) throw new Error(slotError.message);
+
+  const slots: GrantSlotRow[] = [];
+  for (const row of rows ?? []) {
+    const slot = Number(String(row.payment_tx_signature).slice(prefix.length));
+    if (!Number.isInteger(slot) || slot < 1 || slot > avatarCount) continue;
+    slots.push({
+      id: String(row.id),
+      slot,
+      status: String(row.status),
+      createdAt: String(row.created_at),
+      mintSubmittedAt: (row.mint_submitted_at as string | null) ?? null,
+    });
+  }
+  slots.sort((a, b) => a.slot - b.slot);
+
+  const taken = new Set(slots.map((s) => s.slot));
+  const openSlots: number[] = [];
+  for (let slot = 1; slot <= avatarCount; slot += 1) {
+    if (!taken.has(slot)) openSlots.push(slot);
+  }
+
+  const staleCutoff = Date.now() - GRANT_CREDIT_STALE_MINUTES * 60_000;
+  const failedSlots = slots.filter((s) => s.status === 'failed' && !s.mintSubmittedAt);
+  const reviewSlots = slots.filter((s) => s.status !== 'ready' && Boolean(s.mintSubmittedAt));
+  const staleSlots = slots.filter(
+    (s) =>
+      (s.status === 'processing' || s.status === 'queued') &&
+      !s.mintSubmittedAt &&
+      new Date(s.createdAt).getTime() < staleCutoff,
+  );
+
+  const locked = Boolean(grant.credits_locked);
+  const unspent = openSlots.length + failedSlots.length + staleSlots.length;
+
+  return {
+    avatarCount,
+    series,
+    locked,
+    prefix,
+    recordedIds: ((grant.generation_ids ?? []) as string[]).filter(Boolean),
+    slots,
+    openSlots,
+    failedSlots,
+    staleSlots,
+    reviewSlots,
+    mintedIds: slots.filter((s) => s.status === 'ready').map((s) => s.id),
+    unspent,
+    remaining: locked ? 0 : unspent,
+  };
+}
+
+/**
+ * Hand a dead isolate's slot back, atomically.
+ *
+ * The guarded UPDATE is the serialization point: `status in (processing,queued)`
+ * AND `mint_submitted_at is null` AND the age cutoff together mean exactly one
+ * caller can flip it, a request that is genuinely still running cannot have its
+ * row pulled out from under it, and a request that already broadcast a mint is
+ * untouchable at any age.
+ */
+async function reclaimStaleCreditSlot(
+  supabase: ReturnType<typeof createClient>,
+  walletAddress: string,
+  row: GrantSlotRow,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - GRANT_CREDIT_STALE_MINUTES * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from('user_avatar_generations')
+    .update({
+      status: 'failed',
+      error_message:
+        `Abandoned: no result after ${GRANT_CREDIT_STALE_MINUTES} minutes and no mint was ever submitted.`,
+      completed_at: new Date().toISOString(),
+    })
+    .eq('id', row.id)
+    .eq('wallet_address', walletAddress)
+    .in('status', ['processing', 'queued'])
+    .is('mint_submitted_at', null)
+    .lt('created_at', cutoff)
+    .select('id')
+    .maybeSingle();
+
+  if (error) {
+    console.error('[avatar] stale credit reclaim failed:', error.message);
+    return false;
+  }
+  return Boolean(data);
+}
+
+type GrantCredit = {
+  /** The deterministic slot signature. This IS the lock. */
+  signature: string;
+  slot: number;
+  /** Set when the slot already owns a FAILED row the retry claim must reuse. */
+  failedGenerationId: string | null;
+  /** True when this slot already failed once, so the prompt is de-risked. */
+  isRetry: boolean;
+  /** Credits still unspent after this one. */
+  remaining: number;
+  /** Slots whose mint went out but never confirmed. Owed, not spendable. */
+  inReview: number;
+};
+
+/**
+ * Which free avatar, if any, this wallet may forge right now.
+ *
+ * The allocation is ADVISORY. The authority on "was this credit already spent"
+ * is the partial UNIQUE index user_avatar_generations_payment_tx_unique, which
+ * picks the winner at the INSERT below -- before generateFluxImage and before
+ * mintAvatarNft, so the loser of a race has spent nothing at all.
+ *
+ * The count comes from the slot signatures and NEVER from
+ * payment_amount_sakura = 0: J4oXm already carries a dev-bypass row with
+ * payment_amount_sakura = 0 from 2026-06-14, and counting it would silently dock
+ * him one of the four avatars he is owed.
+ *
+ * OPEN SLOTS ARE SERVED FIRST. Serving a failed slot ahead of an untouched one
+ * is how a single poisoned prompt strands every remaining credit: the same slot
+ * would come back forever and slots 3 and 4 would never be reachable. Row count
+ * is capped by avatar_count either way, so this cannot over-issue.
+ *
+ * Deliberately does NOT check resolved_at. Resolution means the apology CARD was
+ * decided; the avatars are owed either way, and a mis-tapped "no thanks" must not
+ * destroy four avatars. They stay claimable from the ordinary forge path via
+ * buildEligibility.free_credits. credits_locked is the operator's off switch.
+ */
+async function claimGrantCreditSlot(
+  supabase: ReturnType<typeof createClient>,
+  walletAddress: string,
+): Promise<GrantCredit | null> {
+  const state = await loadGrantCreditState(supabase, walletAddress);
+  if (!state || state.locked || state.remaining < 1) return null;
+
+  const inReview = state.reviewSlots.length;
+
+  const open = state.openSlots[0];
+  if (open !== undefined) {
+    return {
+      signature: `${state.prefix}${open}`,
+      slot: open,
+      failedGenerationId: null,
+      isRetry: false,
+      remaining: state.remaining - 1,
+      inReview,
+    };
+  }
+
+  // A failed slot is NOT a spent credit: one Flux refusal must not burn an
+  // avatar we owe. It is handed back so the existing atomic
+  // failed -> processing claim reuses the row instead of inserting a second.
+  const failed = state.failedSlots[0];
+  if (failed) {
+    return {
+      signature: `${state.prefix}${failed.slot}`,
+      slot: failed.slot,
+      failedGenerationId: failed.id,
+      isRetry: true,
+      remaining: state.remaining - 1,
+      inReview,
+    };
+  }
+
+  const stale = state.staleSlots[0];
+  if (stale && (await reclaimStaleCreditSlot(supabase, walletAddress, stale))) {
+    return {
+      signature: `${state.prefix}${stale.slot}`,
+      slot: stale.slot,
+      failedGenerationId: stale.id,
+      isRetry: true,
+      remaining: state.remaining - 1,
+      inReview,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * The granted generation ids, DERIVED from the slot signatures rather than read
+ * out of avatar_apology_grants.generation_ids.
+ *
+ * Under batch pre-minting that column was filled in a single write. The mints
+ * now arrive one at a time, and a lost append would silently hide an avatar the
+ * user owns -- and stop a genuine pick from latching. The slot prefix is the
+ * same column the UNIQUE index arbitrates, so it cannot disagree with what was
+ * actually minted. The recorded column is unioned in so any batch-issued grant
+ * keeps working, and remains useful as audit.
+ */
+function grantedGenerationIds(state: GrantCreditState): string[] {
+  return [...new Set([...state.recordedIds, ...state.mintedIds])];
 }
 
 /** The granted avatars that have actually landed, oldest first. */
@@ -316,7 +679,7 @@ async function buildApologyGrantStatus(
   const { data: grant, error } = await supabase
     .from('avatar_apology_grants')
     .select(
-      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
+      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, credit_series, credits_locked, granted_at, shown_at, resolved_at',
     )
     .eq('wallet_address', walletAddress)
     .maybeSingle();
@@ -332,19 +695,31 @@ async function buildApologyGrantStatus(
     return { has_grant: true, resolved: true, ready: false };
   }
 
-  const ids = ((grant.generation_ids ?? []) as string[]).filter(Boolean);
+  const state = await loadGrantCreditState(supabase, walletAddress, grant);
+  const ids = state ? grantedGenerationIds(state) : [];
   const avatars = await loadGrantedAvatars(supabase, walletAddress, ids, null);
   const expected = Number(grant.avatar_count ?? ids.length);
+  const creditsRemaining = state?.remaining ?? 0;
+  const creditsInReview = state?.reviewSlots.length ?? 0;
+  const creditsPaused = state?.locked ? state.unspent : 0;
 
   return {
     has_grant: true,
     resolved: false,
-    // Every promised avatar must have landed before the card may claim them.
-    // A partial mint would otherwise tell him he owns four when he owns two.
-    ready: avatars.length > 0 && avatars.length >= expected,
+    // `ready` now means THERE IS SOMETHING TO SHOW HIM, not "every promised
+    // avatar has landed". Nothing is minted when the card must first appear
+    // under the credit model, so the old test was false forever and the apology
+    // would never have rendered at all.
+    ready: avatars.length > 0 || creditsRemaining > 0 || creditsPaused > 0 || creditsInReview > 0,
     incident: (grant.incident as string) ?? 'charged_without_delivery',
     avatar_count: expected,
     minted_count: avatars.length,
+    /** Free avatars he may forge right now. */
+    credits_remaining: creditsRemaining,
+    /** Mint went out, confirmation did not come back. Owed, not re-forgeable. */
+    credits_in_review: creditsInReview,
+    /** Unspent but switched off by the operator. Say so; do not vanish. */
+    credits_paused: creditsPaused,
     charged_sakura: Number(grant.charged_sakura ?? 0),
     refund_sakura: Number(grant.refund_sakura ?? 0),
     received_count: Number(grant.received_count ?? 0),
@@ -367,7 +742,7 @@ async function buildApologyGrantDetail(
   const { data: grant, error } = await supabase
     .from('avatar_apology_grants')
     .select(
-      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, granted_at, shown_at, resolved_at',
+      'incident, avatar_count, charged_sakura, refund_sakura, received_count, generation_ids, credit_series, credits_locked, granted_at, shown_at, resolved_at',
     )
     .eq('wallet_address', walletAddress)
     .maybeSingle();
@@ -383,17 +758,27 @@ async function buildApologyGrantDetail(
     .maybeSingle();
   const activeId = (profile?.avatar_generation_id as string | null) ?? null;
 
-  const ids = ((grant.generation_ids ?? []) as string[]).filter(Boolean);
+  const state = await loadGrantCreditState(supabase, walletAddress, grant);
+  const ids = state ? grantedGenerationIds(state) : [];
   const avatars = await loadGrantedAvatars(supabase, walletAddress, ids, activeId);
   const expected = Number(grant.avatar_count ?? ids.length);
+  const creditsRemaining = state?.remaining ?? 0;
+  const creditsInReview = state?.reviewSlots.length ?? 0;
+  const creditsPaused = state?.locked ? state.unspent : 0;
 
-  if (!avatars.length || avatars.length < expected) {
-    // Do not stamp shown_at for a card we are not going to show.
+  if (!avatars.length && creditsRemaining <= 0 && creditsPaused <= 0 && creditsInReview <= 0) {
+    // Nothing minted and nothing left to mint. Do not stamp shown_at for a card
+    // we are not going to show. (This used to require EVERY promised avatar to
+    // have landed, which under the credit model is never true at card time --
+    // so shown_at was never stamped, and "no thanks" could never stick.)
     return {
       has_grant: true,
       resolved: false,
       ready: false,
-      minted_count: avatars.length,
+      minted_count: 0,
+      credits_remaining: 0,
+      credits_in_review: 0,
+      credits_paused: 0,
       avatar_count: expected,
       avatars: [],
     };
@@ -402,7 +787,9 @@ async function buildApologyGrantDetail(
   // Self-heal, on the SIGNED path only. If he is already wearing one of the
   // granted avatars and the grant was shown, he picked and the ack never landed
   // (app killed, offline, crash) -- latch it so the apology cannot reappear.
-  if (grant.shown_at && activeId && ids.includes(activeId)) {
+  // Gated on nothing being owed: latching while credits remain would quietly
+  // retire the offer of the avatars he has not claimed yet.
+  if (grant.shown_at && activeId && creditsRemaining <= 0 && creditsInReview <= 0 && ids.includes(activeId)) {
     await markApologyGrantResolved(supabase, walletAddress, 'selected', activeId);
     return { has_grant: true, resolved: true, ready: false, avatars: [] };
   }
@@ -424,10 +811,18 @@ async function buildApologyGrantDetail(
     incident: (grant.incident as string) ?? 'charged_without_delivery',
     avatar_count: expected,
     minted_count: avatars.length,
+    credits_remaining: creditsRemaining,
+    credits_in_review: creditsInReview,
+    credits_paused: creditsPaused,
     charged_sakura: Number(grant.charged_sakura ?? 0),
     refund_sakura: Number(grant.refund_sakura ?? 0),
     received_count: Number(grant.received_count ?? 0),
     granted_at: (grant.granted_at as string) ?? null,
+    already_shown: true,
+    // Returned here too. The client merges this payload over the status it is
+    // already holding, and a missing key would blank the thumbnails he can
+    // currently see -- on the one card that must never claim more than it shows.
+    preview_urls: avatars.map((a) => a.public_url).filter(Boolean),
     avatars,
   };
 }
@@ -507,9 +902,23 @@ Deno.serve(async (req) => {
         return jsonResponse(409, { error: 'Apology has not been shown yet.', resolved: false }, cors);
       }
 
-      const ids = (grant.generation_ids ?? []) as string[];
+      const state = await loadGrantCreditState(supabase, walletAddress);
+      const ids = state ? grantedGenerationIds(state) : ((grant.generation_ids ?? []) as string[]);
       if (generationId && !ids.includes(generationId)) {
         return jsonResponse(400, { error: 'generation_id is not part of this grant.' }, cors);
+      }
+
+      // A pick cannot close a grant that still owes avatars -- he chose a
+      // profile picture, he did not waive the rest. Only an explicit dismissal
+      // may do that, and it deliberately does NOT forfeit the credits: they stay
+      // claimable from the ordinary forge path.
+      const owed = (state?.remaining ?? 0) + (state?.reviewSlots.length ?? 0);
+      if (resolution === 'selected' && owed > 0) {
+        return jsonResponse(200, {
+          resolved: false,
+          credits_remaining: state?.remaining ?? 0,
+          credits_in_review: state?.reviewSlots.length ?? 0,
+        }, cors);
       }
 
       const ok = await markApologyGrantResolved(supabase, walletAddress, resolution, generationId);
@@ -604,18 +1013,64 @@ Deno.serve(async (req) => {
 
     let paymentTxSignature = body.payment_tx_signature?.trim();
     let chargedSakura = mintPrice;
+    let grantCredit: GrantCredit | null = null;
+
+    // A body-supplied signature is always an on-chain one. Credit slots are
+    // server-derived and contain ':', which base58 cannot produce, so this shape
+    // check is what stops a caller aiming the paid path at a credit slot.
+    if (paymentTxSignature && !/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(paymentTxSignature)) {
+      return jsonResponse(400, { error: 'Invalid payment signature.' }, cors);
+    }
 
     if (paymentBypass) {
       paymentTxSignature = `dev-bypass-${crypto.randomUUID()}`;
       chargedSakura = 0;
     } else if (!paymentTxSignature) {
-      return jsonResponse(400, {
-        error: `A confirmed SAKURA payment of ${mintPrice.toLocaleString()} is required.`,
-        price_sakura: mintPrice,
-      }, cors);
+      // No payment -- and none is required if this wallet is owed free avatars.
+      //
+      // walletAddress came from verifyWalletHeaders, so nobody can spend another
+      // wallet's credit. avatar_apology_grants is service-role only and this
+      // function contains no INSERT or UPSERT into it anywhere, so nobody can
+      // grant himself one. Both properties are load-bearing; do not add a write
+      // path to that table from any user-reachable action.
+      grantCredit = await claimGrantCreditSlot(supabase, walletAddress);
+      if (!grantCredit) {
+        // The 400 below is a demand for 100,000 SAKURA, and the apology card
+        // renders whatever comes back verbatim. A wallet that HAS a grant must
+        // never read it -- these four have been sent a bill for a free avatar
+        // once already.
+        const state = await loadGrantCreditState(supabase, walletAddress);
+        if (state) {
+          return jsonResponse(409, {
+            error: state.locked
+              ? 'Your free avatars are paused for a moment. Nothing was charged.'
+              : state.reviewSlots.length > 0
+              ? 'One of your free avatars is still being confirmed. Nothing was charged.'
+              : 'You have forged all your free avatars.',
+            code: 'no_credits_left',
+            credits_remaining: 0,
+            credits_in_review: state.reviewSlots.length,
+          }, cors);
+        }
+        return jsonResponse(400, {
+          error: `A confirmed SAKURA payment of ${mintPrice.toLocaleString()} is required.`,
+          price_sakura: mintPrice,
+        }, cors);
+      }
+      paymentTxSignature = grantCredit.signature;
+      chargedSakura = 0;
     }
 
-    const mode = body.mode === 'general' ? 'general' : 'tastes';
+    // A slot that already failed once is retried with the most neutral prompt we
+    // have: 'general' drops the taste snapshot, which interpolates the user's
+    // own favourite titles into the prompt and is the likeliest thing to have
+    // tripped an image filter. Re-running the identical prompt would fail
+    // identically and burn the retry.
+    const mode = grantCredit?.isRetry
+      ? 'general'
+      : body.mode === 'general'
+      ? 'general'
+      : 'tastes';
 
     // ORDER OF OPERATIONS, and why it changed.
     //
@@ -677,8 +1132,12 @@ Deno.serve(async (req) => {
       }
     }
 
+    // A credit has no transaction to read. Left in, fetchConfirmedTransaction
+    // would be handed 'apology:...', fail as unverifiable -- and unverifiable is
+    // not `attributable`, so it would not even be audited -- and 402 a user who
+    // owes nothing.
     let creditedSakura: number | null = null;
-    if (!paymentBypass) {
+    if (!paymentBypass && !grantCredit) {
       try {
         const verified = await verifyAvatarSakuraPayment({
           signature: paymentTxSignature!,
@@ -713,12 +1172,20 @@ Deno.serve(async (req) => {
       }
     }
 
-    if (!paymentBypass && !retryGenerationId) {
+    // Credits are exempt, on the same reasoning as the retry exemption: four
+    // granted avatars forged back to back can never yield a fifth, because
+    // avatar_count caps the slots. Leaving the limit in would 429 credits 2, 3
+    // and 4 -- and worse, recordPaymentRejection below would then write
+    // fabricated "charged 100,000 but refused" rows for payments that never
+    // happened, into the one table whose entire value is that it cannot be
+    // poisoned.
+    if (!paymentBypass && !grantCredit && !retryGenerationId) {
       const { data: recent } = await supabase
         .from('user_avatar_generations')
         .select('created_at, status')
         .eq('wallet_address', walletAddress)
         .in('status', ['queued', 'processing', 'ready'])
+        .gt('payment_amount_sakura', 0)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -748,10 +1215,21 @@ Deno.serve(async (req) => {
       }
     }
 
-    const userHint = sanitizeUserHint(body.hint);
+    // Server-chosen, keyed on the slot, so four granted avatars are four
+    // different faces even though the client sends no hint. A retry gets no hint
+    // at all, for the reason given at `mode` above.
+    function hintForSlot(slot: number, isRetry: boolean): string {
+      if (isRetry) return '';
+      return GRANT_SLOT_HINTS[(slot - 1) % GRANT_SLOT_HINTS.length];
+    }
+
+    let userHint = sanitizeUserHint(body.hint);
+    if (!userHint && grantCredit) {
+      userHint = hintForSlot(grantCredit.slot, grantCredit.isRetry);
+    }
 
     const taste = await buildTasteSnapshot(supabase, walletAddress);
-    const prompt = buildAvatarPrompt({ mode, taste, userHint });
+    let prompt = buildAvatarPrompt({ mode, taste, userHint });
 
     const generationWrite = {
       wallet_address: walletAddress,
@@ -788,7 +1266,43 @@ Deno.serve(async (req) => {
           .select('id')
           .maybeSingle();
 
-    const { data: generation, error: insertError } = await generationQuery;
+    // `let`, because a lost credit race below re-allocates and inserts again.
+    let { data: generation, error: insertError } = await generationQuery;
+
+    // THE CREDIT LOCK, FIRING. The partial UNIQUE on payment_tx_signature is the
+    // only thing that decides who spends a credit, and it decides it HERE --
+    // before generateFluxImage and before mintAvatarNft. The loser of the race
+    // has produced no image, no NFT and no SOL spend.
+    //
+    // A collision means a concurrent request took the slot we aimed at, so
+    // re-allocate ONCE and try the next one: if the wallet is genuinely owed
+    // another avatar he gets it with no visible error, and if he is not, the
+    // second claim returns null and he falls through to the 409. Never loop, and
+    // never retry into a slot that already owns a row -- that one belongs to the
+    // update path.
+    if (
+      insertError &&
+      (insertError as { code?: string }).code === '23505' &&
+      grantCredit &&
+      !retryGenerationId
+    ) {
+      const next = await claimGrantCreditSlot(supabase, walletAddress);
+      if (next && !next.failedGenerationId && next.signature !== grantCredit.signature) {
+        grantCredit = next;
+        paymentTxSignature = next.signature;
+        userHint = sanitizeUserHint(body.hint) || hintForSlot(next.slot, next.isRetry);
+        prompt = buildAvatarPrompt({ mode, taste, userHint });
+        generationWrite.payment_tx_signature = next.signature;
+        generationWrite.prompt_snapshot = prompt;
+        const retry = await supabase
+          .from('user_avatar_generations')
+          .insert(generationWrite)
+          .select('id')
+          .maybeSingle();
+        generation = retry.data;
+        insertError = retry.error;
+      }
+    }
 
     if (!insertError && !generation && retryGenerationId) {
       return jsonResponse(
@@ -798,6 +1312,19 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Returned, never rethrown: the outer catch maps any message containing
+    // 'signature' to 401, and PostgREST's 23505 detail string contains
+    // 'payment_tx_signature'. Raw, it reaches the user as
+    // 'duplicate key value violates unique constraint ...' in an alert box.
+    if (insertError && (insertError as { code?: string }).code === '23505') {
+      return jsonResponse(409, {
+        error: grantCredit
+          ? 'That free avatar is already being forged. Give it a moment, then open Sakura again.'
+          : 'Payment transaction already claimed.',
+        code: 'mint_in_flight',
+      }, cors);
+    }
+
     if (insertError || !generation) {
       return jsonResponse(500, { error: insertError?.message || 'Could not start mint.' }, cors);
     }
@@ -805,6 +1332,15 @@ Deno.serve(async (req) => {
     const generationId = generation.id as string;
     const imagePath = `${walletAddress}/${generationId}.png`;
     const metadataPath = `${walletAddress}/${generationId}.json`;
+
+    // The single most important flag in this function. mintAvatarNft ends in
+    // sendAndConfirm, whose routine failure mode is "transaction landed, then
+    // confirmation timed out" -- it throws with the NFT already in the user's
+    // wallet and the SOL already spent. Marking such a row `failed` is what
+    // hands the credit back, and handing it back mints a SECOND NFT for one
+    // credit and leaves the first invisible to every query in the app. So: once
+    // this is true, the row is never marked failed and never reclaimed.
+    let mintSubmitted = false;
 
     try {
       const bytes = await generateFluxImage(prompt);
@@ -851,6 +1387,16 @@ Deno.serve(async (req) => {
       const { data: metadataPublic } = supabase.storage.from('user-avatars').getPublicUrl(metadataPath);
       const metadataUri = metadataPublic.publicUrl;
 
+      // Written BEFORE the mint and awaited, so a request that dies inside
+      // sendAndConfirm still leaves the marker behind. A row carrying it is
+      // never auto-reclaimed by reclaimStaleCreditSlot at any age.
+      const { error: markError } = await supabase
+        .from('user_avatar_generations')
+        .update({ mint_submitted_at: new Date().toISOString() })
+        .eq('id', generationId);
+      if (markError) throw new Error(markError.message);
+      mintSubmitted = true;
+
       const minted = await mintAvatarNft({
         recipientWallet: walletAddress,
         metadataUri,
@@ -872,12 +1418,36 @@ Deno.serve(async (req) => {
         })
         .eq('id', generationId);
 
+      if (grantCredit) {
+        // Audit only, and best-effort by design. Every read path derives the
+        // granted set from the slot prefix (grantedGenerationIds), so a failure
+        // here cannot lose an avatar -- it only leaves the ledger column thin.
+        //
+        // A read-modify-write from here would lose ids outright when two slots
+        // land at once, hence a single-statement RPC. Wrapped, because the
+        // enclosing catch marks the generation failed and returns 502, and the
+        // NFT is already in his wallet by this point: a bookkeeping hiccup must
+        // never be reported as a failed mint.
+        try {
+          const { error: appendError } = await supabase.rpc('avatar_grant_append_generation', {
+            p_wallet: walletAddress,
+            p_generation: generationId,
+          });
+          if (appendError) console.error('[avatar] grant append failed:', appendError.message);
+        } catch (appendError) {
+          console.error(
+            '[avatar] grant append failed:',
+            appendError instanceof Error ? appendError.message : appendError,
+          );
+        }
+      }
+
       // A paid mint becomes the profile picture immediately -- that is what the
-      // user just bought. A bypass mint must NOT: granting four apology avatars
-      // back to back would silently install the fourth and pre-empt the very
-      // choice the apology exists to offer. Bypass mints land as `ready` rows
-      // and the existing `select` action does the choosing.
-      if (!paymentBypass) {
+      // user just bought. A bypass or GRANTED mint must NOT: forging four
+      // apology avatars back to back would silently install the fourth and
+      // pre-empt the very choice the apology exists to offer. They land as
+      // `ready` rows and the existing `select` action does the choosing.
+      if (!paymentBypass && !grantCredit) {
         await supabase
           .from('user_profiles')
           .upsert(
@@ -904,6 +1474,11 @@ Deno.serve(async (req) => {
           mint_tx_signature: minted.signature,
           payment_tx_signature: paymentTxSignature,
           payment_amount_sakura: chargedSakura,
+          // So the client can say "free" without parsing the slot signature, and
+          // knows how many are still owed without a second round trip.
+          free_credit: Boolean(grantCredit),
+          credits_remaining: grantCredit ? grantCredit.remaining : 0,
+          credits_in_review: grantCredit ? grantCredit.inReview : 0,
           taste_snapshot: taste,
           mode,
         },
@@ -911,6 +1486,28 @@ Deno.serve(async (req) => {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Avatar mint failed.';
+
+      if (mintSubmitted) {
+        // The mint transaction went out. It may well have landed. Leave the row
+        // non-terminal so nothing hands the credit back, record why, and shout
+        // in the logs -- this is the one case that needs a human.
+        await supabase
+          .from('user_avatar_generations')
+          .update({ error_message: `Mint submitted but not confirmed: ${message}` })
+          .eq('id', generationId);
+        console.error(
+          `[avatar] MINT UNCONFIRMED -- NEEDS REVIEW wallet=${walletAddress} ` +
+            `generation=${generationId} sig=${paymentTxSignature} reason=${message}`,
+        );
+        return jsonResponse(502, {
+          error: grantCredit
+            ? 'Your avatar may already have been minted — check your wallet in a few minutes. Nothing was charged either way, and we are looking into it.'
+            : 'Your avatar may already have been minted — check your wallet in a few minutes. Your payment is recorded against this forge, so you will not be charged again.',
+          id: generationId,
+          code: 'mint_unconfirmed',
+        }, cors);
+      }
+
       await supabase
         .from('user_avatar_generations')
         .update({
