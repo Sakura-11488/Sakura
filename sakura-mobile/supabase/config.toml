@@ -74,3 +74,6 @@ verify_jwt = false
 
 [functions.process-xp-redemptions]
 verify_jwt = false
+
+[functions.sakura-ai-chat]
+verify_jwt = false

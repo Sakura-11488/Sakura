@@ -52,7 +52,7 @@ export class AvatarPaymentError extends Error {
   }
 }
 
-function sakuraMint(): string {
+export function sakuraMint(): string {
   return Deno.env.get('SAKURA_MINT')?.trim() || DEFAULT_SAKURA_MINT;
 }
 

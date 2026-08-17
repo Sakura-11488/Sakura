@@ -19,9 +19,11 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import { useTheme } from '@/lib/theme';
 import { Spacing, Radius, FontSize, FontWeight, Shadow, Fonts } from '@/constants/theme';
 import { useWallet } from '@/lib/wallet/context';
+import { fetchGamificationState } from '@/lib/gamification';
 import {
   hasSakuraAiAccess,
   SAKURA_AI_MIN_HOLDING,
+  SAKURA_AI_MIN_XP,
   formatSakuraAiRequirement,
 } from '@/lib/wallet/sakura-ai-access';
 import { useFocusEffect } from 'expo-router';
@@ -72,23 +74,26 @@ function ChevronRight({ color }: { color: string }) {
 }
 
 function AIRow({ colors }: { colors: any }) {
-  const { connected, sakuraBalance, refreshBalances, loadingBalances } = useWallet();
-  const hasAccess = hasSakuraAiAccess(connected, sakuraBalance);
+  const { address, connected, sakuraBalance, refreshBalances, loadingBalances } = useWallet();
+  const [lifetimeXp, setLifetimeXp] = useState<number | null>(null);
+  const hasAccess = hasSakuraAiAccess(connected, sakuraBalance, lifetimeXp);
 
   useFocusEffect(
     useCallback(() => {
-      if (connected) refreshBalances();
-    }, [connected, refreshBalances]),
+      if (!connected) return;
+      refreshBalances();
+      if (address) fetchGamificationState(address).then((g) => setLifetimeXp(g?.xp ?? 0)).catch(() => {});
+    }, [connected, refreshBalances, address]),
   );
 
   const balanceLabel =
     !connected
-      ? `Hold ${formatSakuraAiRequirement()} to unlock`
+      ? `Hold ${formatSakuraAiRequirement()} or read to Level 5`
       : loadingBalances && sakuraBalance === null
         ? 'Checking SKR balance…'
         : hasAccess
           ? 'Unlocked · Your on-screen companion'
-          : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${SAKURA_AI_MIN_HOLDING.toLocaleString()} SKR`;
+          : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${SAKURA_AI_MIN_HOLDING.toLocaleString()} SKR · ${(lifetimeXp ?? 0).toLocaleString()} / ${SAKURA_AI_MIN_XP.toLocaleString()} XP`;
 
   return (
     <TouchableOpacity

@@ -1,4 +1,20 @@
-import { supabase } from './supabase';
+import { invokeMemoryOp } from './sakura-ai';
+
+/**
+ * Sakura's long-term memories about the user.
+ *
+ * These used to be read and written straight from the client with the anon key.
+ * That only worked because `sakura_ai_memories` carried `USING(true)` on every
+ * policy — which also meant anyone with the anon key (it ships inside the APK
+ * and the PWA bundle) could read or delete anybody else's memories. The table
+ * is service-role only now, so every operation goes through `sakura-ai-chat`,
+ * which knows the wallet from an Ed25519 signature rather than from whatever
+ * address the caller typed.
+ *
+ * The `walletAddress` argument is kept for call-site compatibility but is no
+ * longer authoritative: the server uses the wallet it verified, so asking for
+ * someone else's memories simply returns your own.
+ */
 
 export interface SakuraMemory {
   id: string;
@@ -8,26 +24,18 @@ export interface SakuraMemory {
   created_at: string;
 }
 
-const MAX_INJECT = 6;
-
-export async function listMemories(walletAddress: string, limit = 20): Promise<SakuraMemory[]> {
-  if (!walletAddress) return [];
-  const { data, error } = await supabase
-    .from('sakura_ai_memories')
-    .select('*')
-    .eq('wallet_address', walletAddress)
-    .order('created_at', { ascending: false })
-    .limit(Math.min(limit, 50));
-  if (error) {
-    if ((error as any).code === '42P01') return [];
-    console.warn('[ai-memories] list failed', error.message);
+export async function listMemories(_walletAddress: string, limit = 20): Promise<SakuraMemory[]> {
+  try {
+    const data = await invokeMemoryOp({ op: 'list', limit: Math.min(limit, 50) });
+    return (data?.memories ?? []) as SakuraMemory[];
+  } catch (e) {
+    console.warn('[ai-memories] list failed', e instanceof Error ? e.message : e);
     return [];
   }
-  return (data as SakuraMemory[]) || [];
 }
 
 export async function buildMemoryContext(walletAddress: string): Promise<string> {
-  const items = await listMemories(walletAddress, MAX_INJECT);
+  const items = await listMemories(walletAddress, 6);
   if (items.length === 0) return '';
   const lines = items.map((m, i) => `  ${i + 1}. ${m.note}${m.tag ? ` (#${m.tag})` : ''}`);
   return [
@@ -37,7 +45,7 @@ export async function buildMemoryContext(walletAddress: string): Promise<string>
 }
 
 export async function addMemory(
-  walletAddress: string,
+  _walletAddress: string,
   note: string,
   tag?: string | null,
 ): Promise<{ ok: boolean; memory?: SakuraMemory; error?: string }> {
@@ -45,38 +53,24 @@ export async function addMemory(
   if (trimmed.length < 3 || trimmed.length > 240) {
     return { ok: false, error: 'Memory must be between 3 and 240 characters.' };
   }
-  const { data, error } = await supabase
-    .from('sakura_ai_memories')
-    .insert({ wallet_address: walletAddress, note: trimmed, tag: tag?.trim() || null })
-    .select()
-    .single();
-  if (error || !data) {
-    if ((error as any)?.code === '42P01') return { ok: false, error: 'Memory table not yet migrated.' };
-    return { ok: false, error: error?.message || 'Failed to save memory.' };
+  try {
+    const data = await invokeMemoryOp({ op: 'add', note: trimmed, tag: tag?.trim() || null });
+    return data as { ok: boolean; memory?: SakuraMemory; error?: string };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Failed to save memory.' };
   }
-  return { ok: true, memory: data as SakuraMemory };
 }
 
 export async function forgetMemory(
-  walletAddress: string,
+  _walletAddress: string,
   options: { id?: string; contains?: string },
 ): Promise<{ ok: boolean; deleted?: number; error?: string }> {
-  let query = (supabase
-    .from('sakura_ai_memories')
-    .delete({ count: 'exact' }) as any)
-    .eq('wallet_address', walletAddress);
-  if (options.id) {
-    query = query.eq('id', options.id);
-  } else if (options.contains?.trim()) {
-    query = query.ilike('note', `%${options.contains.trim()}%`);
-  } else {
-    return { ok: false, error: 'Provide an id or a text fragment.' };
+  const contains = options.contains?.trim();
+  if (!contains) return { ok: false, error: 'Provide a text fragment to forget.' };
+  try {
+    const data = await invokeMemoryOp({ op: 'forget', contains });
+    return data as { ok: boolean; deleted?: number; error?: string };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Failed to delete memory.' };
   }
-  const { error, count } = await query;
-  if (error) {
-    if ((error as any).code === '42P01') return { ok: false, error: 'Memory table not yet migrated.' };
-    return { ok: false, error: error.message };
-  }
-  if (!count || count === 0) return { ok: false, error: 'No matching memory found.' };
-  return { ok: true, deleted: count };
 }

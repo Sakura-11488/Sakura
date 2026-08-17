@@ -34,12 +34,14 @@ import LottieView from 'lottie-react-native';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
-import { sendChatMessage, type ChatMessage, type ConfirmSummary } from '@/lib/sakura-ai';
+import { sendChatMessage, SakuraAiError, type ChatMessage, type ConfirmSummary } from '@/lib/sakura-ai';
 import { type DiscoveryCard } from '@/lib/ai-discovery';
 import { useWallet } from '@/lib/wallet/context';
+import { fetchGamificationState } from '@/lib/gamification';
 import {
   hasSakuraAiAccess,
   SAKURA_AI_MIN_HOLDING,
+  SAKURA_AI_MIN_XP,
   formatSakuraAiRequirement,
   getSakuraAiProgress,
 } from '@/lib/wallet/sakura-ai-access';
@@ -657,25 +659,27 @@ function HistoryPanel({
 function SakuraAiGate({
   connected,
   sakuraBalance,
+  lifetimeXp,
   loadingBalances,
   onRefresh,
   onOpenWallet,
 }: {
   connected: boolean;
   sakuraBalance: number | null;
+  lifetimeXp: number | null;
   loadingBalances: boolean;
   onRefresh: () => void;
   onOpenWallet: () => void;
 }) {
   const { gate, colors } = useAiStyles();
   const { t } = useI18n();
-  const progress = getSakuraAiProgress(sakuraBalance);
+  const progress = getSakuraAiProgress(sakuraBalance, lifetimeXp);
   const balanceText =
     !connected
       ? 'Connect your Sakura wallet to verify holdings.'
       : loadingBalances && sakuraBalance === null
         ? 'Checking balance…'
-        : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${SAKURA_AI_MIN_HOLDING.toLocaleString()} SKR`;
+        : `${(sakuraBalance ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} / ${SAKURA_AI_MIN_HOLDING.toLocaleString()} SKR  ·  ${(lifetimeXp ?? 0).toLocaleString()} / ${SAKURA_AI_MIN_XP.toLocaleString()} XP`;
 
   return (
     <Animated.View entering={FadeIn.duration(400)} style={gate.wrap}>
@@ -691,7 +695,7 @@ function SakuraAiGate({
       </View>
       <Text style={gate.title}>{t('ai.gateTitle')}</Text>
       <Text style={gate.sub}>
-        Hold at least {formatSakuraAiRequirement()} in your connected wallet to chat with Sakura.
+        Hold {formatSakuraAiRequirement()} — or reach Level 5 by reading. Either one unlocks Sakura.
       </Text>
       <Text style={gate.balance}>{balanceText}</Text>
       <View style={gate.track}>
@@ -721,12 +725,17 @@ export default function AIScreen() {
   const { t } = useI18n();
   const { address, connected, sakuraBalance, refreshBalances, loadingBalances } = useWallet();
   const [walletVisible, setWalletVisible] = useState(false);
-  const hasAccess = hasSakuraAiAccess(connected, sakuraBalance);
+  const [lifetimeXp, setLifetimeXp] = useState<number | null>(null);
+  const hasAccess = hasSakuraAiAccess(connected, sakuraBalance, lifetimeXp);
 
   useFocusEffect(
     useCallback(() => {
-      if (connected) refreshBalances();
-    }, [connected, refreshBalances]),
+      if (!connected) return;
+      refreshBalances();
+      // read-gamification takes no signature, so checking the XP door here
+      // never raises an unlock prompt just for opening the tab.
+      if (address) fetchGamificationState(address).then((s) => setLifetimeXp(s?.xp ?? 0)).catch(() => {});
+    }, [connected, refreshBalances, address]),
   );
   const scrollRef = useRef<ScrollView>(null);
   const lottieRef = useRef<LottieView>(null);
@@ -850,17 +859,23 @@ export default function AIScreen() {
     };
 
     try {
-      const reply = await sendChatMessage(nextHistory, address ?? undefined, onToolProgress, requireConfirm);
+      const reply = await sendChatMessage(nextHistory, address ?? undefined, onToolProgress, requireConfirm, {
+        surface: 'chat',
+      });
       const assistantMsg: ChatMessage = { role: 'assistant', content: reply };
       setChatHistory((prev) => [...prev, assistantMsg]);
       setUiMessages((prev) => [...prev, { kind: 'chat', role: 'assistant', content: reply }]);
       saveMessage(walletKey, threadId, 'assistant', reply, false).catch(() => {});
     } catch (e: any) {
       console.error('[Sakura AI]', e?.message ?? e);
-      setUiMessages((prev) => [
-        ...prev,
-        { kind: 'chat', role: 'assistant', content: `Something went wrong: ${e?.message ?? 'unknown error'}` },
-      ]);
+      // SakuraAiError carries the server's own wording — the gate copy, the
+      // retry hint, the daily-limit note. Wrapping that in "Something went
+      // wrong" would bury the one sentence that tells the user what to do.
+      const content =
+        e instanceof SakuraAiError
+          ? e.message
+          : `Something went wrong: ${e?.message ?? 'unknown error'}`;
+      setUiMessages((prev) => [...prev, { kind: 'chat', role: 'assistant', content }]);
     } finally {
       setLoading(false);
     }
@@ -910,6 +925,7 @@ export default function AIScreen() {
           <SakuraAiGate
             connected={connected}
             sakuraBalance={sakuraBalance}
+            lifetimeXp={lifetimeXp}
             loadingBalances={loadingBalances}
             onRefresh={refreshBalances}
             onOpenWallet={() => setWalletVisible(true)}
