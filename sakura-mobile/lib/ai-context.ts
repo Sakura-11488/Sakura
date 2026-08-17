@@ -54,14 +54,41 @@ export interface SakuraContext {
   allowSpoilers?: boolean;
 }
 
-/** Digits out of a label like "Chapter 47" / "Ch. 47.5 - Title". Offline fallback
- *  only — the reader knows the real number and should pass it. */
+/**
+ * Pull a chapter number out of a display label. Offline fallback only — the
+ * reader knows the real number and should pass it.
+ *
+ * This deliberately requires a "ch"/"chapter" marker and will NOT take the
+ * first number it finds. The previous version did, which meant a series whose
+ * title contains a number handed back the wrong one entirely: "86 Ch. 12"
+ * returned 86, and the spoiler guard then cheerfully authorised everything up
+ * to chapter 86 for someone reading chapter 12. Returning null is a fine
+ * outcome — the guard falls back to "the point they have reached" and refuses
+ * to speculate. Returning a confident wrong number is not.
+ *
+ * The old pattern also silently failed on the very common dotted form: it
+ * excluded digits preceded by "." (to avoid matching the ".5" of "1.5"), which
+ * meant "Ch.47" and "Vol.1 Ch.47" both matched nothing at all.
+ */
 export function chapterNumberFromLabel(label?: string | null): number | null {
   if (!label) return null;
-  const match = label.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)/);
-  if (!match) return null;
-  const parsed = Number(match[1]);
-  return Number.isFinite(parsed) ? parsed : null;
+
+  // "Chapter 47", "Ch. 47", "Ch.47", "Ch 47.5", "chapter47"
+  const marked = label.match(/\bch(?:apter|apitre|\.)?\s*\.?\s*(\d+(?:\.\d+)?)/i);
+  if (marked) {
+    const parsed = Number(marked[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  // A label that is *only* a number, e.g. "47" or "47.5". Anchored, so a title
+  // like "86 Ch. 12" cannot reach here and neither can "5 Toubun no Hanayome".
+  const bare = label.trim().match(/^(\d+(?:\.\d+)?)$/);
+  if (bare) {
+    const parsed = Number(bare[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
 
 /**
@@ -103,6 +130,26 @@ function realNumber(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * A chapter number we are willing to hand the spoiler guard.
+ *
+ * Zero is rejected, and the reason is subtle. `lib/manga.ts` builds it as
+ * `Number(c.number ?? c.num ?? 0)` — so a chapter whose source record carries
+ * no number at all arrives as 0, indistinguishable from a genuine prologue.
+ * Left alone it renders "you have read up to and including chapter 0, treat
+ * everything after that as a spoiler", and Sakura goes silent on a series the
+ * reader may be two hundred chapters into.
+ *
+ * Rejecting 0 loses nothing, because the caller falls through to
+ * `chapterNumberFromLabel` — and a series that really does have a prologue
+ * labels it "Chapter 0", which that parser reads back as 0. So a real chapter
+ * zero survives; a defaulted one degrades to the vaguer, safer boundary.
+ */
+function chapterNumber(value: number | null | undefined): number | null {
+  const n = realNumber(value);
+  return n === 0 ? null : n;
+}
+
 export function buildReaderContext(input: {
   medium: SakuraMedium;
   seriesId?: string;
@@ -120,7 +167,7 @@ export function buildReaderContext(input: {
     surface: 'reader',
     seriesTitle: realTitle(input.seriesTitle),
     chapterNumber:
-      realNumber(input.chapterNumber) ?? chapterNumberFromLabel(input.chapterLabel),
+      chapterNumber(input.chapterNumber) ?? chapterNumberFromLabel(input.chapterLabel),
     totalChapters: realNumber(input.totalChapters),
     page: realNumber(input.page),
     totalPages: realNumber(input.totalPages),

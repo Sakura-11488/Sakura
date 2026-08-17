@@ -163,10 +163,12 @@ GRANT EXECUTE ON FUNCTION public.bump_sakura_ai_daily_usage(bigint) TO service_r
 -- Locking it down loses nothing anyone can currently see, and stops a log of
 -- private conversations accumulating in public.
 --
--- NOT changed here: sakura_ai_price_alerts has the same USING(true) policies,
--- but `lib/ai-alerts.ts` reads and writes it with the anon key today, so
--- revoking would break price alerts outright. It needs the same edge-function
--- treatment as memories before its policies can be tightened.
+-- SUPERSEDED — see 20260817180000_sakura_ai_grant_fixes.sql. This paragraph
+-- claimed sakura_ai_price_alerts could not be locked down because
+-- lib/ai-alerts.ts read it with the anon key. That was wrong: the file has no
+-- supabase import at all and alerts are pure local storage. The table was
+-- revoked in the follow-up migration at no cost. Also note the REVOKE on
+-- bump_sakura_ai_daily_usage below did NOT take effect.
 
 DROP POLICY IF EXISTS "sakura_ai_chat_history_select_all" ON public.sakura_ai_chat_history;
 DROP POLICY IF EXISTS "sakura_ai_chat_history_insert_anon" ON public.sakura_ai_chat_history;
