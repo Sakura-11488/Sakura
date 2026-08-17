@@ -32,14 +32,20 @@ export async function upsertProfile(
   displayName: string | null,
   bio: string | null,
   _email?: string | null,
-): Promise<void> {
+  username?: string,
+): Promise<{ username: string | null }> {
   // unlockForAppSession, not getWalletWithBiometrics: editing a bio is not a
   // transaction, and a modal captioned "Confirm transaction" for one teaches
   // people to tap through confirmations without reading them.
   const headers = await getOrRefreshWalletAuthSession(unlockForAppSession, 'profile-upsert');
 
   const { data, error } = await supabase.functions.invoke('upsert-profile', {
-    body: { display_name: displayName, bio, avatar_seed: walletAddress.slice(0, 8) },
+    body: {
+      display_name: displayName,
+      bio,
+      avatar_seed: walletAddress.slice(0, 8),
+      ...(username ? { username } : {}),
+    },
     headers,
   });
 
@@ -58,4 +64,5 @@ export async function upsertProfile(
     throw new Error(error.message || 'Could not save your profile.');
   }
   if (data?.error) throw new Error(String(data.error));
+  return { username: (data?.username as string) ?? null };
 }

@@ -43,6 +43,10 @@ type SafeProfile = {
   avatar_seed?: string;
 };
 
+/** Mirrors USERNAME_RE in lib/creator.ts. Enforced here because the client's
+ *  copy is advisory — anyone can call this function directly. */
+const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+
 const MAX_DISPLAY_NAME = 40;
 const MAX_BIO = 300;
 const MAX_AVATAR_SEED = 64;
@@ -128,7 +132,63 @@ Deno.serve(async (req) => {
       return jsonResponse(500, { error: 'Could not save your profile.' }, cors);
     }
 
-    return jsonResponse(200, { ok: true, profile: data }, cors);
+    // ── Username ────────────────────────────────────────────────────────────
+    //
+    // A username is the wallet's public handle: /u/<name> and @mentions resolve
+    // through it, so taking someone's name redirects their profile. Uniqueness
+    // and one-per-wallet were enforced in the client, which is no enforcement at
+    // all — the table was INSERT/UPDATE-open to anon, so the checks in
+    // claimUsername were a formality anyone could skip.
+    //
+    // Claiming is once and irreversible here, matching what the client already
+    // told users ("You already have a Sakura username"). Renaming would need a
+    // redirect story for the old handle, so it stays unsupported rather than
+    // half-supported.
+    const { data: existing } = await supabase
+      .from('sakura_usernames')
+      .select('username')
+      .eq('wallet_address', wallet)
+      .maybeSingle();
+
+    let username: string | null = (existing?.username as string) ?? null;
+
+    const requested = typeof body.username === 'string' ? body.username.trim() : '';
+    if (requested) {
+      if (existing) {
+        if (requested.toLowerCase() !== String(existing.username).toLowerCase()) {
+          return jsonResponse(409, { error: 'You already have a Sakura username.' }, cors);
+        }
+      } else if (!USERNAME_RE.test(requested)) {
+        return jsonResponse(400, { error: 'Use 3–20 letters, numbers, or underscores.' }, cors);
+      } else {
+        const { error: claimErr } = await supabase.from('sakura_usernames').insert({
+          wallet_address: wallet,
+          username: requested,
+          display_name: patch.display_name ?? requested,
+          updated_at: new Date().toISOString(),
+        });
+        if (claimErr) {
+          // 23505 is the unique index doing the real work — two people racing for
+          // the same handle both pass a prior availability check, and exactly one
+          // of these inserts survives.
+          const taken = (claimErr as { code?: string }).code === '23505';
+          return jsonResponse(taken ? 409 : 500, {
+            error: taken ? 'That username is already taken.' : 'Could not claim that username.',
+          }, cors);
+        }
+        username = requested;
+      }
+    }
+
+    // Keep the handle row's display_name in step with the profile.
+    if (username && 'display_name' in body) {
+      await supabase
+        .from('sakura_usernames')
+        .update({ display_name: patch.display_name ?? username, updated_at: new Date().toISOString() })
+        .eq('wallet_address', wallet);
+    }
+
+    return jsonResponse(200, { ok: true, profile: data, username }, cors);
   } catch (e) {
     console.error('[upsert-profile] request failed', e instanceof Error ? e.message : e);
     return jsonResponse(500, { error: 'Could not save your profile.' }, cors);

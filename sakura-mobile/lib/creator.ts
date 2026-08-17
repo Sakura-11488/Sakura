@@ -135,16 +135,9 @@ export async function registerCreator(input: {
 
   await upsertProfile(input.walletAddress, displayName, bio || null);
 
-  const { error: usernameInsertErr } = await supabase.from('sakura_usernames').upsert(
-    {
-      wallet_address: input.walletAddress,
-      username: input.username.trim(),
-      display_name: displayName,
-      updated_at: now,
-    },
-    { onConflict: 'wallet_address' },
-  );
-  if (usernameInsertErr) throw usernameInsertErr;
+  // Handle claim goes with the profile write — one signed call, server-owned
+  // uniqueness. Re-running with the same handle is a no-op rather than an error.
+  await upsertProfile(input.walletAddress, displayName, bio || null, null, input.username.trim());
 }
 
 export async function updateCreatorProfile(input: {
@@ -165,13 +158,10 @@ export async function updateCreatorProfile(input: {
     .eq('wallet_address', input.walletAddress)
     .maybeSingle();
 
-  if (usernameRow) {
-    const { error: usernameErr } = await supabase
-      .from('sakura_usernames')
-      .update({ display_name: input.displayName.trim() || null, updated_at: now })
-      .eq('wallet_address', input.walletAddress);
-    if (usernameErr) throw usernameErr;
-  }
+  // upsert-profile already synced display_name onto the handle row, so there
+  // is nothing left to do here. Kept as a lookup only because callers below
+  // still read usernameRow.
+  void usernameRow;
 }
 
 export async function getCreatorWorks(walletAddress: string): Promise<CreatorWork[]> {
