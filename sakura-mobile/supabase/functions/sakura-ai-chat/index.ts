@@ -50,6 +50,24 @@ const MAX_SERVER_HOPS = 3;
 const MEMORY_INJECT = 6;
 const MEMORY_MAX_PER_WALLET = 100;
 
+// Every one of these can be overridden by a project secret, and one of them
+// silently was: SAKURA_AI_RATE_LIMIT_PER_MINUTE survived from the old
+// root-level function at 24, quietly doubling the 12 written above. Print the
+// resolved values on boot so the deployed reality is never a guess, and expose
+// them on the entitlement response so a test can assert against what the server
+// is actually doing rather than what the source says it should.
+console.log(
+  '[sakura-ai] effective config',
+  JSON.stringify({
+    model: PRIMARY_MODEL,
+    min_holding: MIN_HOLDING_SAKURA,
+    min_xp: MIN_LIFETIME_XP,
+    rate_per_minute: RATE_PER_MINUTE,
+    rate_per_day: RATE_PER_DAY,
+    daily_token_budget: DAILY_TOKEN_BUDGET,
+  }),
+);
+
 const GATE_COPY =
   `Sakura AI is for holders and readers. Hold ${MIN_HOLDING_SAKURA.toLocaleString()} SKR, ` +
   `or reach Level 5 by reading (${MIN_LIFETIME_XP.toLocaleString()} XP) — either one unlocks it.`;
@@ -507,6 +525,11 @@ Deno.serve(async (req) => {
         min_holding: MIN_HOLDING_SAKURA,
         min_xp: MIN_LIFETIME_XP,
         requirement: GATE_COPY,
+        limits: {
+          per_minute: RATE_PER_MINUTE,
+          per_day: RATE_PER_DAY,
+          daily_token_budget: DAILY_TOKEN_BUDGET,
+        },
       }, cors);
     }
 

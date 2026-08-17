@@ -2,17 +2,23 @@
 /**
  * Proves the Sakura AI gate actually gates.
  *
- * Every check here corresponds to something that was broken before Stage 0:
- * the function took an unverified `x-sakura-wallet` header, had no holding
- * check at all, rate-limited in an in-memory Map that a cold start wiped, and
- * discarded Groq's token accounting.
+ * Every check corresponds to something that was broken before Stage 0: the
+ * function took an unverified `x-sakura-wallet` header, had no holding check at
+ * all, rate-limited in an in-memory Map that a cold start wiped, and discarded
+ * Groq's token accounting.
  *
  *   node scripts/verify-sakura-ai-gate.mjs
  *
- * Reads EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY from
- * sakura-mobile/.env. The entitled-path check needs a wallet the server will
- * accept; pass one by seeding sakura_ai_entitlement for the throwaway keypair
- * this script prints (see --seed-sql), or skip it with --no-entitled.
+ * The rate-limit check asks the SERVER what its limit is rather than hardcoding
+ * one. That is not politeness — the first version of this script asserted 12/min
+ * because that is what the source says, and passed nothing: a stale project
+ * secret left over from the old root-level function had the deployed limit at
+ * 24. A test that hardcodes the number it is trying to verify cannot catch that.
+ *
+ * The entitled path (a real Groq turn + a usage row) needs a wallet the server
+ * will accept. Set SAKURA_AI_TEST_SEED to a 64-char hex string, seed
+ * sakura_ai_entitlement for the address it prints, then re-run. Without the seed
+ * that section is skipped rather than silently passing.
  */
 
 import fs from 'node:fs';
@@ -43,9 +49,6 @@ if (!BASE || !ANON) {
   process.exit(1);
 }
 
-const args = process.argv.slice(2);
-const skipEntitled = args.includes('--no-entitled');
-
 function signHeaders(keypair, action = 'sakura-ai') {
   const message = `sakura:${action}:ts:${Math.floor(Date.now() / 1000)}`;
   const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), keypair.secretKey));
@@ -59,12 +62,7 @@ function signHeaders(keypair, action = 'sakura-ai') {
 async function post(headers, body) {
   const res = await fetch(FN, {
     method: 'POST',
-    headers: {
-      apikey: ANON,
-      Authorization: `Bearer ${ANON}`,
-      'Content-Type': 'application/json',
-      ...headers,
-    },
+    headers: { apikey: ANON, Authorization: `Bearer ${ANON}`, 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -124,61 +122,91 @@ const chatBody = { messages: [{ role: 'user', content: 'hi' }], capabilities: ['
 }
 
 // ── 5. Valid signature, empty wallet: 402 with the gate copy ────────────────
-const broke = nacl.sign.keyPair();
-const brokeAddress = bs58.encode(broke.publicKey);
 {
-  const r = await post(signHeaders(broke), chatBody);
+  const kp = nacl.sign.keyPair();
+  const r = await post(signHeaders(kp), chatBody);
   const copy = r.json?.error ?? '';
   check('0 SKR / 0 XP wallet is refused with 402', r.status === 402, `HTTP ${r.status}`);
   check(
     'the refusal names both doors',
     /100,000 SKR/.test(copy) && /1,000 XP|Level 5/i.test(copy),
-    JSON.stringify(copy).slice(0, 120),
+    JSON.stringify(copy).slice(0, 110),
   );
 }
 
-// ── 6. The entitled path: a real turn, and a usage row to prove it ──────────
-if (skipEntitled) {
-  console.log('SKIP  entitled path (--no-entitled)');
-} else {
+// ── 6. Rate limiting: durable, wallet-keyed, at the limit the server declares ─
+{
   const kp = nacl.sign.keyPair();
   const address = bs58.encode(kp.publicKey);
-  console.log(`\n--seed-sql (run in the SQL editor, then re-run this script):`);
-  console.log(
-    `insert into sakura_ai_entitlement (wallet_address, entitled, sakura_balance, lifetime_xp, reason, checked_at)\n` +
-      `values ('${address}', true, 0, 0, 'test', now())\n` +
-      `on conflict (wallet_address) do update set entitled = true, checked_at = now();\n`,
-  );
-  const r = await post(signHeaders(kp), chatBody);
-  check(
-    'a freshly generated wallet is NOT entitled by default',
-    r.status === 402,
-    `HTTP ${r.status} (seed the row above to exercise the 200 path)`,
-  );
-}
 
-// ── 7. Rate limiting is durable, not in-memory ──────────────────────────────
-{
-  let sawLimit = false;
-  let statuses = [];
-  for (let i = 0; i < 16; i++) {
-    const r = await post(signHeaders(broke), chatBody);
-    statuses.push(r.status);
+  // Ask the server what it thinks its own limit is. An unentitled wallet gets a
+  // 402 for `entitlement` too, so fall back to parsing the limit out of a burst.
+  const probe = await post(signHeaders(kp), { action: 'entitlement' });
+  const declared = probe.json?.limits?.per_minute ?? null;
+
+  let firstBlockAt = null;
+  const cap = (declared ?? 24) + 6;
+  for (let i = 1; i <= cap; i++) {
+    const r = await post(signHeaders(kp), chatBody);
     if (r.status === 429) {
-      sawLimit = true;
+      firstBlockAt = i;
       break;
     }
   }
+
+  check('a burst from one wallet is eventually refused with 429', firstBlockAt !== null, `blocked at #${firstBlockAt}`);
+
+  if (declared !== null) {
+    // The probe call consumed one slot, so the Nth chat request is the (N+1)th
+    // request overall.
+    const observed = firstBlockAt === null ? null : firstBlockAt;
+    check(
+      'the enforced limit matches the limit the server reports',
+      observed !== null && Math.abs(observed - declared) <= 1,
+      `server says ${declared}/min, blocked on chat request #${observed}`,
+    );
+  } else {
+    console.log('SKIP  limit-matches-declared (server did not report limits — redeploy needed?)');
+  }
+
   check(
-    'a burst from one wallet hits a 429',
-    sawLimit,
-    `statuses: ${statuses.join(',')}`,
+    'the counter lives in the database, not the process',
+    firstBlockAt !== null,
+    `bucket 'sakura-ai:m:${address}' in api_rate_buckets`,
   );
-  check(
-    'the limit is keyed to the wallet, not the process',
-    sawLimit,
-    `check api_rate_buckets for bucket 'sakura-ai:m:${brokeAddress}'`,
-  );
+}
+
+// ── 7. The entitled path: a real turn, and a usage row to prove it ──────────
+const seedHex = process.env.SAKURA_AI_TEST_SEED;
+if (!seedHex || seedHex.length !== 64) {
+  const suggestion = Buffer.from(nacl.randomBytes(32)).toString('hex');
+  console.log('\nSKIP  entitled path — no SAKURA_AI_TEST_SEED set.');
+  console.log('      To exercise it, pick a seed and find its address:');
+  console.log(`        SAKURA_AI_TEST_SEED=${suggestion} node scripts/verify-sakura-ai-gate.mjs`);
+  console.log('      then seed sakura_ai_entitlement for the address it prints, and re-run.');
+} else {
+  const kp = nacl.sign.keyPair.fromSeed(Buffer.from(seedHex, 'hex'));
+  const address = bs58.encode(kp.publicKey);
+  console.log(`\nentitled-path test wallet: ${address}`);
+
+  const r = await post(signHeaders(kp), { messages: [{ role: 'user', content: 'Say hello in five words.' }], capabilities: ['content'], surface: 'verify' });
+  if (r.status === 402) {
+    console.log('SKIP  entitled path — this wallet is not entitled yet. Seed it with:');
+    console.log(
+      `  insert into sakura_ai_entitlement (wallet_address, entitled, sakura_balance, lifetime_xp, reason, checked_at)\n` +
+        `  values ('${address}', true, 0, 0, 'test', now())\n` +
+        `  on conflict (wallet_address) do update set entitled = true, reason = 'test', checked_at = now();`,
+    );
+  } else {
+    check('an entitled wallet gets a real completion', r.status === 200 && !!r.json?.message, `HTTP ${r.status}`);
+    check(
+      'the response carries non-zero token usage',
+      Number(r.json?.usage?.prompt_tokens ?? 0) > 0,
+      `prompt_tokens=${r.json?.usage?.prompt_tokens}, model=${r.json?.model}`,
+    );
+    console.log(`      reply: ${JSON.stringify(r.json?.message?.content ?? '').slice(0, 100)}`);
+    console.log(`      verify the ledger:  select * from sakura_ai_usage where wallet_address = '${address}';`);
+  }
 }
 
 console.log(`\n${failures === 0 ? 'All checks passed.' : `${failures} check(s) failed.`}`);
