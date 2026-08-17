@@ -17,6 +17,8 @@ export interface ReaderSettingsSheetProps {
   onChangeContinuous: (value: boolean) => void;
   continuousBack: boolean;
   onChangeContinuousBack: (value: boolean) => void;
+  /** Opens the Ask Sakura sheet. Omitted on adult sources, which hides the row. */
+  onAskSakura?: () => void;
 }
 
 function Segmented<T extends string>({
@@ -78,6 +80,7 @@ export default function ReaderSettingsSheet({
   onChangeContinuous,
   continuousBack,
   onChangeContinuousBack,
+  onAskSakura,
 }: ReaderSettingsSheetProps) {
   const { colors } = useTheme();
 
@@ -90,6 +93,24 @@ export default function ReaderSettingsSheet({
           style={[s.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}
         >
           <Text style={[s.title, { color: colors.text }]}>Reading</Text>
+
+          {/* Second entry point: the overlay button is easy to miss, and this is
+              where people already come looking for reader controls. */}
+          {onAskSakura ? (
+            <TouchableOpacity
+              style={[s.askRow, { borderColor: colors.borderLight }]}
+              activeOpacity={0.85}
+              onPress={onAskSakura}
+            >
+              <View style={s.rowText}>
+                <Text style={[s.rowTitle, { color: colors.text }]}>Ask Sakura</Text>
+                <Text style={[s.rowSub, { color: colors.textSecondary }]}>
+                  Questions about this chapter, without losing your place.
+                </Text>
+              </View>
+              <Text style={[s.askChevron, { color: ACCENT }]}>›</Text>
+            </TouchableOpacity>
+          ) : null}
 
           <Text style={[s.label, { color: colors.textSecondary }]}>Layout</Text>
           <Segmented
@@ -176,6 +197,17 @@ const s = StyleSheet.create({
   segment: { flex: 1, paddingVertical: 9, borderRadius: Radius.full, alignItems: 'center' },
   segmentText: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
   dimmed: { opacity: 0.45 },
+  askRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    marginBottom: 16,
+  },
+  askChevron: { fontSize: 24, fontWeight: FontWeight.semibold },
   hint: { fontSize: FontSize.xs, marginTop: -6, marginBottom: 10 },
   row: {
     flexDirection: 'row',

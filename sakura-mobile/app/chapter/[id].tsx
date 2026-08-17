@@ -25,6 +25,8 @@ import { setMangaReadProgress } from '@/lib/reader-progress';
 import { recordReadingEvent } from '@/lib/gamification';
 import EmptyState from '@/components/ui/EmptyState';
 import ReaderSettingsSheet from '@/components/reader/ReaderSettingsSheet';
+import ReaderAskSheet from '@/components/reader/ReaderAskSheet';
+import { buildReaderContext, mediumFromSource } from '@/lib/ai-context';
 import ReaderChapterBar from '@/components/reader/ReaderChapterBar';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
@@ -236,6 +238,12 @@ export default function ChapterReader() {
     continuousBack &&
     segments.length > 0 &&
     Math.min(...segments.map((s) => s.orderIndex)) > 0;
+
+  const [askOpen, setAskOpen] = useState(false);
+  /** Per-session, deliberately not persisted: "show me spoilers" is a decision
+   *  about one conversation, and defaulting it back to safe every time the
+   *  reader opens is the failure worth having. */
+  const [allowSpoilers, setAllowSpoilers] = useState(false);
 
   const mangaTitle = typeof title === 'string' ? title : 'Manga';
   const mangaCover = typeof cover === 'string' ? cover : undefined;
@@ -1403,6 +1411,91 @@ export default function ChapterReader() {
     return { prev: orderedChapters[at - 1] ?? null, next: orderedChapters[at + 1] ?? null };
   }, [orderedChapters, activeChapterId]);
 
+  /**
+   * What Sakura is looking at.
+   *
+   * The chapter NUMBER comes from the loaded chapter list rather than from the
+   * label, because the label is free-form per source. It is often unavailable:
+   * orderedChapters is empty until the fetch resolves and stays empty on
+   * failure, activeChapterId is '' until pages load, and the normaliser dedupes
+   * by number so a duplicate upload's id can be missing entirely. It can also be
+   * NaN for atsu-backed manga. buildReaderContext handles all of that and falls
+   * back to parsing the label — a wrong number here is what makes the spoiler
+   * guard cheerfully spoil the next arc.
+   */
+  const aiContext = useMemo(
+    () =>
+      buildReaderContext({
+        medium: mediumFromSource(typeof source === 'string' ? source : undefined),
+        seriesId: mangaId || undefined,
+        seriesTitle: mangaTitle,
+        chapterId: activeChapterId || undefined,
+        chapterLabel: chapterLabel || undefined,
+        chapterNumber: orderedChapters.find((c) => c.id === activeChapterId)?.number ?? null,
+        totalChapters: orderedChapters.length || null,
+        page: activePageIndex + 1,
+        totalPages: activeTotalPages || null,
+        allowSpoilers,
+      }),
+    [
+      source,
+      mangaId,
+      mangaTitle,
+      activeChapterId,
+      chapterLabel,
+      orderedChapters,
+      activePageIndex,
+      activeTotalPages,
+      allowSpoilers,
+    ],
+  );
+
+  /**
+   * Tools only the reader can run. Turning "chapter 40" into a chapter id needs
+   * the loaded list, which lib/sakura-ai.ts has no access to.
+   *
+   * Every branch returns an object. Returning undefined would fall through to
+   * the shared dispatcher, which answers "Unknown tool" — the model would then
+   * tell the user it could not navigate, right after navigating.
+   */
+  const askDispatch = useCallback(
+    async (name: string, args: Record<string, any>) => {
+      if (name !== 'open_in_app') return undefined;
+      if (String(args.target) !== 'chapter') return undefined; // shared dispatcher handles tabs
+
+      const wanted = Number(args.chapter_number);
+      const target = args.chapter_id
+        ? orderedChapters.find((c) => c.id === String(args.chapter_id))
+        : Number.isFinite(wanted)
+          ? orderedChapters.find((c) => c.number === wanted)
+          : undefined;
+
+      if (!target) {
+        return {
+          ok: false,
+          error: Number.isFinite(wanted)
+            ? `Chapter ${wanted} isn't in this series' list.`
+            : 'Which chapter?',
+        };
+      }
+
+      setAskOpen(false);
+      markSeeking(); // a jump is a skip, never a completed read
+      router.replace({
+        pathname: '/chapter/[id]',
+        params: {
+          id: `${mangaId}~${target.id}`,
+          ...(typeof title === 'string' ? { title } : {}),
+          ...(typeof cover === 'string' ? { cover } : {}),
+          chapter: target.title || `Chapter ${target.number}`,
+          ...(typeof source === 'string' && source ? { source } : {}),
+        },
+      });
+      return { ok: true, opened: 'chapter', chapter_number: target.number };
+    },
+    [orderedChapters, mangaId, title, cover, source, markSeeking, router],
+  );
+
   const goToAdjacentChapter = useCallback(
     (dir: -1 | 1) => {
       const target = dir === 1 ? adjacentChapters.next : adjacentChapters.prev;
@@ -1485,6 +1578,16 @@ export default function ChapterReader() {
     holdUI();
     return releaseUI;
   }, [settingsOpen, holdUI, releaseUI]);
+
+  /** Same idempotent hold for the ask sheet. Note this only suspends the
+   *  auto-hide TIMER — hideUI() called directly (scroll dismiss, route change,
+   *  a web double-click) still fires underneath. That is survivable here: the
+   *  modal is a separate layer, so the overlay fading behind it costs nothing. */
+  useEffect(() => {
+    if (!askOpen) return;
+    holdUI();
+    return releaseUI;
+  }, [askOpen, holdUI, releaseUI]);
 
   /**
    * Hide the overlay when the chapter underneath changes.
@@ -1712,15 +1815,44 @@ export default function ChapterReader() {
         </Text>
         {/* Opens layout / direction / continuity without leaving the chapter.
             Every change keeps your place and persists as the new default. */}
+        {/* Ask about the chapter without leaving it. Hidden on adult sources:
+            those titles must not reach an AI backend at all. Sits inside the
+            overlay's Animated.View, so it inherits overlayFadeStyle and the
+            parent's pointerEvents — it cannot become invisible-but-tappable. */}
+        {!isAdult ? (
+          <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={styles.askBtn}>
+            <Text style={styles.askBtnText}>Ask</Text>
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity onPress={onTap(() => setSettingsOpen(true))} style={styles.modeBtn}>
           <Text style={styles.modeBtnText}>Aa</Text>
         </TouchableOpacity>
       </Animated.View>
 
       {/* Page indicator strip — page/swipe mode only */}
+      {!isAdult ? (
+        <ReaderAskSheet
+          visible={askOpen}
+          onClose={() => setAskOpen(false)}
+          context={aiContext}
+          walletAddress={address ?? undefined}
+          allowSpoilers={allowSpoilers}
+          onChangeAllowSpoilers={setAllowSpoilers}
+          dispatchExtra={askDispatch}
+        />
+      ) : null}
+
       <ReaderSettingsSheet
         visible={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        onAskSakura={
+          isAdult
+            ? undefined
+            : () => {
+                setSettingsOpen(false);
+                setAskOpen(true);
+              }
+        }
         readingMode={readingMode}
         onChangeReadingMode={changeReadingMode}
         readDirection={readDirection}
@@ -1874,6 +2006,19 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
   },
   pageCount: {
+    color: Colors.white,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  askBtn: {
+    marginLeft: 'auto',
+    marginRight: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(232,69,69,0.85)',
+  },
+  askBtnText: {
     color: Colors.white,
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
