@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { getOrRefreshWalletAuthSession } from './wallet-auth-session';
+import { unlockForAppSession } from './wallet/app-session';
 
 export type TransferAsset = 'sakura' | 'sol';
 
@@ -18,7 +20,10 @@ export async function notifyWalletTransfer(params: {
   };
 
   try {
-    const { data, error } = await supabase.functions.invoke('notify-sakura-transfer', { body });
+    // The wallet was just unlocked to sign the transfer itself, so this reuses a
+    // warm session and raises no prompt.
+    const headers = await getOrRefreshWalletAuthSession(unlockForAppSession, 'transfer-notify');
+    const { data, error } = await supabase.functions.invoke('notify-sakura-transfer', { body, headers });
     if (error) {
       if (__DEV__) console.warn('[push] notify transfer failed', error);
       return;

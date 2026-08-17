@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { jsonResponse, sendExpoPushBatch } from '../_shared/expo-push.ts';
+import { verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 
 type TransferAsset = 'sakura' | 'sol';
 
@@ -32,9 +33,37 @@ function normalizeAsset(raw: string | undefined): TransferAsset {
   return raw === 'sol' ? 'sol' : 'sakura';
 }
 
+/**
+ * "You received 50,000 SAKURA" — pushed to a real person's phone.
+ *
+ * This had no authentication of any kind: anyone who could reach the URL could
+ * send that notification to any wallet, naming any sender and any amount. As a
+ * phishing primitive that is close to ideal, because the notification arrives
+ * from the app the user trusts.
+ *
+ * A shared secret is not available here — the caller is the app on someone's
+ * device, and a secret shipped to the client is not a secret. So the sender
+ * signs instead: the notification can only claim a transfer FROM the wallet that
+ * signed the request.
+ *
+ * That closes impersonation, not exaggeration. Someone can still send themselves
+ * a real transfer and overstate the amount in the payload, because nothing here
+ * reads the chain. Fixing that means verifying `txid` with
+ * fetchConfirmedTransaction and comparing the token balance delta — the same
+ * shape as _shared/verify-sakura-payment.ts, including its BigInt handling,
+ * since uiAmount rounding has already cost this app money once. Worth doing;
+ * bigger than this change.
+ */
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return jsonResponse(405, { error: 'Method not allowed' });
+  }
+
+  let signer: string;
+  try {
+    signer = verifyWalletHeaders(req.headers, 'transfer-notify').walletAddress;
+  } catch {
+    return jsonResponse(401, { error: 'Could not verify your wallet.' });
   }
 
   let body: TransferBody;
@@ -52,6 +81,11 @@ Deno.serve(async (req) => {
 
   if (!isWallet(senderWallet) || !isWallet(receiverWallet) || !Number.isFinite(amount) || amount <= 0) {
     return jsonResponse(400, { error: 'Invalid transfer payload' });
+  }
+
+  // You may only announce your own outgoing transfer.
+  if (senderWallet !== signer) {
+    return jsonResponse(403, { error: 'You can only notify transfers you sent.' });
   }
 
   const supabase = createClient(
