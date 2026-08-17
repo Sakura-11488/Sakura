@@ -29,8 +29,26 @@ import { isServerTool, resolveTools, type ToolGroup } from './tools.ts';
 const cors = corsHeaders();
 
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
-const PRIMARY_MODEL = Deno.env.get('SAKURA_AI_MODEL') || 'llama-3.1-8b-instant';
-const FALLBACK_MODELS = (Deno.env.get('SAKURA_AI_FALLBACK_MODELS') || 'llama-3.3-70b-versatile,openai/gpt-oss-20b')
+
+/**
+ * Groq decommissioned llama-3.1-8b-instant and llama-3.3-70b-versatile on
+ * 2026-08-16. The chain that shipped here led with both of them, so every single
+ * turn spent two 404 round trips before quietly succeeding on the third entry —
+ * the fallback worked exactly as designed and that is precisely why nobody
+ * noticed the primary was dead.
+ *
+ * These are Groq's own stated migration targets (8b-instant -> gpt-oss-20b,
+ * 70b-versatile -> gpt-oss-120b). gpt-oss-20b and -120b are the only two
+ * production general-purpose chat models Groq still offers; qwen3.6-27b is a
+ * Preview model and sits last because Preview can be withdrawn without notice.
+ *
+ * All three support tool calling. None of the GPT-OSS models support *parallel*
+ * tool calls — they emit at most one per turn — which the loop below already
+ * copes with, since it treats tool_calls as a list of unknown length rather than
+ * assuming a batch.
+ */
+const PRIMARY_MODEL = Deno.env.get('SAKURA_AI_MODEL') || 'openai/gpt-oss-20b';
+const FALLBACK_MODELS = (Deno.env.get('SAKURA_AI_FALLBACK_MODELS') || 'openai/gpt-oss-120b,qwen/qwen3.6-27b')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean);
@@ -411,6 +429,15 @@ async function callProvider(
       message = JSON.parse(text)?.error?.message || text;
     } catch {
       // keep the raw provider body for the logs only
+    }
+    // 404 on a model is not a transient blip — it means the model is gone, and
+    // the chain will paper over it on every request until someone reads a log.
+    // Say so in the words a future reader needs to hear.
+    if (res.status === 404) {
+      console.error(
+        `[sakura-ai] MODEL GONE: ${model} returned 404. It has been decommissioned or the key lost access. ` +
+          'Update SAKURA_AI_MODEL / SAKURA_AI_FALLBACK_MODELS — every request is paying for this round trip.',
+      );
     }
     console.error('[sakura-ai] provider error', res.status, model, String(message).slice(0, 500));
     return { ok: false, status: res.status, retryAfter, message: String(message) };
