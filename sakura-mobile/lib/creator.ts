@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from './supabase';
+import { upsertProfile } from './profile-write';
 import type { WalletAuthHeaders } from './wallet-auth';
 
 export type CreatorWorkKind = 'novel' | 'manga' | 'anime';
@@ -132,17 +133,7 @@ export async function registerCreator(input: {
   const displayName = input.displayName.trim() || input.username.trim();
   const bio = input.bio.trim();
 
-  const { error: profileErr } = await supabase.from('user_profiles').upsert(
-    {
-      wallet_address: input.walletAddress,
-      display_name: displayName,
-      bio: bio || null,
-      avatar_seed: avatarSeed(input.walletAddress),
-      updated_at: now,
-    },
-    { onConflict: 'wallet_address' },
-  );
-  if (profileErr) throw profileErr;
+  await upsertProfile(input.walletAddress, displayName, bio || null);
 
   const { error: usernameInsertErr } = await supabase.from('sakura_usernames').upsert(
     {
@@ -162,17 +153,11 @@ export async function updateCreatorProfile(input: {
   bio: string;
 }): Promise<void> {
   const now = new Date().toISOString();
-  const { error: profileErr } = await supabase.from('user_profiles').upsert(
-    {
-      wallet_address: input.walletAddress,
-      display_name: input.displayName.trim() || null,
-      bio: input.bio.trim() || null,
-      avatar_seed: avatarSeed(input.walletAddress),
-      updated_at: now,
-    },
-    { onConflict: 'wallet_address' },
+  await upsertProfile(
+    input.walletAddress,
+    input.displayName.trim() || null,
+    input.bio.trim() || null,
   );
-  if (profileErr) throw profileErr;
 
   const { data: usernameRow } = await supabase
     .from('sakura_usernames')

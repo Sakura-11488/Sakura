@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { upsertProfile } from './profile-write';
 import {
   getCreatorProfile,
   isUsernameAvailable,
@@ -35,16 +36,7 @@ export async function claimUsername(input: {
   const now = new Date().toISOString();
   const displayName = input.displayName?.trim() || input.username.trim();
 
-  const { error: profileErr } = await supabase.from('user_profiles').upsert(
-    {
-      wallet_address: input.walletAddress,
-      display_name: displayName,
-      avatar_seed: input.walletAddress.slice(0, 8),
-      updated_at: now,
-    },
-    { onConflict: 'wallet_address' },
-  );
-  if (profileErr) throw profileErr;
+  await upsertProfile(input.walletAddress, displayName, null);
 
   const { data, error } = await supabase
     .from('sakura_usernames')

@@ -71,24 +71,10 @@ export async function getProfile(walletAddress: string): Promise<UserProfile | n
   };
 }
 
-export async function upsertProfile(
-  walletAddress: string,
-  displayName: string | null,
-  bio: string | null,
-  _email?: string | null,
-): Promise<void> {
-  const { error } = await supabase.from('user_profiles').upsert(
-    {
-      wallet_address: walletAddress,
-      display_name: displayName,
-      bio,
-      avatar_seed: walletAddress.slice(0, 8),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'wallet_address' },
-  );
-  if (error) throw error;
-}
+// upsertProfile moved to lib/profile-write.ts — user_profiles is no longer
+// writable with the anon key, so profile edits go through the upsert-profile
+// edge function. Re-exported here so existing imports keep working.
+export { upsertProfile } from './profile-write';
 
 export interface ReadingHistory {
   wallet_address: string;

@@ -77,3 +77,6 @@ verify_jwt = false
 
 [functions.sakura-ai-chat]
 verify_jwt = false
+
+[functions.upsert-profile]
+verify_jwt = false
