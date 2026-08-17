@@ -14,7 +14,7 @@
  * navigation) and are returned for dispatch.
  */
 
-export type ToolGroup = 'content' | 'memory' | 'wallet' | 'money' | 'alerts';
+export type ToolGroup = 'content' | 'memory' | 'wallet' | 'money' | 'alerts' | 'navigation';
 
 export type SakuraTool = {
   group: ToolGroup;
@@ -62,6 +62,40 @@ export const CATALOGUE: SakuraTool[] = [
     "Returns the anime, manga, and novels the user has in progress so they can pick up where they left off. Use for 'what was I watching/reading', 'continue', 'resume'. Returns cards."),
   t('content', 'client', 'recommend_for_me',
     "Personalised picks based on what the user has recently watched or read. Use for 'recommend something for me', 'what should I watch next'. Returns cards."),
+
+  // ─── Reader context (local data, no vendor, no cost) ─────────────────────
+  t('content', 'client', 'series_facts',
+    'Facts the app already holds about a series — synopsis, genres, status, author, chapter count. Use this before answering anything factual about what the user is reading, instead of recalling it from memory.',
+    {
+      type: 'object',
+      properties: {
+        series_id: { type: 'string', description: 'Omit to use the series the user is currently reading.' },
+      },
+    }),
+  t('content', 'client', 'my_progress',
+    "How far the user has actually got in a series — last chapter or episode reached, and when. Use it for 'where was I', and to check what is safe to discuss without spoiling.",
+    {
+      type: 'object',
+      properties: {
+        series_id: { type: 'string', description: 'Omit to use the series the user is currently reading.' },
+      },
+    }),
+  t('navigation', 'client', 'open_in_app',
+    "Takes the user somewhere in the app — a specific chapter, a series page, or a tab. Use it when they ask to go, jump, open, or continue somewhere. Say where you are taking them before you call it.",
+    {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          enum: ['chapter', 'series', 'library', 'home', 'downloads', 'search'],
+          description: "What kind of place. 'chapter' needs chapter_number or chapter_id.",
+        },
+        chapter_number: { type: 'number', description: 'For target=chapter.' },
+        chapter_id: { type: 'string', description: 'For target=chapter, if known exactly.' },
+        series_id: { type: 'string', description: 'Defaults to the series being read.' },
+      },
+      required: ['target'],
+    }),
 
   // ─── Memory (executed server-side against the verified wallet) ────────────
   t('memory', 'server', 'remember',
@@ -148,7 +182,7 @@ export const CATALOGUE: SakuraTool[] = [
 ];
 
 /** Groups a surface may request. Memory is always on — the server runs it. */
-export const REQUESTABLE_GROUPS: ToolGroup[] = ['content', 'wallet', 'money', 'alerts'];
+export const REQUESTABLE_GROUPS: ToolGroup[] = ['content', 'wallet', 'money', 'alerts', 'navigation'];
 
 const BY_NAME = new Map(CATALOGUE.map((tool) => [tool.schema.function.name, tool]));
 
@@ -166,11 +200,35 @@ export function isServerTool(name: string): boolean {
  * but never widen it, and can never reach a group the server has withdrawn for
  * this turn (Stage 2 withdraws `money` once web content is in the context).
  */
+/** Which groups are actually live this turn — the persona is built from this,
+ *  so the model is never told about tools it cannot call. */
+export function resolveGroups(
+  requested: string[] | undefined,
+  withdrawn: ToolGroup[] = [],
+): ToolGroup[] {
+  const blocked = new Set(withdrawn);
+  const asked = Array.isArray(requested)
+    ? new Set(requested.filter((g): g is ToolGroup => (REQUESTABLE_GROUPS as string[]).includes(g)))
+    : new Set<ToolGroup>(REQUESTABLE_GROUPS);
+
+  const groups = new Set<ToolGroup>();
+  for (const tool of CATALOGUE) {
+    if (blocked.has(tool.group)) continue;
+    if (tool.group === 'memory' || asked.has(tool.group)) groups.add(tool.group);
+  }
+  return [...groups];
+}
+
 export function resolveTools(
   requested: string[] | undefined,
   withdrawn: ToolGroup[] = [],
 ): SakuraTool['schema'][] {
-  const asked = Array.isArray(requested) && requested.length > 0
+  // An EMPTY array means "no client tools", not "surprise me". Treating [] as
+  // absent — which is what `length > 0` did — handed the full catalogue,
+  // money tools included, to any surface that thought it was asking for
+  // nothing. Only a genuinely absent field falls back to everything, and that
+  // exists solely so an older client that predates capabilities keeps working.
+  const asked = Array.isArray(requested)
     ? new Set(requested.filter((g): g is ToolGroup => (REQUESTABLE_GROUPS as string[]).includes(g)))
     : new Set<ToolGroup>(REQUESTABLE_GROUPS);
 

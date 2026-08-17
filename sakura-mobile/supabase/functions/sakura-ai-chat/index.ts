@@ -2,8 +2,8 @@ import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supa
 import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 import { checkRateLimit } from '../_shared/rate-limit.ts';
 import { getSakuraHolding } from '../_shared/sakura-holding.ts';
-import { buildSystemPrompt } from './prompt.ts';
-import { isServerTool, resolveTools, type ToolGroup } from './tools.ts';
+import { buildSystemPrompt, type SakuraContext } from './prompt.ts';
+import { isServerTool, resolveGroups, resolveTools, type ToolGroup } from './tools.ts';
 
 /**
  * Sakura AI — gated, metered, server-authoritative chat proxy.
@@ -612,10 +612,18 @@ Deno.serve(async (req) => {
       : undefined;
     const withdrawn: ToolGroup[] = [];
     const tools = resolveTools(capabilities, withdrawn);
+    const activeGroups = resolveGroups(capabilities, withdrawn);
+
+    // What the user is looking at. Rendered into the system block on every
+    // turn rather than offered as a tool — see prompt.ts for why.
+    const context =
+      body.context && typeof body.context === 'object'
+        ? (body.context as SakuraContext)
+        : undefined;
 
     const memories = await loadMemories(supabase, wallet, MEMORY_INJECT);
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(memories) },
+      { role: 'system', content: buildSystemPrompt(memories, context, activeGroups) },
       ...history,
     ];
 
@@ -626,6 +634,10 @@ Deno.serve(async (req) => {
       // On the last hop, drop the tools entirely so the model has to answer in
       // prose rather than looping on server tools forever.
       const result = await callWithFallback(messages, hop >= MAX_SERVER_HOPS ? [] : tools);
+      // NB: on the final hop the tools are withheld deliberately. The system
+      // prompt still describes them, which is survivable — the model answering
+      // in prose is the desired outcome there — but if that ever starts drawing
+      // a phantom tool call, rebuild the prompt for that hop with no groups.
 
       if (!result.ok) {
         await recordUsage(supabase, wallet, lastModel, surface, usage);

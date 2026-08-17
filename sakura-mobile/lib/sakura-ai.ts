@@ -1,4 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
+import { router } from 'expo-router';
+import { fetchMangaDetail } from './manga';
+import type { SakuraContext } from './ai-context';
 import { supabase } from './supabase';
 import { getOrRefreshWalletAuthSession } from './wallet-auth-session';
 import { unlockForAppSession } from './wallet/app-session';
@@ -49,7 +52,25 @@ export type RequireConfirm = (summary: ConfirmSummary) => Promise<boolean>;
 interface ToolContext {
   walletAddress?: string;
   requireConfirm?: RequireConfirm;
+  /** What the user is looking at, so a tool can default to "this series". */
+  context?: SakuraContext;
 }
+
+/**
+ * Where open_in_app is allowed to send someone.
+ *
+ * An allowlist rather than a free-form path because the model composes the
+ * argument, and a model that can navigate to an arbitrary route is a model that
+ * can be talked into navigating somewhere unfortunate by text it read
+ * elsewhere. Each entry builds its own path; nothing here concatenates
+ * model output into a route.
+ */
+const NAV_TARGETS = {
+  home: () => '/(tabs)/home',
+  library: () => '/(tabs)/library',
+  downloads: () => '/downloads',
+  search: () => '/(tabs)/search',
+} as const;
 
 // ─── Edge function call ───────────────────────────────────────────────────────
 
@@ -60,8 +81,17 @@ interface ToolContext {
  * offer. It used to be the other way round, which meant anyone POSTing to the
  * function chose the model's powers.
  */
-export type AiCapability = 'content' | 'wallet' | 'money' | 'alerts';
-const DEFAULT_CAPABILITIES: AiCapability[] = ['content', 'wallet', 'money', 'alerts'];
+export type AiCapability = 'content' | 'wallet' | 'money' | 'alerts' | 'navigation';
+const DEFAULT_CAPABILITIES: AiCapability[] = ['content', 'wallet', 'money', 'alerts', 'navigation'];
+
+/**
+ * What the reader surface asks for. Note what is absent: no 'money'. A surface
+ * whose whole job is answering questions about a chapter has no business being
+ * able to emit send_sakura, and the cheapest way to guarantee that is to never
+ * put the tool in the schema. This matters more once Stage 2 puts web text in
+ * the context window.
+ */
+export const READER_CAPABILITIES: AiCapability[] = ['content', 'navigation'];
 
 export type ServerToolResult = { tool_call_id: string; name: string; content: string };
 
@@ -122,8 +152,9 @@ async function invokeOnce(
   messages: object[],
   capabilities: AiCapability[],
   surface: string,
+  context?: SakuraContext,
 ): Promise<ChatTurn> {
-  const data = await invokeAi({ messages, capabilities, surface });
+  const data = await invokeAi({ messages, capabilities, surface, context });
   if (!data?.message) throw new SakuraAiError('Unexpected response from Sakura AI', 'malformed');
   return data as ChatTurn;
 }
@@ -206,6 +237,82 @@ async function dispatchTool(
 
     // Memory (remember / forget / recall_memories) is executed inside the edge
     // function against the wallet it verified, and never reaches this switch.
+
+    // Reader context tools. These are local reads — no vendor, no cost — and
+    // they live here rather than only in the reader so that /ai can answer the
+    // same questions. A tool the server offers but no surface implements comes
+    // back to the user as "Unknown tool", which reads as the AI being broken.
+    case 'series_facts': {
+      const seriesId = String(args.series_id || ctx.context?.seriesId || '');
+      if (!seriesId) {
+        return {
+          ok: false,
+          error: 'No series in view. Ask the user which series they mean.',
+        };
+      }
+      const detail = await fetchMangaDetail(seriesId).catch(() => null);
+      if (!detail) return { ok: false, error: 'No stored facts for that series.' };
+      return {
+        ok: true,
+        title: detail.title,
+        description: detail.description,
+        genres: detail.genres,
+        status: detail.status,
+        type: detail.type,
+        rating: detail.rating ?? null,
+      };
+    }
+
+    case 'my_progress': {
+      const seriesId = String(args.series_id || ctx.context?.seriesId || '');
+      const history = await getReadingHistory(60).catch(() => []);
+      const match = seriesId
+        ? history.find((h) => h.mangaId === seriesId || h.id === seriesId || h.animeId === seriesId)
+        : history[0];
+      if (!match) return { ok: true, found: false, note: 'Nothing recorded for that series yet.' };
+      return {
+        ok: true,
+        found: true,
+        title: match.title,
+        kind: match.kind,
+        where: match.subtitle,
+        percent_through: Math.round((match.progress ?? 0) * 100),
+        last_read: new Date(match.updatedAt).toISOString(),
+      };
+    }
+
+    case 'open_in_app': {
+      const target = String(args.target || '');
+
+      if (target === 'chapter') {
+        const seriesId = String(args.series_id || ctx.context?.seriesId || '');
+        const chapterId = args.chapter_id ? String(args.chapter_id) : '';
+        if (!chapterId) {
+          // Resolving a chapter NUMBER to an id needs the reader's own loaded
+          // chapter list, which this module does not have. The reader supplies
+          // its own handler via dispatchExtra; anywhere else, say so honestly
+          // rather than navigating somewhere approximate.
+          return {
+            ok: false,
+            error: 'Opening a specific chapter only works from inside the reader.',
+          };
+        }
+        router.push({ pathname: '/chapter/[id]', params: { id: chapterId } } as never);
+        return { ok: true, opened: 'chapter', chapter_id: chapterId };
+      }
+
+      if (target === 'series') {
+        const seriesId = String(args.series_id || ctx.context?.seriesId || '');
+        if (!seriesId) return { ok: false, error: 'No series to open.' };
+        router.push({ pathname: '/manga/[id]', params: { id: seriesId } } as never);
+        return { ok: true, opened: 'series', series_id: seriesId };
+      }
+
+      const build = NAV_TARGETS[target as keyof typeof NAV_TARGETS];
+      if (!build) return { ok: false, error: `Can't open "${target}".` };
+      router.push(build() as never);
+      return { ok: true, opened: target };
+    }
 
     // Wallet intelligence
     case 'analyze_wallet': {
@@ -365,6 +472,14 @@ export interface SendChatOptions {
   capabilities?: AiCapability[];
   /** Free-form label recorded against token usage, e.g. 'chat', 'reader'. */
   surface?: string;
+  /**
+   * What the user is looking at. Sent on every hop, not just the first: the
+   * server rebuilds the system prompt from scratch each time, so dropping it
+   * mid-conversation would silently disarm the spoiler guard.
+   */
+  context?: SakuraContext;
+  /** Lets a surface run a tool the shared dispatcher doesn't know about. */
+  dispatchExtra?: (name: string, args: Record<string, any>) => Promise<unknown> | unknown;
 }
 
 export async function sendChatMessage(
@@ -382,11 +497,11 @@ export async function sendChatMessage(
 
   const capabilities = options?.capabilities ?? DEFAULT_CAPABILITIES;
   const surface = options?.surface ?? 'chat';
-  const ctx: ToolContext = { walletAddress, requireConfirm };
+  const ctx: ToolContext = { walletAddress, requireConfirm, context: options?.context };
 
   // Tool call loop — max 6 steps to prevent runaway
   for (let step = 0; step < 6; step++) {
-    const result = await invokeOnce(messages, capabilities, surface);
+    const result = await invokeOnce(messages, capabilities, surface, options?.context);
     const calls = result.message.tool_calls ?? [];
 
     if (result.finish_reason !== 'tool_calls' || calls.length === 0) {
@@ -420,7 +535,12 @@ export async function sendChatMessage(
       onToolProgress?.(tc.function.name, args, null);
       let toolResult: unknown;
       try {
-        toolResult = await dispatchTool(tc.function.name, args, ctx);
+        // A surface can own tools the shared dispatcher knows nothing about —
+        // the reader's navigation and series lookups need the reader's own
+        // state, which does not exist here.
+        const extra = await options?.dispatchExtra?.(tc.function.name, args);
+        toolResult =
+          extra === undefined ? await dispatchTool(tc.function.name, args, ctx) : extra;
       } catch (e: any) {
         toolResult = { ok: false, error: e?.message || 'Tool failed' };
       }
