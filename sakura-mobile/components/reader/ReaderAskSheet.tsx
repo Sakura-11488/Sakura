@@ -14,6 +14,8 @@ import {
   Switch,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
 import { Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { sendChatMessage, SakuraAiError, READER_CAPABILITIES, type ChatMessage } from '@/lib/sakura-ai';
@@ -39,7 +41,19 @@ export interface ReaderAskSheetProps {
   dispatchExtra?: (name: string, args: Record<string, any>) => Promise<unknown> | unknown;
 }
 
-type Turn = { role: 'user' | 'assistant'; content: string };
+type DiscoveryCard = { kind: string; id: string; title: string; image?: string; route: string };
+
+/**
+ * A turn is either something said, or a row of cards a tool produced.
+ *
+ * The system prompt tells the model "discovery results render as cards
+ * automatically — do NOT list the titles yourself". That instruction is only
+ * true if the surface actually renders them; without this the reader would show
+ * "here are a few you might like" followed by nothing at all.
+ */
+type Turn =
+  | { role: 'user' | 'assistant'; content: string }
+  | { role: 'cards'; header: string; cards: DiscoveryCard[] };
 
 const SUGGESTIONS = [
   'Recap this chapter',
@@ -72,6 +86,7 @@ export default function ReaderAskSheet({
   const { colors } = useTheme();
   const [input, setInput] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState('');
   const scrollRef = useRef<ScrollView>(null);
@@ -91,11 +106,25 @@ export default function ReaderAskSheet({
       requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
 
       try {
-        const history: ChatMessage[] = next.map((t) => ({ role: t.role, content: t.content }));
+        const history: ChatMessage[] = next
+          .filter((t): t is { role: 'user' | 'assistant'; content: string } => t.role !== 'cards')
+          .map((t) => ({ role: t.role, content: t.content }));
         const reply = await sendChatMessage(
           history,
           walletAddress,
-          (name) => setThinking(labelForTool(name)),
+          (name, _args, result) => {
+            if (result == null) {
+              setThinking(labelForTool(name));
+              return;
+            }
+            const cards = (result as { cards?: DiscoveryCard[]; header?: string })?.cards;
+            if (Array.isArray(cards) && cards.length > 0) {
+              setTurns((prev) => [
+                ...prev,
+                { role: 'cards', header: (result as { header?: string }).header || '', cards: cards.slice(0, 8) },
+              ]);
+            }
+          },
           undefined, // no confirmation flow: the reader never gets money tools
           {
             capabilities: READER_CAPABILITIES,
@@ -194,21 +223,55 @@ export default function ReaderAskSheet({
                   ))}
                 </View>
               ) : (
-                turns.map((t, i) => (
-                  <View
-                    key={i}
-                    style={[
-                      s.bubble,
-                      t.role === 'user'
-                        ? [s.userBubble, { backgroundColor: ACCENT }]
-                        : [s.aiBubble, { backgroundColor: colors.surfaceSecondary }],
-                    ]}
-                  >
-                    <Text style={[s.bubbleText, { color: t.role === 'user' ? '#fff' : colors.text }]}>
-                      {t.content}
-                    </Text>
-                  </View>
-                ))
+                turns.map((t, i) =>
+                  t.role === 'cards' ? (
+                    <View key={i} style={s.cardRowWrap}>
+                      {t.header ? (
+                        <Text style={[s.cardHeader, { color: colors.textSecondary }]}>{t.header}</Text>
+                      ) : null}
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.cardRow}>
+                        {t.cards.map((c) => (
+                          <TouchableOpacity
+                            key={`${c.kind}:${c.id}`}
+                            style={s.discCard}
+                            activeOpacity={0.85}
+                            // Leaving the reader here is fine — it is a deliberate
+                            // tap on a recommendation, not the sheet navigating on
+                            // its own. Close first so the reader is not left with a
+                            // modal over a screen that is unmounting.
+                            onPress={() => {
+                              onClose();
+                              router.push(c.route as never);
+                            }}
+                          >
+                            {c.image ? (
+                              <Image source={{ uri: c.image }} style={s.discImg} contentFit="cover" />
+                            ) : (
+                              <View style={[s.discImg, { backgroundColor: colors.surfaceSecondary }]} />
+                            )}
+                            <Text style={[s.discTitle, { color: colors.text }]} numberOfLines={2}>
+                              {c.title}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View
+                      key={i}
+                      style={[
+                        s.bubble,
+                        t.role === 'user'
+                          ? [s.userBubble, { backgroundColor: ACCENT }]
+                          : [s.aiBubble, { backgroundColor: colors.surfaceSecondary }],
+                      ]}
+                    >
+                      <Text style={[s.bubbleText, { color: t.role === 'user' ? '#fff' : colors.text }]}>
+                        {t.content}
+                      </Text>
+                    </View>
+                  ),
+                )
               )}
               {busy ? (
                 <View style={s.thinking}>
@@ -321,6 +384,12 @@ const s = StyleSheet.create({
   userBubble: { alignSelf: 'flex-end', borderBottomRightRadius: 6 },
   aiBubble: { alignSelf: 'flex-start', borderBottomLeftRadius: 6 },
   bubbleText: { fontSize: FontSize.sm, lineHeight: 20 },
+  cardRowWrap: { gap: 6 },
+  cardHeader: { fontSize: FontSize.xs },
+  cardRow: { gap: 10, paddingRight: 8 },
+  discCard: { width: 96 },
+  discImg: { width: 96, height: 132, borderRadius: 12, marginBottom: 6 },
+  discTitle: { fontSize: FontSize.xs, lineHeight: 15 },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   thinkingText: { fontSize: FontSize.xs },
   inputRow: {
