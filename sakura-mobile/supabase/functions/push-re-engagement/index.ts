@@ -83,14 +83,14 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return jsonResponse(405, { error: 'Method not allowed' });
   }
-  if (!authorizePushRequest(req)) {
-    return jsonResponse(401, { error: 'Unauthorized' });
-  }
-
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
+
+  if (!(await authorizePushRequest(req, supabase))) {
+    return jsonResponse(401, { error: 'Unauthorized' });
+  }
 
   const campaign = pickRandom(CAMPAIGNS);
   const inactiveBefore = daysAgo(campaign.minInactiveDays);

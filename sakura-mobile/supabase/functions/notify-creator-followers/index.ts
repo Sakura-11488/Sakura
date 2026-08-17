@@ -19,7 +19,14 @@ const cors = corsHeaders();
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
-  if (!authorizePushRequest(req)) return jsonResponse(401, { error: 'Unauthorized.' }, cors);
+  // The push secret lives in Vault now, so authorizing needs a client.
+  const authClient = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  );
+  if (!(await authorizePushRequest(req, authClient))) {
+    return jsonResponse(401, { error: 'Unauthorized.' }, cors);
+  }
 
   try {
     const body = (await req.json()) as NotifyBody;

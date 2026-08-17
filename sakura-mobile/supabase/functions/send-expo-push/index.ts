@@ -16,7 +16,11 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return jsonResponse(405, { error: 'Method not allowed' });
   }
-  if (!authorizePushRequest(req)) {
+  const authClient = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  );
+  if (!(await authorizePushRequest(req, authClient))) {
     return jsonResponse(401, { error: 'Unauthorized' });
   }
 

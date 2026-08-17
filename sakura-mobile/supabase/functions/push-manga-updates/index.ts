@@ -133,14 +133,15 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return jsonResponse(405, { error: 'Method not allowed' });
   }
-  if (!authorizePushRequest(req)) {
-    return jsonResponse(401, { error: 'Unauthorized' });
-  }
-
+  // Client first: the secret now lives in Vault, so authorizing needs one.
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
+
+  if (!(await authorizePushRequest(req, supabase))) {
+    return jsonResponse(401, { error: 'Unauthorized' });
+  }
 
   const mangaList = await fetchTrendingAndPopular();
   const updates: Array<{

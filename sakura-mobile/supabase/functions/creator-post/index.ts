@@ -72,7 +72,10 @@ Deno.serve(async (req) => {
     // failure must never fail the post. Previously nothing called this, so new
     // posts silently reached no one.
     if ((body.visibility ?? 'public') === 'public') {
-      const pushSecret = Deno.env.get('PUSH_SEND_SECRET');
+      // From Vault, not the environment: the env copy was the value that
+      // leaked in plaintext through cron.job.command, so it is no longer the
+      // secret anything accepts.
+      const { data: pushSecret } = await supabase.rpc('push_send_secret');
       if (pushSecret) {
         try {
           await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/notify-creator-followers`, {
