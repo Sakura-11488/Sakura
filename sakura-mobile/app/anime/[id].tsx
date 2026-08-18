@@ -456,17 +456,29 @@ function EpisodeRow({
           </Text>
         )}
       </View>
-      <TouchableOpacity
-        onPress={(e) => {
-          e.stopPropagation?.();
-          onDownload();
-        }}
-        style={epS.dlBtn}
-        hitSlop={8}
-        disabled={offline?.status === 'ready'}
-      >
-        <DownloadIcon color={colors.text} size={16} />
-      </TouchableOpacity>
+      {/*
+        Native only. Anime cannot be downloaded on web at all: the HLS CDN 403s
+        without a Referer, which is a forbidden header name that fetch silently
+        drops, and it sends no CORS header. Worse than failing, it used to
+        SUCCEED into nothing — web/shims/expo-file-system-legacy.ts backs
+        FileSystem with localStorage and its downloadAsync did response.text()
+        on binary segments, so tapping this wrote mojibake into the same ~5MB
+        localStorage budget that lib/kv-store.ts uses for reading progress, and
+        left a stuck "downloading" row that survived a reload.
+      */}
+      {Platform.OS !== 'web' ? (
+        <TouchableOpacity
+          onPress={(e) => {
+            e.stopPropagation?.();
+            onDownload();
+          }}
+          style={epS.dlBtn}
+          hitSlop={8}
+          disabled={offline?.status === 'ready'}
+        >
+          <DownloadIcon color={colors.text} size={16} />
+        </TouchableOpacity>
+      ) : null}
     </TouchableOpacity>
   );
 }

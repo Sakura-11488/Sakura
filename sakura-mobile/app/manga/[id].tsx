@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { Dimensions } from 'react-native';
 import {
   View,
@@ -57,7 +57,6 @@ import {
 import {
   downloadMangaChapter,
   downloadAllMangaChapters,
-  fetchChapterPageUrls,
   getOfflineMapForManga,
   getMangaBatchState,
   getOfflineMangaPageUris,
@@ -519,6 +518,27 @@ export default function MangaDetail() {
   const [expanded, setExpanded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState('');
+  const [toastDuration, setToastDuration] = useState<number | undefined>(undefined);
+
+  /**
+   * Web export jobs, keyed by chapter id: chapterId -> 0..1 progress.
+   *
+   * The controllers live in a ref because aborting must not wait for a
+   * render, and because the unmount cleanup below needs the current set.
+   * Before this there was no in-flight state at all: a second tap started a
+   * second full run, and leaving the screen let the fetch loop run to
+   * completion and then fire a file download from a screen the user had
+   * already left.
+   */
+  const [webJobs, setWebJobs] = useState<Record<string, number>>({});
+  const webAborts = useRef<Record<string, AbortController>>({});
+
+  useEffect(() => {
+    const controllers = webAborts.current;
+    return () => {
+      for (const c of Object.values(controllers) as AbortController[]) c.abort();
+    };
+  }, []);
   const [offlineMap, setOfflineMap] = useState<Record<string, OfflineMangaChapter>>({});
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [batchPaused, setBatchPaused] = useState(false);
@@ -639,19 +659,62 @@ export default function MangaDetail() {
   const handleDownloadChapter = useCallback(async (ch: MangaChapter) => {
     if (!manga) return;
     playTap();
-    // Web has no offline store — fetch the chapter's pages and save them as a
-    // single .zip download (works for manga, comics, and 18+ alike).
+    // Web has no offline store. This is an EXPORT: the pages are fetched and
+    // saved as a .cbz in the browser's Downloads folder, which Sakura cannot
+    // read back. Only the scraped sources (comics/manhwa/18+) can be fetched
+    // cross-origin at all — see hideDownload at the ChapterList below.
     if (Platform.OS === 'web') {
-      setToast('Preparing pages…');
+      // A second tap on a running job cancels it rather than starting a
+      // duplicate run — which previously doubled droplet load and memory and
+      // produced two files.
+      const running = webAborts.current[ch.id];
+      if (running) {
+        running.abort();
+        delete webAborts.current[ch.id];
+        setWebJobs((prev) => {
+          const next = { ...prev };
+          delete next[ch.id];
+          return next;
+        });
+        setToast('Download cancelled');
+        return;
+      }
+
+      const controller = new AbortController();
+      webAborts.current[ch.id] = controller;
+      setWebJobs((prev) => ({ ...prev, [ch.id]: 0 }));
       try {
-        const urls = adapter
-          ? await adapter.pages(mangaId, ch.id)
-          : await fetchChapterPageUrls(mangaId, ch.id);
+        const urls = await adapter!.pages(mangaId, ch.id);
         if (!urls.length) throw new Error('No pages found for this chapter.');
-        const saved = await saveImagesZip(`${manga.title} - Ch ${ch.number}`, urls);
-        setToast(`Saved ${saved} pages to your device`);
+        const result = await saveImagesZip(`${manga.title} - Ch ${ch.number}`, urls, {
+          signal: controller.signal,
+          onProgress: (done, total) =>
+            setWebJobs((prev) =>
+              prev[ch.id] === undefined ? prev : { ...prev, [ch.id]: done / total },
+            ),
+        });
+        // Say what actually happened. The old code printed the number saved
+        // as a success without comparing it to the number requested, so a
+        // chapter that lost 188 of 189 pages reported "Saved 1 pages".
+        const missing = result.total - result.saved;
+        setToastDuration(6000);
+        setToast(
+          missing > 0
+            ? `Saved ${result.saved} of ${result.total} pages — ${missing} could not be downloaded`
+            : `Saved ${result.saved} pages to your Downloads folder`,
+        );
       } catch (e) {
-        setToast(e instanceof Error ? e.message : 'Download failed');
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          setToastDuration(6000);
+          setToast(e instanceof Error ? e.message : 'Download failed');
+        }
+      } finally {
+        delete webAborts.current[ch.id];
+        setWebJobs((prev) => {
+          const next = { ...prev };
+          delete next[ch.id];
+          return next;
+        });
       }
       return;
     }
@@ -1086,7 +1149,12 @@ export default function MangaDetail() {
         onDownload={handleDownloadChapter}
         onOpen={openMangaChapter}
         isResume={canContinueManga && ch.id === resumeChapterId}
-        hideDownload={false}
+        // Only scraped sources can be exported on web. cdn.atsu.moe sends no
+        // Access-Control-Allow-Origin and 403s the preflight, so reading works
+        // (an <img> needs no CORS) but fetching the bytes never can. Showing a
+        // button that can only ever produce "Failed to fetch" is worse than
+        // showing none.
+        hideDownload={Platform.OS === 'web' && !adapter}
         disableThumbFetch={isExternal}
         locked={gatedChapterIds.has(ch.id)}
       />
@@ -1411,7 +1479,8 @@ export default function MangaDetail() {
       <Toast
         message={toast}
         visible={!!toast}
-        onHide={() => setToast('')}
+        onHide={() => { setToast(''); setToastDuration(undefined); }}
+        durationMs={toastDuration}
         bottomOffset={insets.bottom + (playChapter ? 88 : 20)}
       />
     </View>

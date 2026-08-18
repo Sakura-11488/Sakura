@@ -9,9 +9,11 @@ interface ToastProps {
   visible: boolean;
   onHide: () => void;
   bottomOffset?: number;
+  /** How long the message stays up. Defaults to the 2s tap-acknowledgement. */
+  durationMs?: number;
 }
 
-export function Toast({ message, visible, onHide, bottomOffset }: ToastProps) {
+export function Toast({ message, visible, onHide, bottomOffset, durationMs }: ToastProps) {
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(10);
   const insets = useSafeAreaInsets();
@@ -25,9 +27,11 @@ export function Toast({ message, visible, onHide, bottomOffset }: ToastProps) {
       opacity.value = withTiming(0, { duration: 180 });
       translateY.value = withTiming(10, { duration: 180 });
       onHide();
-    }, 2000);
+      // A download result needs longer than a tap acknowledgement: it can
+      // carry a partial-failure count the user has to actually read.
+    }, durationMs ?? 2000);
     return () => clearTimeout(t);
-  }, [visible]);
+  }, [visible, durationMs]);
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,

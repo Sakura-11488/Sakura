@@ -60,6 +60,34 @@ export async function invokeContentProxy<T>(req: ContentProxyRequest): Promise<T
 
 /** Rewrite Sakura media-server HTTP URLs to an HTTPS media proxy (web only). */
 export function getWebMediaProxyUrl(mediaPathOrUrl: string): string {
+  /**
+   * Idempotent. This is load-bearing, not defensive tidiness.
+   *
+   * The scraper adapters already return a proxied URL on web —
+   * comics.ts:75, manhwa.ts:86 and hentai.ts:83 all end
+   * `Platform.OS === 'web' ? getWebMediaProxyUrl(proxied) : proxied`. Wrapping
+   * that a second time produced `/api/media-proxy/?path=%2Fapi%2Fmedia-proxy…`,
+   * because a relative input skips the http(s) branch below and falls through
+   * to the encoder. No pattern in sakura-web/api/media-proxy.js ALLOWED_PATHS
+   * matches a path starting `/api/`, so it 400s "Invalid Sakura media path".
+   *
+   * Verified against production: the single-wrapped form reaches the droplet
+   * and returns a genuine upstream status, the double-wrapped form is rejected
+   * at the allowlist. Every comics, manhwa and 18+ page download on web failed
+   * on 100% of pages because of this, and the resulting message —
+   * "Pages could not be downloaded in the browser" — blamed the browser, which
+   * is why it was never reported as a bug.
+   *
+   * Purely additive: every input caught here 400s today, so there is no working
+   * behaviour to regress.
+   */
+  if (
+    mediaPathOrUrl.startsWith('/api/media-proxy/') ||
+    mediaPathOrUrl.includes('/functions/v1/web-media-proxy')
+  ) {
+    return mediaPathOrUrl;
+  }
+
   const sameOriginProxy = typeof window !== 'undefined' ? '/api/media-proxy/' : '';
 
   const supabaseUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').replace(/\/+$/, '');

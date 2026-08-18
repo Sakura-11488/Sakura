@@ -92,13 +92,26 @@ export async function readDirectoryAsync(dirUri: string): Promise<string[]> {
     .filter(Boolean);
 }
 
+/**
+ * Refuses, deliberately. It used to "succeed" into corruption.
+ *
+ * The old body was `fetch(uri)` then `response.text()` then a write — run over
+ * binary (HLS video segments, images), that decodes the bytes as UTF-8 and
+ * stores the mojibake. This store is localStorage-backed and shares its ~5MB
+ * origin budget with lib/kv-store.ts, which holds reading progress, and
+ * persistStore swallows quota errors — so a single anime download attempt on
+ * web could quietly evict a user's saved progress and leave a permanently
+ * stuck "downloading" row.
+ *
+ * Because `documentDirectory` here is a truthy fake path and writes appear to
+ * work, native offline code paths ran happily on web instead of failing fast.
+ * Throwing is the honest contract: there is no filesystem, and callers must
+ * branch on Platform.OS rather than discover this at runtime.
+ */
 export async function downloadAsync(
-  uri: string,
-  fileUri: string,
+  _uri: string,
+  _fileUri: string,
   _options?: { headers?: Record<string, string> },
 ): Promise<{ uri: string; status: number; headers: Record<string, string>; md5?: string }> {
-  const response = await fetch(uri);
-  const body = await response.text();
-  await writeAsStringAsync(fileUri, body);
-  return { uri: fileUri, status: response.status, headers: {} };
+  throw new Error('downloadAsync is not available on web.');
 }
