@@ -4,6 +4,7 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useMemo,
 } from 'react';
 import { AppState } from 'react-native';
 import { PublicKey } from '@solana/web3.js';
@@ -210,9 +211,17 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const shortAddress = address ? truncateAddress(address) : null;
 
-  return (
-    <WalletContext.Provider
-      value={{
+  /**
+   * Memoised because this value is consumed by nearly every screen.
+   *
+   * refreshBalances runs on a 20s interval and fires ~7 setState calls per tick.
+   * With an inline object literal here, each of those renders handed every
+   * useWallet() consumer in the app a new context identity, so the whole tree
+   * re-rendered three times a minute whether or not the numbers changed — and
+   * on screens that show a balance, the text genuinely re-flowed each time.
+   */
+  const value = useMemo(
+    () => ({
         address,
         publicKey,
         connected,
@@ -233,9 +242,28 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         unlockForAppSession: unlockForAppSessionFn,
         signWithBiometrics,
         shortAddress,
-      }}
-    >
-      {children}
-    </WalletContext.Provider>
+    }),
+    [
+      address,
+      publicKey,
+      connected,
+      connecting,
+      restoring,
+      solBalance,
+      sakuraBalance,
+      loadingBalances,
+      balanceError,
+      sakuraBalanceSource,
+      rpcLabel,
+      lastBalanceRefreshAt,
+      shortAddress,
+      createWallet,
+      connectExisting,
+      importWallet,
+      disconnect,
+      refreshBalances,
+    ],
   );
+
+  return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

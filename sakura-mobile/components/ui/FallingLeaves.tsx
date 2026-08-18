@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { StyleSheet, Dimensions } from 'react-native';
+import { StyleSheet, Dimensions, Platform } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -12,6 +12,26 @@ import Animated, {
 import Svg, { Path, G } from 'react-native-svg';
 
 const { width: W, height: H } = Dimensions.get('window');
+
+/**
+ * How much of this to run.
+ *
+ * On native these are cheap: Reanimated drives them on the UI thread and the
+ * JS thread never sees a frame. On web there IS no UI thread — worklets run on
+ * the main JS thread off requestAnimationFrame, and each petal is an inline SVG
+ * with two Paths. Ten petals x four infinite timelines is forty animations
+ * running for the entire session, on every route, forever, for decoration.
+ *
+ * So web gets a reduced set, and anyone who has asked their OS for less motion
+ * gets none. prefers-reduced-motion is a real accessibility setting and drifting
+ * petals behind body text is exactly what it exists to turn off.
+ */
+const PREFERS_REDUCED_MOTION =
+  Platform.OS === 'web' &&
+  typeof globalThis.matchMedia === 'function' &&
+  globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const MAX_LEAVES = Platform.OS === 'web' ? 4 : 10;
 
 interface LeafConfig {
   x: number;
@@ -35,6 +55,12 @@ const LEAVES: LeafConfig[] = [
   { x: W * 0.46, size: 10, duration: 10500, delay: 4100, drift: 26,  opacity: 0.36, color: '#FFB7C5' },
   { x: W * 0.72, size: 14, duration: 11000, delay: 2200, drift: -42, opacity: 0.40, color: '#FFCAD4' },
 ];
+
+/** Evenly sampled so the reduced web set still spans the screen width
+ *  instead of clustering the first few petals down the left edge. */
+const VISIBLE_LEAVES: LeafConfig[] = PREFERS_REDUCED_MOTION
+  ? []
+  : LEAVES.filter((_, i) => i % Math.ceil(LEAVES.length / MAX_LEAVES) === 0).slice(0, MAX_LEAVES);
 
 function PetalSvg({ size, color }: { size: number; color: string }) {
   const s = size;
@@ -132,7 +158,7 @@ function Leaf({ config }: { config: LeafConfig }) {
 export default function FallingLeaves() {
   return (
     <Animated.View style={styles.container} pointerEvents="none">
-      {LEAVES.map((cfg, i) => (
+      {VISIBLE_LEAVES.map((cfg, i) => (
         <Leaf key={i} config={cfg} />
       ))}
     </Animated.View>

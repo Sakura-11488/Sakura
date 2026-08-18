@@ -23,7 +23,6 @@ import Animated, {
   withRepeat,
   withSequence,
   FadeInRight,
-  FadeOutLeft,
 } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Path, Circle } from 'react-native-svg';
@@ -682,11 +681,21 @@ export default function AnimeScreen() {
         }
       >
         {/* Hero — Sakura Originals carousel */}
+        {/*
+          There is deliberately no `exiting` animation here. On web, Reanimated's
+          exiting path calls addHTMLMutationObserver(), which attaches a
+          MutationObserver to document.body with {subtree: true} and never
+          disconnects it — the module latches an isObserverSet flag. Since this
+          hero remounts every 3.5s, opening the Anime tab once installed a
+          document-wide observer for the rest of the session, and its callback
+          enumerates Object.keys() on every mutated node. That cost then applied
+          to every screen in the app, not just this one. The entering fade on its
+          own reads the same.
+        */}
         {!isSearching && (
           <Animated.View
             key={activeOriginal.id}
             entering={FadeInRight.duration(420)}
-            exiting={FadeOutLeft.duration(300)}
           >
             <OriginalsHero
               original={activeOriginal}
