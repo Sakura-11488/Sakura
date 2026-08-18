@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,9 @@ import { recordReadingEvent } from '@/lib/gamification';
 import { getOfflineNovelChapterContent } from '@/lib/novel-offline';
 import { AppSettings } from '@/lib/settings';
 import { playTap, onTap } from '@/lib/sound';
+import ReaderAskSheet from '@/components/reader/ReaderAskSheet';
+import { buildReaderContext } from '@/lib/ai-context';
+import { useWallet } from '@/lib/wallet/context';
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -168,6 +171,10 @@ export default function NovelReader() {
     transform: [{ translateY: showControls ? withTiming(0, { duration: 200 }) : withTiming(60, { duration: 200 }) }],
   }));
 
+  const { address } = useWallet();
+  const [askOpen, setAskOpen] = useState(false);
+  const [allowSpoilers, setAllowSpoilers] = useState(false);
+
   const novelTitle = typeof title === 'string' && title ? title : '';
   const novelCover = typeof cover === 'string' ? cover : undefined;
   const chapterTitle =
@@ -175,6 +182,34 @@ export default function NovelReader() {
       ? chapter
       : decodedPath.split('/').pop()?.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) ?? '';
   const displayTitle = novelTitle || chapterTitle;
+
+  /**
+   * What Sakura is looking at, for a novel.
+   *
+   * Novels have no numeric chapter list here — the route is path-based and
+   * `novelPath` identifies the series, not an ordered index — so chapterNumber
+   * is left null on purpose and buildReaderContext parses the label instead.
+   * That is the same fallback the manga reader relies on whenever its chapter
+   * list has not resolved, and since E2 it refuses to guess rather than
+   * grabbing a number out of the title.
+   *
+   * No dispatchExtra: turning "chapter 40" into a target needs an ordered
+   * chapter list, which this reader does not have. open_in_app's series and tab
+   * targets still work through the shared dispatcher.
+   */
+  const aiContext = useMemo(
+    () =>
+      buildReaderContext({
+        medium: 'novel',
+        seriesId: typeof novelPath === 'string' && novelPath ? novelPath : undefined,
+        seriesTitle: novelTitle || undefined,
+        chapterId: decodedPath || undefined,
+        chapterLabel: chapterTitle || undefined,
+        chapterNumber: null,
+        allowSpoilers,
+      }),
+    [novelPath, novelTitle, decodedPath, chapterTitle, allowSpoilers],
+  );
 
   useEffect(() => {
     if (loading || !decodedPath) return;
@@ -297,6 +332,12 @@ export default function NovelReader() {
             >
               <Text style={[s.fontBtnText, { color: fontIdx === FONT_SIZES.length - 1 ? Colors.textTertiary : Colors.primary }]}>A+</Text>
             </TouchableOpacity>
+            {/* Ask about the chapter without leaving it. Inside the header's
+                Animated.View, so it fades with the controls rather than
+                becoming invisible-but-tappable. */}
+            <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={s.askBtn}>
+              <Text style={s.askBtnText}>Ask</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Animated.View>
@@ -357,6 +398,15 @@ export default function NovelReader() {
           ))}
         </View>
       </Animated.View>
+
+      <ReaderAskSheet
+        visible={askOpen}
+        onClose={() => setAskOpen(false)}
+        context={aiContext}
+        walletAddress={address ?? undefined}
+        allowSpoilers={allowSpoilers}
+        onChangeAllowSpoilers={setAllowSpoilers}
+      />
     </View>
   );
 }
@@ -379,6 +429,18 @@ const s = StyleSheet.create({
     gap: 8,
   },
   headerBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  askBtn: {
+    marginLeft: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(232,69,69,0.85)',
+  },
+  askBtnText: {
+    color: Colors.white,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
   headerTitle: {
     flex: 1,
     fontSize: FontSize.sm,
