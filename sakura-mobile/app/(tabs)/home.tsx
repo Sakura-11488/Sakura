@@ -478,18 +478,30 @@ export default function HomeScreen() {
             <OriginalsSection />
           </View>
 
+          {/* Community uploads, directly under the Originals they sit alongside.
+              Each row renders nothing until it has at least one work, so an
+              empty category leaves no stray heading.
+
+              Novels are listed first on purpose: six were published through
+              /creator-upload and sat unreadable for months because the reader
+              only ever looked at the curated `novels` table. They resolve now,
+              so this is the first place anyone will actually find them.
+
+              Still gated on !adapter — with a scraped source active (comics,
+              manhwa, 18+) the page is that source's catalogue, and community
+              uploads do not belong in it. */}
+          {!adapter && (
+            <View style={s.sectionGap}>
+              <CreatorWorksRow kind="novel" title="Creator Novels" />
+              <CreatorWorksRow kind="manga" title="Creator Manga" />
+              <CreatorWorksRow kind="anime" title="Creator Anime" />
+            </View>
+          )}
+
           {/* Trending & Popular */}
           {(trending.length > 0 || popularSeries.length > 0) && (
             <View style={s.sectionGap}>
               <TrendingPopularSection trending={trending} popular={popularSeries} />
-            </View>
-          )}
-
-          {/* Community uploads — only in the Manga catalog (creator works are
-              novel/manga/anime; novels + anime live on their own tabs). */}
-          {!adapter && (
-            <View style={s.sectionGap}>
-              <CreatorWorksRow kind="manga" />
             </View>
           )}
 
