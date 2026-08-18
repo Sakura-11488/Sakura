@@ -185,6 +185,46 @@ export default function RootLayout() {
     return () => clearTimeout(t);
   }, []);
 
+  /**
+   * Web only: strip a finished entering animation off the element.
+   *
+   * Reanimated writes `animation-name` (plus duration/delay/fill-mode) as an
+   * INLINE style and never removes it. Its one cleanup path,
+   * cleanupEnteringAnimations, is reachable only from handleExitingAnimation
+   * and only strips names beginning "REA-ENTERING-" — the app's animations are
+   * named FadeInDown/FadeInUp/FadeIn, and the whole codebase contains a single
+   * `exiting=`, so that path effectively never runs. The inline animation is
+   * therefore permanent.
+   *
+   * expo-router's web stack keeps unfocused screens mounted and hides them with
+   * `display: none` (NativeStackView.js:86-93). Per the CSS Animations spec,
+   * restoring `display` restarts every animation on the element and its
+   * descendants from 0%. So every time you navigate back to a screen you have
+   * already visited, all of its entering animations replay in full — 98 sites
+   * across the app, dozens on a single screen, staggered. That is not a
+   * load-time settle; it happens on every back-navigation for the life of the
+   * session, and it is the largest source of things moving on their own.
+   *
+   * Clearing the inline properties once the animation has finished makes the
+   * restart a no-op. Bubble phase, so Reanimated's own element.onanimationend
+   * (which saves the layout snapshot) still runs first. Infinite animations
+   * never fire animationend, so spinners and shimmers are untouched.
+   */
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const onEnd = (e: Event) => {
+      const el = e.target as HTMLElement | null;
+      if (!el || !el.style) return;
+      el.style.animationName = '';
+      el.style.animationDuration = '';
+      el.style.animationDelay = '';
+      el.style.animationFillMode = '';
+      el.style.animationTimingFunction = '';
+    };
+    document.addEventListener('animationend', onEnd);
+    return () => document.removeEventListener('animationend', onEnd);
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>

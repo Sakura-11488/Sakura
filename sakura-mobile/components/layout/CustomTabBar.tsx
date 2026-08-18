@@ -33,7 +33,21 @@ type BottomTabBarProps = {
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const ICON_SLOT   = 42;
 const ACTIVE_SLOT = 84;
-const SPRING = { damping: 22, stiffness: 280, mass: 0.7 };
+/**
+ * Critically damped, deliberately.
+ *
+ * This spring drives the active slot's WIDTH, and the slots are direct children
+ * of a flexDirection:'row', justifyContent:'space-evenly' bar — so changing one
+ * child's width redistributes the free space and moves all six. At damping 22
+ * the ratio was 22 / (2 * sqrt(280 * 0.7)) = 0.79: underdamped, so it overshot
+ * the target and oscillated back, reflowing the bar and visibly bouncing the
+ * other five icons for ~600ms on every tab press. The tab bar is on every
+ * screen, which made it the one thing in the app that genuinely oscillated.
+ *
+ * 2 * sqrt(280 * 0.7) = 28 is exactly critical: it still eases, it no longer
+ * overshoots, and it settles without ringing.
+ */
+const SPRING = { damping: 28, stiffness: 280, mass: 0.7 };
 
 // Evaluated once at module load — avoids per-render cost
 const USE_GLASS = Platform.OS === 'ios' && isGlassEffectAPIAvailable();
@@ -146,34 +160,34 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const ws5 = useAnimatedStyle(() => ({ width: w5.value }));
   const wStyles = [ws0, ws1, ws2, ws3, ws4, ws5];
 
+  // Label reveal is opacity + translateX only. It used to also animate
+  // maxWidth 0 -> 56, which is a layout property and therefore reflowed the
+  // bar on every frame of every tab press — for nothing: ts.tabSlot is already
+  // overflow:'hidden', so the slot clips the label as it widens. The clipping
+  // was doing the same job twice, once for free and once at the cost of a
+  // relayout.
   const ls0 = useAnimatedStyle(() => ({
     opacity: lo0.value,
-    maxWidth: interpolate(lo0.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo0.value, [0, 1], [10, 0]) }],
   }));
   const ls1 = useAnimatedStyle(() => ({
     opacity: lo1.value,
-    maxWidth: interpolate(lo1.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo1.value, [0, 1], [10, 0]) }],
   }));
   const ls2 = useAnimatedStyle(() => ({
     opacity: lo2.value,
-    maxWidth: interpolate(lo2.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo2.value, [0, 1], [10, 0]) }],
   }));
   const ls3 = useAnimatedStyle(() => ({
     opacity: lo3.value,
-    maxWidth: interpolate(lo3.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo3.value, [0, 1], [10, 0]) }],
   }));
   const ls4 = useAnimatedStyle(() => ({
     opacity: lo4.value,
-    maxWidth: interpolate(lo4.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo4.value, [0, 1], [10, 0]) }],
   }));
   const ls5 = useAnimatedStyle(() => ({
     opacity: lo5.value,
-    maxWidth: interpolate(lo5.value, [0, 1], [0, 56]),
     transform: [{ translateX: interpolate(lo5.value, [0, 1], [10, 0]) }],
   }));
   const lStyles = [ls0, ls1, ls2, ls3, ls4, ls5];

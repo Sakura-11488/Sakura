@@ -26,6 +26,22 @@ function useScreenWidth() {
   return useMemo(() => (Platform.OS === 'web' ? contentWidth(windowW) : windowW), [windowW]);
 }
 
+/**
+ * How far the highlight travels. A constant on purpose.
+ *
+ * ShimmerBox is a LEAF that mounts ~15 times on a loading screen, and
+ * subscribing each instance to window dimensions put 15 resize listeners
+ * behind every skeleton — react-native-web binds Dimensions to visualViewport
+ * and replaces the dimensions object on every event with no equality guard,
+ * so all 15 re-rendered on events that changed nothing.
+ *
+ * The sweep never needed the window anyway: it only has to be wider than the
+ * box it sweeps, and the box is at most the content column. Using the box
+ * width when it is a number keeps the sweep proportional; the fallback covers
+ * percentage widths like '100%'.
+ */
+const SWEEP_FALLBACK = 420;
+
 interface ShimmerProps {
   width: number | string;
   height: number;
@@ -35,7 +51,7 @@ interface ShimmerProps {
 
 export function ShimmerBox({ width, height, borderRadius = Radius.md, style }: ShimmerProps) {
   const { isDark, colors } = useTheme();
-  const SCREEN_WIDTH = useScreenWidth();
+  const SCREEN_WIDTH = typeof width === 'number' && width > 0 ? width : SWEEP_FALLBACK;
   const translateX = useSharedValue(-SCREEN_WIDTH);
 
   useEffect(() => {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
+import { Dimensions } from 'react-native';
 import {
   View,
   Text,
@@ -109,8 +110,24 @@ const HEADER_FADE_DISTANCE = 48;
  * sibling of this column rather than an overlay, so anything sized off the raw
  * window overflows by exactly SIDEBAR_WIDTH (232px).
  */
+/**
+ * Height is captured once per mount, NOT tracked live.
+ *
+ * CHAPTER_LIST_MAX_H becomes an EXPLICIT height on an in-flow FlatList, so
+ * anything that moves it relays out the page. Converting this file off a
+ * bundle-frozen constant was right for WIDTH — that decided a desktop layout
+ * mode — but taking HEIGHT from the live hook went too far: portrait lock
+ * freezes width, not height, and react-native-web binds Dimensions to
+ * visualViewport and hands out a brand-new object on every event with no
+ * equality guard, so consumers re-render even when nothing changed.
+ *
+ * Reading it in a useState initialiser keeps the per-session correctness the
+ * conversion was for, without subscribing an explicit box height to viewport
+ * noise.
+ */
 function useDetailMetrics() {
-  const { width: windowW, height: windowH } = useWindowDimensions();
+  const { width: windowW } = useWindowDimensions();
+  const [windowH] = useState(() => Dimensions.get('window').height);
   return useMemo(() => {
     const wide = isWideWeb(windowW);
     const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
