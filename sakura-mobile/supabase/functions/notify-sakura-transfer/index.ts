@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { jsonResponse, sendExpoPushBatch } from '../_shared/expo-push.ts';
 import { verifyWalletHeaders } from '../_shared/wallet-auth.ts';
+import { TransferVerificationError, verifyTransfer } from '../_shared/verify-transfer.ts';
 
 type TransferAsset = 'sakura' | 'sol';
 
@@ -46,13 +47,15 @@ function normalizeAsset(raw: string | undefined): TransferAsset {
  * signs instead: the notification can only claim a transfer FROM the wallet that
  * signed the request.
  *
- * That closes impersonation, not exaggeration. Someone can still send themselves
- * a real transfer and overstate the amount in the payload, because nothing here
- * reads the chain. Fixing that means verifying `txid` with
- * fetchConfirmedTransaction and comparing the token balance delta — the same
- * shape as _shared/verify-sakura-payment.ts, including its BigInt handling,
- * since uiAmount rounding has already cost this app money once. Worth doing;
- * bigger than this change.
+ * Exaggeration is now closed too. The amount in the payload is treated as a
+ * claim and discarded: `verifyTransfer` reads the transaction, checks the
+ * signer is the fee payer, and measures what actually landed in the receiver's
+ * accounts in exact base units. The notification quotes the chain's number, so
+ * "you received 50,000 SAKURA" cannot be produced by a 1-token transfer with a
+ * fifty-thousand in the body.
+ *
+ * A txid is therefore required. It was optional before, which is what made the
+ * amount unfalsifiable in the first place.
  */
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
@@ -82,10 +85,37 @@ Deno.serve(async (req) => {
   if (!isWallet(senderWallet) || !isWallet(receiverWallet) || !Number.isFinite(amount) || amount <= 0) {
     return jsonResponse(400, { error: 'Invalid transfer payload' });
   }
+  if (!txid) {
+    return jsonResponse(400, { error: 'A transaction signature is required.' });
+  }
 
   // You may only announce your own outgoing transfer.
   if (senderWallet !== signer) {
     return jsonResponse(403, { error: 'You can only notify transfers you sent.' });
+  }
+
+  // The chain decides the number, not the caller. `amount` above is validated
+  // only so an obviously malformed body is rejected before we pay for an RPC
+  // call; it is never used in the notification.
+  let verifiedAmount: number;
+  try {
+    const verified = await verifyTransfer({
+      signature: txid,
+      expectedSigner: signer,
+      receiver: receiverWallet,
+      asset,
+    });
+    verifiedAmount = verified.amount;
+  } catch (e) {
+    if (e instanceof TransferVerificationError) {
+      // 'unverifiable' is our problem, not the caller's — an RPC outage must not
+      // read as a rejected transfer.
+      return jsonResponse(e.failure === 'unverifiable' ? 503 : 400, {
+        error: e.message,
+        reason: e.failure,
+      });
+    }
+    return jsonResponse(500, { error: e instanceof Error ? e.message : 'Verification failed' });
   }
 
   const supabase = createClient(
@@ -115,7 +145,7 @@ Deno.serve(async (req) => {
   const isSol = asset === 'sol';
   const pushType = isSol ? 'sol_transfer' : 'sakura_transfer';
   const unit = isSol ? 'SOL' : 'SKR';
-  const amountLabel = isSol ? formatSolAmount(amount) : formatSakuraAmount(amount);
+  const amountLabel = isSol ? formatSolAmount(verifiedAmount) : formatSakuraAmount(verifiedAmount);
 
   const messages: Array<{
     to: string;
@@ -133,7 +163,7 @@ Deno.serve(async (req) => {
         type: pushType,
         asset,
         role: 'sent',
-        amount,
+        amount: verifiedAmount,
         counterparty: receiverWallet,
         txid,
       },
@@ -149,7 +179,7 @@ Deno.serve(async (req) => {
         type: pushType,
         asset,
         role: 'received',
-        amount,
+        amount: verifiedAmount,
         counterparty: senderWallet,
         txid,
       },

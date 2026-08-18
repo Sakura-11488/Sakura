@@ -61,16 +61,31 @@ export async function setPriceAlert(
 
 export async function cancelPriceAlert(
   match: string,
-): Promise<{ ok: boolean; removed: number; error?: string }> {
+): Promise<{ ok: boolean; removed: number; error?: string; cancelled?: string[] }> {
+  const needle = (match || '').trim().toLowerCase();
+
+  /**
+   * An empty match used to cancel EVERY alert and report success.
+   *
+   * The filter kept alerts whose description did not `.includes(needle)`, and
+   * `'SKR above 0.01'.includes('')` is true for every alert — so a model
+   * emitting cancel_price_alert with a missing or blank argument silently
+   * deleted the lot and was told `ok: true`. The alerts group carries no
+   * confirmation step, so nothing stood between a sloppy tool call and the
+   * user's whole alert list. Refuse instead of guessing.
+   */
+  if (!needle) return { ok: false, removed: 0, error: 'Which alert should I cancel?' };
+
   const all = await readAll();
-  const needle = (match || '').toLowerCase();
-  const remaining = all.filter(
-    (a) => a.id !== match && !`${a.token} ${a.direction} ${a.target}`.toLowerCase().includes(needle),
-  );
-  const removed = all.length - remaining.length;
-  if (removed === 0) return { ok: false, removed: 0, error: 'No matching alert found.' };
-  await writeAll(remaining);
-  return { ok: true, removed };
+  const describe = (a: PriceAlert) => `${a.token} ${a.direction} $${a.target}`;
+  const doomed = all.filter((a) => a.id === match || describe(a).toLowerCase().includes(needle));
+  if (doomed.length === 0) return { ok: false, removed: 0, error: 'No matching alert found.' };
+
+  const doomedIds = new Set(doomed.map((a) => a.id));
+  await writeAll(all.filter((a) => !doomedIds.has(a.id)));
+  // Name them, so the reply can say what went rather than just a count — a
+  // broad match like "SKR" can still take several at once, legitimately.
+  return { ok: true, removed: doomed.length, cancelled: doomed.map(describe) };
 }
 
 /**
