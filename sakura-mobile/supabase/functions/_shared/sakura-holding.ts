@@ -1,4 +1,4 @@
-import { solanaRpc } from './solana-rpc.ts';
+import { getSolanaRpcUrl, solanaRpc } from './solana-rpc.ts';
 import { sakuraMint } from './verify-sakura-payment.ts';
 
 /**
@@ -63,6 +63,24 @@ export async function getSakuraHolding(walletAddress: string): Promise<SakuraHol
       // throwing away the whole balance.
     }
   }
+
+  // Diagnostic: a zero here is indistinguishable from 'holds nothing', and
+  // that ambiguity already shipped a false 'you need to hold SKR' to a wallet
+  // holding exactly the threshold. Log what was actually asked and answered.
+  // The mint is public; the RPC key is not, so only the host is logged.
+  let rpcHost = 'unknown';
+  try { rpcHost = new URL(getSolanaRpcUrl()).host; } catch { /* ignore */ }
+  console.log(
+    '[sakura-holding]',
+    JSON.stringify({
+      wallet: walletAddress.slice(0, 8),
+      mint: sakuraMint(),
+      rpcHost,
+      accounts: (result?.value ?? []).length,
+      raw: raw.toString(),
+      decimals,
+    }),
+  );
 
   const divisor = 10n ** BigInt(decimals);
   return { raw, decimals, whole: Number(raw / divisor) };

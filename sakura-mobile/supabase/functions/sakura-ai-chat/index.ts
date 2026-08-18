@@ -55,7 +55,30 @@ const FALLBACK_MODELS = (Deno.env.get('SAKURA_AI_FALLBACK_MODELS') || 'openai/gp
 
 const MIN_HOLDING_SAKURA = Number(Deno.env.get('SAKURA_AI_MIN_HOLDING') || '100000');
 const MIN_LIFETIME_XP = Number(Deno.env.get('SAKURA_AI_MIN_XP') || '1000');
+/**
+ * How long an entitlement answer is trusted.
+ *
+ * These are deliberately different, and the difference is the whole point.
+ *
+ * A YES is cheap to hold: someone who sells their SKR keeps access for a few
+ * minutes, which nobody is harmed by.
+ *
+ * A NO is expensive to hold, because of what the refusal tells people to do.
+ * It says "hold 100,000 SKR" — so they go and buy 100,000 SKR and come straight
+ * back, which is exactly the case a five-minute negative cache breaks. That
+ * happened: a wallet was checked at 01:01:52 holding nothing, bought at
+ * 01:05:05, retried at 01:05:37, and was refused from cache without the chain
+ * ever being read again. The gate was working correctly and still told a
+ * qualifying holder no.
+ *
+ * A short negative TTL keeps the RPC load bounded — worst case one read per
+ * unentitled wallet per window, and only while they are actively retrying —
+ * while making "I just bought it" work on the timescale a person expects.
+ */
 const ENTITLEMENT_TTL_SEC = Number(Deno.env.get('SAKURA_AI_ENTITLEMENT_TTL_SEC') || '300');
+const ENTITLEMENT_NEGATIVE_TTL_SEC = Number(
+  Deno.env.get('SAKURA_AI_ENTITLEMENT_NEGATIVE_TTL_SEC') || '20',
+);
 
 const RATE_PER_MINUTE = Number(Deno.env.get('SAKURA_AI_RATE_LIMIT_PER_MINUTE') || '12');
 const RATE_PER_DAY = Number(Deno.env.get('SAKURA_AI_RATE_LIMIT_PER_DAY') || '120');
@@ -88,7 +111,8 @@ console.log(
 
 const GATE_COPY =
   `Sakura AI is for holders and readers. Hold ${MIN_HOLDING_SAKURA.toLocaleString()} SKR, ` +
-  `or reach Level 5 by reading (${MIN_LIFETIME_XP.toLocaleString()} XP) — either one unlocks it.`;
+  `or reach Level 5 by reading (${MIN_LIFETIME_XP.toLocaleString()} XP) — either one unlocks it. ` +
+  `Just topped up? Give it a few seconds and ask again.`;
 
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -174,7 +198,8 @@ async function getEntitlement(
 
   if (!force && cached) {
     const age = (Date.now() - new Date(cached.checked_at as string).getTime()) / 1000;
-    if (age < ENTITLEMENT_TTL_SEC) {
+    const ttl = cached.entitled ? ENTITLEMENT_TTL_SEC : ENTITLEMENT_NEGATIVE_TTL_SEC;
+    if (age < ttl) {
       return {
         entitled: Boolean(cached.entitled),
         sakura: Number(cached.sakura_balance ?? 0),
