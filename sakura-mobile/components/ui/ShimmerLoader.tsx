@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import React, { useEffect, useMemo } from 'react';
+import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
@@ -12,8 +12,19 @@ import Animated, {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useScreenWidth() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => (Platform.OS === 'web' ? contentWidth(windowW) : windowW), [windowW]);
+}
 
 interface ShimmerProps {
   width: number | string;
@@ -24,6 +35,7 @@ interface ShimmerProps {
 
 export function ShimmerBox({ width, height, borderRadius = Radius.md, style }: ShimmerProps) {
   const { isDark, colors } = useTheme();
+  const SCREEN_WIDTH = useScreenWidth();
   const translateX = useSharedValue(-SCREEN_WIDTH);
 
   useEffect(() => {
@@ -32,7 +44,10 @@ export function ShimmerBox({ width, height, borderRadius = Radius.md, style }: S
       -1,
       false
     );
-  }, []);
+    // SCREEN_WIDTH in the deps: the sweep distance was frozen at the width
+    // the box first mounted at, so after a resize the highlight either
+    // stopped short of the edge or ran past it.
+  }, [SCREEN_WIDTH]);
 
   const shimmerStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: translateX.value }],
@@ -58,6 +73,7 @@ export function ShimmerBox({ width, height, borderRadius = Radius.md, style }: S
 
 export function HomeScreenSkeleton() {
   const { colors } = useTheme();
+  const SCREEN_WIDTH = useScreenWidth();
   return (
     <SafeAreaView style={[styles.skeleton, { backgroundColor: colors.background }]} edges={['top']}>
       <View style={styles.skRow}>

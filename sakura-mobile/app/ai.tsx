@@ -8,7 +8,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
+  useWindowDimensions,
   ActivityIndicator,
   Modal,
 } from 'react-native';
@@ -59,15 +59,25 @@ import {
   formatThreadTime,
   type ChatThread,
 } from '@/lib/ai-history';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
 const CARD_W = 108;
 const CARD_IMG_H = 148;
-const DRAWER_W = W * 0.82;
 
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
 function useAiStyles() {
   const { colors } = useTheme();
+  const { width: windowW } = useWindowDimensions();
+  const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+  const DRAWER_W = W * 0.82;
   return useMemo(() => ({
+    DRAWER_W,
     colors,
     td: StyleSheet.create({
       wrap: { flexDirection: 'row', gap: 5, alignItems: 'center', paddingVertical: 4, paddingHorizontal: 2 },
@@ -331,7 +341,7 @@ function useAiStyles() {
       },
       sendBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
     }),
-  }), [colors]);
+  }), [colors, W, DRAWER_W]);
 }
 
 // ─── UI message union ─────────────────────────────────────────────────────────
@@ -565,7 +575,7 @@ function HistoryPanel({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const { dr, colors } = useAiStyles();
+  const { dr, colors, DRAWER_W } = useAiStyles();
   const [mounted, setMounted] = useState(false);
   const translateX = useSharedValue(DRAWER_W);
   const overlayOpacity = useSharedValue(0);
@@ -581,7 +591,10 @@ function HistoryPanel({
         if (done) runOnJS(setMounted)(false);
       });
     }
-  }, [visible]);
+    // DRAWER_W in the deps: the off-screen resting position was frozen at
+    // the width the drawer was first built at, so after a resize a closed
+    // drawer either left a strip on screen or slid further than it needed.
+  }, [visible, DRAWER_W]);
 
   const drawerStyle = useAnimatedStyle(() => ({ transform: [{ translateX: translateX.value }] }));
   const overlayStyle = useAnimatedStyle(() => ({ opacity: overlayOpacity.value }));

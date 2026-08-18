@@ -5,7 +5,8 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,10 +34,24 @@ import {
   type CreatorWork,
   type CreatorWorkKind,
 } from '@/lib/creator';
+import { contentWidth } from '@/constants/layout';
 
-const { width: SCREEN_W } = Dimensions.get('window');
 const HERO_H = 188;
-const WORK_W = (SCREEN_W - Spacing.md * 2 - Spacing.sm) / 2;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useDashboardMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const SCREEN_W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    return { SCREEN_W, WORK_W: (SCREEN_W - Spacing.md * 2 - Spacing.sm) / 2 };
+  }, [windowW]);
+}
 const FILTERS: Array<'all' | CreatorWorkKind> = ['all', 'novel', 'manga', 'anime'];
 
 function kindColor(kind: CreatorWorkKind): string {
@@ -53,6 +68,7 @@ function avatarColor(seed: string): string {
 }
 
 export default function CreatorDashboardScreen() {
+  const { SCREEN_W, WORK_W } = useDashboardMetrics();
   const { colors } = useTheme();
   const router = useRouter();
   const { connected, address, shortAddress, restoring, signWithBiometrics } = useWallet();

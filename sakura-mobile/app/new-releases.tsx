@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,8 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,15 +20,32 @@ import { fetchMangaPagedList, toContentItem } from '@/lib/manga';
 import { useTheme } from '@/lib/theme';
 import { Spacing, Radius, FontSize, FontWeight, Colors, Shadow } from '@/constants/theme';
 import { ContentItem } from '@/components/ui/ContentCard';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
 const COLS = 3;
 const H_PAD = Spacing.md;
 const GAP = 8;
-const ITEM_W = (W - H_PAD * 2 - GAP * (COLS - 1)) / COLS;
-const ITEM_H = ITEM_W * 1.5;
+
+/**
+ * Grid metrics, read reactively.
+ *
+ * These were module constants derived from a Dimensions.get('window') captured
+ * once at bundle evaluation; nothing in the app re-reads it. On desktop web the
+ * sidebar is a sibling of the content column, so the card width comes from
+ * contentWidth() rather than the raw window width — sizing off the window
+ * overflows by exactly SIDEBAR_WIDTH.
+ */
+function useGridMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const ITEM_W = (W - H_PAD * 2 - GAP * (COLS - 1)) / COLS;
+    return { ITEM_W, ITEM_H: ITEM_W * 1.5 };
+  }, [windowW]);
+}
 
 function GridCard({ item }: { item: ContentItem }) {
+  const { ITEM_W, ITEM_H } = useGridMetrics();
   const router = useRouter();
   return (
     <TouchableOpacity

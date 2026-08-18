@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Dimensions,
+  useWindowDimensions,
   Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -25,8 +25,19 @@ import {
 import { MEDIA_BASE_DEFAULT } from '@/lib/content-hosts';
 import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
 import { Spacing, Radius, FontSize, FontWeight } from '@/constants/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useContentW() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => (Platform.OS === 'web' ? contentWidth(windowW) : windowW), [windowW]);
+}
 
 /** Droplet-hosted creator video → absolute URL (web routes via the media proxy). */
 function resolveVideoUrl(path: string | null | undefined): string | null {
@@ -44,6 +55,7 @@ function BackIcon({ color }: { color: string }) {
 }
 
 export default function WorkScreen() {
+  const W = useContentW();
   const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id?: string }>();

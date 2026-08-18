@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -27,9 +27,21 @@ import { onTap, playTap } from '@/lib/sound';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import { getCreatorProfile, registerCreator, validateUsername } from '@/lib/creator';
 import { BecomeCreatorSkeleton } from '@/components/creator/CreatorSkeletons';
+import { contentWidth } from '@/constants/layout';
 
-const { width: SCREEN_W } = Dimensions.get('window');
 const HERO_H = 210;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useScreenW() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => (Platform.OS === 'web' ? contentWidth(windowW) : windowW), [windowW]);
+}
 
 function CardHeader({ title, subtitle, colors }: { title: string; subtitle?: string; colors: { text: string; textSecondary: string; primary: string } }) {
   return (
@@ -81,6 +93,7 @@ function BackIcon({ color }: { color: string }) {
 }
 
 export default function BecomeCreatorScreen() {
+  const SCREEN_W = useScreenW();
   const { colors } = useTheme();
   const router = useRouter();
   const { connected, address, shortAddress } = useWallet();

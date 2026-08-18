@@ -8,7 +8,8 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,11 +34,25 @@ import {
   type FanArtSubjectType,
 } from '@/lib/fan-art';
 import { Spacing, Radius, FontSize, FontWeight, Fonts, Shadow } from '@/constants/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
 const COL = 2;
 const GAP = 10;
-const CARD = (W - Spacing.md * 2 - GAP) / COL;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useCardWidth() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    return (W - Spacing.md * 2 - GAP) / COL;
+  }, [windowW]);
+}
 
 const STYLE_LABELS: Record<string, string> = {
   mappa: 'MAPPA',
@@ -47,6 +62,7 @@ const STYLE_LABELS: Record<string, string> = {
 };
 
 export default function FanArtScreen() {
+  const CARD = useCardWidth();
   const { colors } = useTheme();
   const router = useRouter();
   const { connected } = useWallet();

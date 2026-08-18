@@ -1,14 +1,28 @@
-import React from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import React, { useMemo } from 'react';
+import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ShimmerBox } from '@/components/ui/ShimmerLoader';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
 const PAD = Spacing.md;
-const INNER = W - PAD * 2;
-const WORK_W = (INNER - Spacing.sm) / 2;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useSkeletonMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const INNER = W - PAD * 2;
+    return { INNER, WORK_W: (INNER - Spacing.sm) / 2 };
+  }, [windowW]);
+}
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { colors } = useTheme();
@@ -20,6 +34,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 export function CreatorDashboardSkeleton() {
+  const { INNER, WORK_W } = useSkeletonMetrics();
   return (
     <Shell>
       <View style={sk.pad}>
@@ -46,6 +61,7 @@ export function CreatorDashboardSkeleton() {
 }
 
 export function CreatorUploadSkeleton() {
+  const { INNER } = useSkeletonMetrics();
   return (
     <Shell>
       <View style={sk.header}>
@@ -72,6 +88,7 @@ export function CreatorUploadSkeleton() {
 }
 
 export function CreatorProfileSkeleton() {
+  const { INNER } = useSkeletonMetrics();
   return (
     <Shell>
       <View style={sk.header}>
@@ -99,6 +116,7 @@ export function CreatorProfileSkeleton() {
 }
 
 export function BecomeCreatorSkeleton() {
+  const { INNER } = useSkeletonMetrics();
   return (
     <Shell>
       <View style={sk.pad}>

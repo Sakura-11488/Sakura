@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import React, { useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Platform, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
@@ -12,10 +12,24 @@ import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useRouter } from 'expo-router';
 import { Colors, Radius, Shadow, FontSize, FontWeight, Spacing } from '@/constants/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
-const BANNER_W = W - Spacing.md * 2 - 20;
 const BANNER_H = 156;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useBannerWidth() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    return W - Spacing.md * 2 - 20;
+  }, [windowW]);
+}
 
 export interface BannerItem {
   id: string;
@@ -32,6 +46,7 @@ const PlayIcon = () => (
 );
 
 export default function PopularBanner({ item }: { item: BannerItem }) {
+  const BANNER_W = useBannerWidth();
   const router = useRouter();
   const scale = useSharedValue(1);
   const brightness = useSharedValue(1);
@@ -65,7 +80,7 @@ export default function PopularBanner({ item }: { item: BannerItem }) {
         onPressOut={handlePressOut}
         onPress={handlePress}
         activeOpacity={1}
-        style={s.container}
+        style={[s.container, { width: BANNER_W }]}
       >
         <Animated.View style={imgStyle}>
           <Image source={{ uri: item.cover }} style={s.image} contentFit="cover" transition={350} />
@@ -103,7 +118,6 @@ const s = StyleSheet.create({
     shadowColor: '#000',
   },
   container: {
-    width: BANNER_W,
     height: BANNER_H,
     borderRadius: Radius.lg,
     overflow: 'hidden',

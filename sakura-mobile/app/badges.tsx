@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Platform, useWindowDimensions } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -8,11 +8,25 @@ import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { fetchGamificationState, type GamificationBadge, type GamificationState } from '@/lib/gamification';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
+import { contentWidth } from '@/constants/layout';
 
-const { width: W } = Dimensions.get('window');
 const COLS = 3;
 const GAP = 10;
-const CARD = (W - Spacing.md * 2 - GAP * (COLS - 1)) / COLS;
+
+/**
+ * Read reactively. This was a module constant off Dimensions.get('window'),
+ * captured once at bundle evaluation and never re-read — no listener exists
+ * anywhere in the app. contentWidth() rather than the window width, because on
+ * desktop web the sidebar is a sibling of the content column and anything sized
+ * off the window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useCardWidth() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    return (W - Spacing.md * 2 - GAP * (COLS - 1)) / COLS;
+  }, [windowW]);
+}
 
 const TIER_COLOR: Record<string, string> = {
   bronze: '#CD7F32',
@@ -29,6 +43,7 @@ const ICON: Record<string, string> = {
 };
 
 export default function BadgesScreen() {
+  const CARD = useCardWidth();
   const { colors } = useTheme();
   const router = useRouter();
   const { address } = useWallet();
