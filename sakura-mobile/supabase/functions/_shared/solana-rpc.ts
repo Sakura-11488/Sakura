@@ -30,7 +30,12 @@ export async function solanaRpc<T>(method: string, params: unknown[]): Promise<T
   if (json.error) {
     throw new Error(json.error.message ?? `Solana RPC ${method} failed.`);
   }
-  if (json.result === undefined) {
+  // A null result, not just an undefined one. A provider answering
+  // result: null used to sail through here and yield a balance of zero, which
+  // the entitlement cache then stored as fact for five minutes — so someone who
+  // had just bought SKR could be told they held none, and locked out of what
+  // they had paid for. An absent result is an error, not an empty wallet.
+  if (json.result === undefined || json.result === null) {
     throw new Error(`Solana RPC ${method} returned no result.`);
   }
   return json.result;

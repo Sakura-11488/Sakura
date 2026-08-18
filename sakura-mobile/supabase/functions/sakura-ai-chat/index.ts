@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
-import { checkRateLimit } from '../_shared/rate-limit.ts';
+import { checkRateLimit, clientIp } from '../_shared/rate-limit.ts';
 import { getSakuraHolding } from '../_shared/sakura-holding.ts';
 import { buildSystemPrompt, type SakuraContext } from './prompt.ts';
 import { isServerTool, resolveGroups, resolveTools, type ToolGroup } from './tools.ts';
@@ -82,6 +82,20 @@ const ENTITLEMENT_NEGATIVE_TTL_SEC = Number(
 
 const RATE_PER_MINUTE = Number(Deno.env.get('SAKURA_AI_RATE_LIMIT_PER_MINUTE') || '12');
 const RATE_PER_DAY = Number(Deno.env.get('SAKURA_AI_RATE_LIMIT_PER_DAY') || '120');
+
+/**
+ * Per-IP ceiling, because a wallet is free to mint.
+ *
+ * Every per-wallet limit is bypassed by generating a new keypair, and each new
+ * wallet is a guaranteed entitlement-cache miss — which costs a paid Helius
+ * call. Exhausting that quota makes entitlement throw for everybody, so the
+ * cheapest wallet in the world can deny service to real holders.
+ *
+ * Deliberately generous. This is a ceiling on abuse, not a per-user quota: real
+ * users behind one NAT (a household, a campus, a mobile carrier) share an IP,
+ * and the per-wallet limits are what actually shape normal use.
+ */
+const RATE_PER_IP_PER_MINUTE = Number(Deno.env.get('SAKURA_AI_RATE_LIMIT_PER_IP') || '60');
 const DAILY_TOKEN_BUDGET = Number(Deno.env.get('SAKURA_AI_DAILY_TOKEN_BUDGET') || '4000000');
 
 const MAX_MESSAGES = Number(Deno.env.get('SAKURA_AI_MAX_MESSAGES') || '26');
@@ -105,6 +119,7 @@ console.log(
     min_xp: MIN_LIFETIME_XP,
     rate_per_minute: RATE_PER_MINUTE,
     rate_per_day: RATE_PER_DAY,
+    rate_per_ip_per_minute: RATE_PER_IP_PER_MINUTE,
     daily_token_budget: DAILY_TOKEN_BUDGET,
   }),
 );
@@ -585,6 +600,21 @@ Deno.serve(async (req) => {
         cors,
       );
     }
+    // Keyed on IP as well as wallet. Checked after the wallet buckets so a
+    // single user's own burst is attributed to them rather than to everyone
+    // sharing their connection.
+    const ip = clientIp(req);
+    if (ip !== 'unknown') {
+      const perIp = await checkRateLimit(supabase, `sakura-ai:ip:${ip}`, RATE_PER_IP_PER_MINUTE, 60);
+      if (!perIp.allowed) {
+        return jsonResponse(
+          429,
+          { error: 'Too many requests from this network. Try again shortly.', retry_after_seconds: perIp.retryAfterSec, code: 'rate_limited' },
+          cors,
+        );
+      }
+    }
+
     const day = await checkRateLimit(supabase, `sakura-ai:d:${wallet}`, RATE_PER_DAY, 86_400);
     if (!day.allowed) {
       return jsonResponse(
