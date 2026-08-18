@@ -22,7 +22,23 @@ import { supabase } from '@/lib/supabase';
 
 const INDEX_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Which table a novel came from.
+ *
+ * Two systems grew separately and never met. `novels` is the older, curated one
+ * — three hand-inserted rows, one of which the reader could open because it was
+ * also hardcoded here. `creator_works` is what the actual upload screen at
+ * /creator-upload writes, and creators have been using it: nine novels, six of
+ * them published and public, including one with 8,598 characters of chapter
+ * text that nobody could read because the reader only ever looked at `novels`.
+ *
+ * So both are resolved. On a slug collision `novels` wins, being the curated
+ * side, but in practice their slugs differ.
+ */
+export type NovelSource = 'novels' | 'creator_works';
+
 export interface SakuraNovelRow {
+  source: NovelSource;
   id: string;
   slug: string;
   title: string;
@@ -31,6 +47,24 @@ export interface SakuraNovelRow {
   genres: string[];
   status: string;
   creator_wallet: string;
+}
+
+/**
+ * Cover for a creator work. Mirrors workCoverUrl in lib/creator.ts rather than
+ * importing it — that module pulls in the whole creator API surface, and this
+ * one sits on the novel reader's hot path.
+ *
+ * The empty-string check matters: legacy rows carry cover_url: "", and returning
+ * that renders a blank image instead of falling through to cover_path.
+ */
+function creatorWorkCover(meta: Record<string, unknown> | null): string {
+  const m = meta ?? {};
+  const direct = typeof m.cover_url === 'string' ? m.cover_url.trim() : '';
+  if (direct) return direct;
+  const path = typeof m.cover_path === 'string' ? m.cover_path.trim() : '';
+  if (!path) return '';
+  const base = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+  return `${base}/storage/v1/object/public/creator-covers/${path}`;
 }
 
 let indexCache: Map<string, SakuraNovelRow> | null = null;
@@ -43,24 +77,64 @@ async function loadIndex(force = false): Promise<Map<string, SakuraNovelRow>> {
   if (inflight) return inflight;
 
   inflight = (async () => {
-    const { data, error } = await supabase
-      .from('novels')
-      .select('id, slug, title, description, cover_url, genres, status, creator_wallet')
-      .eq('published', true);
+    const [curated, creator] = await Promise.all([
+      supabase
+        .from('novels')
+        .select('id, slug, title, description, cover_url, genres, status, creator_wallet')
+        .eq('published', true),
+      supabase
+        .from('creator_works')
+        .select('id, slug, title, description, genres, series_status, creator_wallet, release_metadata')
+        .eq('kind', 'novel')
+        .eq('publication_status', 'published')
+        .eq('visibility', 'public'),
+    ]);
 
-    if (error) {
+    if (curated.error && creator.error) {
       // Serve a stale index rather than pretending our own novels are external
       // — falling through to the scraper would 404 and look like the novel had
       // been deleted.
       if (indexCache) return indexCache;
-      throw error;
+      throw curated.error;
     }
 
     const map = new Map<string, SakuraNovelRow>();
-    for (const row of data ?? []) {
-      const slug = String((row as SakuraNovelRow).slug ?? '').toLowerCase();
-      if (slug) map.set(slug, row as SakuraNovelRow);
+
+    // Creator works first, so a curated row of the same slug overwrites it.
+    for (const row of creator.data ?? []) {
+      const r = row as Record<string, unknown>;
+      const slug = String(r.slug ?? '').toLowerCase();
+      if (!slug) continue;
+      map.set(slug, {
+        source: 'creator_works',
+        id: String(r.id),
+        slug,
+        title: String(r.title ?? ''),
+        description: String(r.description ?? ''),
+        cover_url: creatorWorkCover(r.release_metadata as Record<string, unknown> | null),
+        genres: Array.isArray(r.genres) ? (r.genres as string[]) : [],
+        status: String(r.series_status ?? 'ongoing'),
+        creator_wallet: String(r.creator_wallet ?? ''),
+      });
     }
+
+    for (const row of curated.data ?? []) {
+      const r = row as Record<string, unknown>;
+      const slug = String(r.slug ?? '').toLowerCase();
+      if (!slug) continue;
+      map.set(slug, {
+        source: 'novels',
+        id: String(r.id),
+        slug,
+        title: String(r.title ?? ''),
+        description: String(r.description ?? ''),
+        cover_url: String(r.cover_url ?? ''),
+        genres: Array.isArray(r.genres) ? (r.genres as string[]) : [],
+        status: String(r.status ?? 'ongoing'),
+        creator_wallet: String(r.creator_wallet ?? ''),
+      });
+    }
+
     indexCache = map;
     indexFetchedAt = Date.now();
     return map;
@@ -149,21 +223,41 @@ export async function fetchSakuraNovelDetail(novelPath: string): Promise<AllNove
   const meta = index?.get(slug);
   if (!meta) return null;
 
-  const { data, error } = await supabase
-    .from('novel_chapters')
-    .select('id, chapter_number, title, release_time')
-    .eq('novel_id', meta.id)
-    .eq('published', true)
-    .order('chapter_number', { ascending: true });
+  let chapters: AllNovelChapter[] = [];
 
-  if (error) throw error;
-
-  const chapters: AllNovelChapter[] = (data ?? []).map((row) => ({
-    path: sakuraChapterPath(slug, String(row.id)),
-    name: row.title || `Chapter ${row.chapter_number}`,
-    chapterNumber: row.chapter_number,
-    releaseTime: (row.release_time as string | null) ?? null,
-  }));
+  if (meta.source === 'creator_works') {
+    // Chapters live in work_releases, keyed by sequence_number, with the prose
+    // in body_text. Only published+public releases, so a creator's unreleased
+    // chapter does not appear the moment they save it.
+    const { data, error } = await supabase
+      .from('work_releases')
+      .select('id, sequence_number, title, published_at')
+      .eq('work_id', meta.id)
+      .eq('publication_status', 'published')
+      .eq('visibility', 'public')
+      .order('sequence_number', { ascending: true });
+    if (error) throw error;
+    chapters = (data ?? []).map((row) => ({
+      path: sakuraChapterPath(slug, String(row.id)),
+      name: row.title || `Chapter ${row.sequence_number}`,
+      chapterNumber: row.sequence_number,
+      releaseTime: (row.published_at as string | null) ?? null,
+    }));
+  } else {
+    const { data, error } = await supabase
+      .from('novel_chapters')
+      .select('id, chapter_number, title, release_time')
+      .eq('novel_id', meta.id)
+      .eq('published', true)
+      .order('chapter_number', { ascending: true });
+    if (error) throw error;
+    chapters = (data ?? []).map((row) => ({
+      path: sakuraChapterPath(slug, String(row.id)),
+      name: row.title || `Chapter ${row.chapter_number}`,
+      chapterNumber: row.chapter_number,
+      releaseTime: (row.release_time as string | null) ?? null,
+    }));
+  }
 
   return {
     path: slug,
@@ -186,6 +280,20 @@ export async function fetchSakuraChapterContent(chapterPath: string): Promise<st
   const index = await loadIndex().catch(() => null);
   const meta = index?.get(slug);
   if (!meta) return null;
+
+  if (meta.source === 'creator_works') {
+    const { data, error } = await supabase
+      .from('work_releases')
+      .select('body_text')
+      .eq('id', parsed.chapterId)
+      .eq('work_id', meta.id)
+      .eq('publication_status', 'published')
+      .eq('visibility', 'public')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data?.body_text) return null;
+    return String(data.body_text);
+  }
 
   const { data, error } = await supabase
     .from('novel_chapters')
