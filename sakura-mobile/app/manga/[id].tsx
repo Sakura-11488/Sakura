@@ -68,7 +68,6 @@ import {
   subscribeMangaBatch,
   type OfflineMangaChapter,
 } from '@/lib/manga-offline';
-import { saveImagesZip } from '@/lib/web-download';
 import { playTap, onTap } from '@/lib/sound';
 import {
   getMangaReadProgress,
@@ -520,25 +519,6 @@ export default function MangaDetail() {
   const [toast, setToast] = useState('');
   const [toastDuration, setToastDuration] = useState<number | undefined>(undefined);
 
-  /**
-   * Web export jobs, keyed by chapter id: chapterId -> 0..1 progress.
-   *
-   * The controllers live in a ref because aborting must not wait for a
-   * render, and because the unmount cleanup below needs the current set.
-   * Before this there was no in-flight state at all: a second tap started a
-   * second full run, and leaving the screen let the fetch loop run to
-   * completion and then fire a file download from a screen the user had
-   * already left.
-   */
-  const [webJobs, setWebJobs] = useState<Record<string, number>>({});
-  const webAborts = useRef<Record<string, AbortController>>({});
-
-  useEffect(() => {
-    const controllers = webAborts.current;
-    return () => {
-      for (const c of Object.values(controllers) as AbortController[]) c.abort();
-    };
-  }, []);
   const [offlineMap, setOfflineMap] = useState<Record<string, OfflineMangaChapter>>({});
   const [bulkDownloading, setBulkDownloading] = useState(false);
   const [batchPaused, setBatchPaused] = useState(false);
@@ -659,65 +639,16 @@ export default function MangaDetail() {
   const handleDownloadChapter = useCallback(async (ch: MangaChapter) => {
     if (!manga) return;
     playTap();
-    // Web has no offline store. This is an EXPORT: the pages are fetched and
-    // saved as a .cbz in the browser's Downloads folder, which Sakura cannot
-    // read back. Only the scraped sources (comics/manhwa/18+) can be fetched
-    // cross-origin at all — see hideDownload at the ChapterList below.
-    if (Platform.OS === 'web') {
-      // A second tap on a running job cancels it rather than starting a
-      // duplicate run — which previously doubled droplet load and memory and
-      // produced two files.
-      const running = webAborts.current[ch.id];
-      if (running) {
-        running.abort();
-        delete webAborts.current[ch.id];
-        setWebJobs((prev) => {
-          const next = { ...prev };
-          delete next[ch.id];
-          return next;
-        });
-        setToast('Download cancelled');
-        return;
-      }
-
-      const controller = new AbortController();
-      webAborts.current[ch.id] = controller;
-      setWebJobs((prev) => ({ ...prev, [ch.id]: 0 }));
-      try {
-        const urls = await adapter!.pages(mangaId, ch.id);
-        if (!urls.length) throw new Error('No pages found for this chapter.');
-        const result = await saveImagesZip(`${manga.title} - Ch ${ch.number}`, urls, {
-          signal: controller.signal,
-          onProgress: (done, total) =>
-            setWebJobs((prev) =>
-              prev[ch.id] === undefined ? prev : { ...prev, [ch.id]: done / total },
-            ),
-        });
-        // Say what actually happened. The old code printed the number saved
-        // as a success without comparing it to the number requested, so a
-        // chapter that lost 188 of 189 pages reported "Saved 1 pages".
-        const missing = result.total - result.saved;
-        setToastDuration(6000);
-        setToast(
-          missing > 0
-            ? `Saved ${result.saved} of ${result.total} pages — ${missing} could not be downloaded`
-            : `Saved ${result.saved} pages to your Downloads folder`,
-        );
-      } catch (e) {
-        if (!(e instanceof DOMException && e.name === 'AbortError')) {
-          setToastDuration(6000);
-          setToast(e instanceof Error ? e.message : 'Download failed');
-        }
-      } finally {
-        delete webAborts.current[ch.id];
-        setWebJobs((prev) => {
-          const next = { ...prev };
-          delete next[ch.id];
-          return next;
-        });
-      }
-      return;
-    }
+    // Web and native share this path now. On web, downloadScrapedChapter
+    // resolves to lib/scraped-offline.web.ts, which stores pages in Cache
+    // Storage under same-origin URLs the service worker serves — so the
+    // reader loads them through the same `<Image source={{ uri }}>` it always
+    // did and cannot tell the difference. Pause, resume, delete and the
+    // Downloads screen work unchanged because the web store exports the same
+    // surface as the native one.
+    //
+    // Only scraped sources reach here on web: atsu manga sends no
+    // Access-Control-Allow-Origin, so its button is hidden (see hideDownload).
     const existing = offlineMap[ch.id];
     if (existing?.status === 'ready') {
       setToast('Chapter already downloaded');

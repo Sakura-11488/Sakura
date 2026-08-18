@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { confirmDestructive } from '@/lib/confirm-alert';
 import {
+  Platform,
   View,
   Text,
   StyleSheet,
   SectionList,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -75,6 +76,25 @@ export default function DownloadsScreen() {
   const router = useRouter();
   const [sections, setSections] = useState<{ title: string; data: DownloadRow[] }[]>([]);
   const [storageLabel, setStorageLabel] = useState('');
+  // Web only. Whether the browser has granted durable storage for this
+  // origin, which decides which of the two honest sentences the header shows.
+  const [persistedStorage, setPersistedStorage] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    let alive = true;
+    void (async () => {
+      try {
+        const persisted = await navigator.storage?.persisted?.();
+        if (alive) setPersistedStorage(!!persisted);
+      } catch {
+        // Treated as not-persisted, which is the cautious message.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const refresh = useCallback(() => {
     Promise.all([
@@ -216,24 +236,22 @@ export default function DownloadsScreen() {
         : row.kind === 'manga'
           ? `${row.data.title} Ch ${row.data.chapterNumber}`
           : `${row.data.title} — ${row.data.chapterTitle}`;
-    Alert.alert('Delete download', `Remove ${label}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          if (row.kind === 'anime') {
-            deleteOfflineEpisode(row.data.animeId, row.data.episodeId).then(refresh);
-          } else if (row.kind === 'manga') {
-            deleteOfflineMangaChapter(row.data.mangaId, row.data.chapterId).then(refresh);
-          } else if (row.kind === 'scraped') {
-            deleteScrapedOfflineChapter(row.data.source, row.data.mangaId, row.data.chapterId).then(refresh);
-          } else {
-            deleteOfflineNovelChapter(row.data.novelPath, row.data.chapterPath).then(refresh);
-          }
-        },
-      },
-    ]);
+    // confirmDestructive, not Alert.alert: react-native-web implements Alert
+    // as an empty function, so on web this dialog never appeared and Delete
+    // did nothing at all. That was invisible while web had no downloads to
+    // delete; now that it does, it would be a button that silently lies.
+    void confirmDestructive('Delete download', `Remove ${label}?`).then((ok) => {
+      if (!ok) return;
+      if (row.kind === 'anime') {
+        deleteOfflineEpisode(row.data.animeId, row.data.episodeId).then(refresh);
+      } else if (row.kind === 'manga') {
+        deleteOfflineMangaChapter(row.data.mangaId, row.data.chapterId).then(refresh);
+      } else if (row.kind === 'scraped') {
+        deleteScrapedOfflineChapter(row.data.source, row.data.mangaId, row.data.chapterId).then(refresh);
+      } else {
+        deleteOfflineNovelChapter(row.data.novelPath, row.data.chapterPath).then(refresh);
+      }
+    });
   };
 
   const openRow = (row: DownloadRow) => {
@@ -481,6 +499,21 @@ export default function DownloadsScreen() {
       <Text style={styles.sub}>
         Offline content stored on this device{storageLabel ? ` · ${storageLabel}` : ''}
       </Text>
+      {/*
+        Web storage is not the same promise as native storage, and the UI has to
+        say so. Downloads live in Cache Storage, which the browser may reclaim
+        under storage pressure — Sakura asks for durable storage on the first
+        download, but cannot guarantee it. Claiming parity with the native app
+        here would be the kind of lie that only surfaces when a user is offline
+        and their chapter has quietly vanished.
+      */}
+      {Platform.OS === 'web' ? (
+        <Text style={[styles.sub, { opacity: 0.7 }]}>
+          {persistedStorage
+            ? 'Your browser has marked these as protected storage.'
+            : 'Your browser may clear these if the device runs low on space.'}
+        </Text>
+      ) : null}
 
       {isEmpty ? (
         <EmptyState

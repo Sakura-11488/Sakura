@@ -66,7 +66,13 @@ export default function WebUpdateBanner() {
     try {
       if (typeof caches !== 'undefined') {
         const keys = await caches.keys();
-        await Promise.all(keys.map((k) => caches.delete(k)));
+        // Build caches only. This used to delete every key, which would wipe a
+        // user's downloaded chapters behind a button labelled "Update" — the
+        // library lives in `sakura-offline-*` and is user data, not build
+        // output. Getting a fresh build never requires destroying it.
+        await Promise.all(
+          keys.filter((k) => k.startsWith('sakura-shell-')).map((k) => caches.delete(k)),
+        );
       }
       if (navigator.serviceWorker?.getRegistrations) {
         const regs = await navigator.serviceWorker.getRegistrations();
