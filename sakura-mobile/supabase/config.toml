@@ -80,3 +80,6 @@ verify_jwt = false
 
 [functions.upsert-profile]
 verify_jwt = false
+
+[functions.manage-novel]
+verify_jwt = false
