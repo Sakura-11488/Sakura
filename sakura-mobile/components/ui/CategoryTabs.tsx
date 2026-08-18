@@ -4,9 +4,7 @@ import {
   TouchableOpacity,
   Text,
   StyleSheet,
-  LayoutChangeEvent,
-  Dimensions,
-} from 'react-native';
+  LayoutChangeEvent,} from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -15,7 +13,6 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { Colors, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 
-const { width: W } = Dimensions.get('window');
 const DEFAULT_CATEGORIES = ['Manga', 'Comics'];
 
 interface Measurement { x: number; width: number }

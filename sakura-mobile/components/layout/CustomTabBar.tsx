@@ -4,9 +4,7 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Platform,
-  Dimensions,
-  useWindowDimensions,
+  Platform,  useWindowDimensions,
   type ViewStyle,
 } from 'react-native';
 import Animated, {
@@ -33,7 +31,6 @@ type BottomTabBarProps = {
 };
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
-const W = Dimensions.get('window').width;
 const ICON_SLOT   = 42;
 const ACTIVE_SLOT = 84;
 const SPRING = { damping: 22, stiffness: 280, mass: 0.7 };

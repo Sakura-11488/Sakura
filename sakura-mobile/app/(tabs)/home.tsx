@@ -4,9 +4,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
-  Dimensions,
-  TouchableOpacity,
+  RefreshControl,  TouchableOpacity,
   useWindowDimensions,
 } from 'react-native';
 import { useScrollToTop, useFocusEffect, useRouter } from 'expo-router';
@@ -49,8 +47,6 @@ import { SAKURA_ORIGINALS } from '@/lib/sakura-originals';
 import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 import StreakLevelCard from '@/components/gamification/StreakLevelCard';
 import FeaturedCarousel, { type CarouselItem } from '@/components/ui/FeaturedCarousel';
-
-const { width: W } = Dimensions.get('window');
 
 // Genre shelves for the atsu-backed Manga tab. The scraped sources carry their
 // own set on their registry entry; this is the one case with no adapter.

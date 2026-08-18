@@ -301,9 +301,13 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
       next.tool_call_id = m.tool_call_id;
     }
     if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-      next.tool_calls = m.tool_calls
-        .filter((c) => c && typeof c.id === 'string' && typeof c.function?.name === 'string')
-        .slice(0, 8);
+      // No arbitrary cap here. Truncating declarations to 8 while keeping every
+      // result is how a nine-call turn becomes a provider 400: qwen3.6-27b is in
+      // the fallback chain and does support parallel calls. The pairing pass
+      // below enforces the real invariant instead.
+      next.tool_calls = m.tool_calls.filter(
+        (c) => c && typeof c.id === 'string' && typeof c.function?.name === 'string',
+      );
       if (next.tool_calls.length === 0) delete next.tool_calls;
     }
     if (next.content === null && !next.tool_calls) continue;
@@ -326,7 +330,48 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
   }
   while (bounded.length > 0 && bounded[0].role === 'tool') bounded.shift();
 
-  return bounded;
+  return pairToolCalls(bounded);
+}
+
+/**
+ * Every tool_call must have a result, and every result must have a declaration.
+ *
+ * Providers reject the whole request otherwise, and trimming is exactly what
+ * breaks the pairing: dropping old turns can orphan a result whose assistant
+ * message fell off the front, and an assistant can declare a call whose result
+ * was never sent back. Enforcing it here means the invariant holds by
+ * construction rather than by the caller being careful.
+ */
+function pairToolCalls(messages: ChatMessage[]): ChatMessage[] {
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'tool' && m.tool_call_id) answered.add(m.tool_call_id);
+  }
+
+  const declared = new Set<string>();
+  const out: ChatMessage[] = [];
+
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      const kept = m.tool_calls.filter((c) => answered.has(c.id));
+      for (const c of kept) declared.add(c.id);
+      if (kept.length === 0) {
+        // Nothing it asked for came back. Keep it only if it also said something.
+        if (m.content) out.push({ role: 'assistant', content: m.content });
+        continue;
+      }
+      out.push({ ...m, tool_calls: kept });
+      continue;
+    }
+    if (m.role === 'tool') {
+      if (!m.tool_call_id || !declared.has(m.tool_call_id)) continue;
+      out.push(m);
+      continue;
+    }
+    out.push(m);
+  }
+
+  return out;
 }
 
 // ─── Server-side tools ────────────────────────────────────────────────────────
@@ -683,6 +728,27 @@ Deno.serve(async (req) => {
 
       const calls = result.message.tool_calls ?? [];
       const serverCalls = calls.filter((c) => isServerTool(c.function?.name ?? ''));
+
+      // The loop is `for (hop = 0; ; hop++)` and withholding tools at
+      // MAX_SERVER_HOPS is not an exit — if the model emits an all-server batch
+      // anyway it would push results and iterate again, forever, with tools
+      // permanently empty. Every iteration is a billed provider call and
+      // recordUsage only runs on return paths, so the spend would be unmetered.
+      // Groq's own input validation happens to 502 on this today; a bound should
+      // not be borrowed from a vendor's error handling.
+      if (hop >= MAX_SERVER_HOPS) {
+        await recordUsage(supabase, wallet, lastModel, surface, usage);
+        return jsonResponse(
+          200,
+          {
+            message: { role: 'assistant', content: result.message.content ?? null },
+            finish_reason: 'stop',
+            usage,
+            model: lastModel,
+          },
+          cors,
+        );
+      }
 
       if (calls.length === 0 || serverCalls.length === 0) {
         await recordUsage(supabase, wallet, lastModel, surface, usage);

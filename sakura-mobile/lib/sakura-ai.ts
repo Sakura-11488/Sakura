@@ -504,7 +504,15 @@ export async function sendChatMessage(
     const result = await invokeOnce(messages, capabilities, surface, options?.context);
     const calls = result.message.tool_calls ?? [];
 
-    if (result.finish_reason !== 'tool_calls' || calls.length === 0) {
+    // Branch on the calls themselves, NOT on finish_reason. The server exits on
+    // `calls.length === 0 || serverCalls.length === 0`; if the client also
+    // required finish_reason === 'tool_calls' the two could disagree, and they
+    // do: a provider returning tool_calls alongside 'stop' or 'length' sent the
+    // client down the final-answer path, where content is null and the turn died
+    // with "returned an empty response". On the mixed-batch path the server has
+    // already run its tools by then, so a `remember` write landed and the
+    // conversation carrying it was thrown away.
+    if (calls.length === 0) {
       const content = result.message.content;
       if (!content) throw new SakuraAiError('Sakura AI returned an empty response', 'empty');
       return content;

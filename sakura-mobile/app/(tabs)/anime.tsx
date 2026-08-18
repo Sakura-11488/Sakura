@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Dimensions,
   useWindowDimensions,
   RefreshControl,
   ActionSheetIOS,
