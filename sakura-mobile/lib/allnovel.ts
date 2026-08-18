@@ -7,8 +7,6 @@ import { getOrSetCached } from '@/lib/cache';
 import {
   fetchSakuraChapterContent,
   fetchSakuraNovelDetail,
-  isSakuraChapterPath,
-  isSakuraNovelPath,
 } from '@/lib/sakura-novels';
 import { fetchNovelHtml } from '@/lib/allnovel-html';
 
@@ -179,9 +177,13 @@ function parseNovels(html: string): AllNovelItem[] {
 // ─── Parse novel detail ───────────────────────────────────────────────────────
 
 export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetail> {
-  if (isSakuraNovelPath(novelPath)) {
-    return fetchSakuraNovelDetail(novelPath);
-  }
+  // Ask the database, do not guess. The old synchronous check consulted a
+  // hardcoded Set, so it could answer instantly; a DB-backed index cannot, and
+  // a cold cache answering "not ours" would send one of our own novels to the
+  // external scraper and 404. fetchSakuraNovelDetail returns null when the slug
+  // genuinely is not ours, which is the only safe way to fall through.
+  const sakura = await fetchSakuraNovelDetail(novelPath);
+  if (sakura) return sakura;
 
   const html = await fetchHtml(SITE + novelPath, 30 * 60 * 1000);
 
@@ -396,10 +398,11 @@ export async function searchNovels(query: string, page = 1): Promise<AllNovelIte
 }
 
 export async function parseChapterContent(chapterPath: string): Promise<string> {
-  if (isSakuraChapterPath(chapterPath)) {
-    const content = await fetchSakuraChapterContent(chapterPath);
-    return content || 'No content available.';
-  }
+  // Same here: null means "not one of ours", not "empty chapter". The index is
+  // already warm by this point because opening a chapter follows opening the
+  // novel, so this costs no extra round trip in practice.
+  const sakuraContent = await fetchSakuraChapterContent(chapterPath);
+  if (sakuraContent) return sakuraContent;
 
   const html = await fetchHtml(SITE + chapterPath, 24 * 60 * 60 * 1000);
   const parts: string[] = [];

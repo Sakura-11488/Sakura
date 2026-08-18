@@ -39,6 +39,18 @@ const MAX_CHAPTER_TITLE = 200;
 const MAX_CHAPTER_CONTENT = 200_000;
 const MAX_GENRES = 8;
 const MAX_GENRE_LEN = 32;
+/** The reader resolves /novel/ext?path=<slug>, so a slug is the novel's public
+ *  address. Derived from the title unless one is given; uniqueness is enforced
+ *  by a unique index on lower(slug), which is what settles two creators
+ *  publishing the same title at the same moment. */
+function slugify(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
 const VALID_STATUS = new Set(['ongoing', 'completed', 'hiatus']);
 
 function clean(value: unknown, max: number): string {
@@ -255,16 +267,27 @@ Deno.serve(async (req) => {
       if (!built.ok) return jsonResponse(400, { error: built.error }, cors);
       if (!built.patch.title) return jsonResponse(400, { error: 'A title is required.' }, cors);
 
+      const requestedSlug = clean(body.slug, 80);
+      const slug = slugify(requestedSlug || String(built.patch.title ?? ''));
+      if (!slug) return jsonResponse(400, { error: 'Could not derive a URL from that title.' }, cors);
+
       const { data, error } = await supabase
         .from('novels')
         .insert({
           ...built.patch,
+          slug,
           creator_wallet: wallet, // from the signature, never the body
           updated_at: new Date().toISOString(),
         })
         .select('*')
         .single();
       if (error) {
+        // 23505 is the unique index on lower(slug) doing its job.
+        if ((error as { code?: string }).code === '23505') {
+          return jsonResponse(409, {
+            error: 'A novel with that name already exists. Pick a different title or set a slug.',
+          }, cors);
+        }
         console.error('[manage-novel] create failed', error.message);
         return jsonResponse(500, { error: 'Could not create that novel.' }, cors);
       }
