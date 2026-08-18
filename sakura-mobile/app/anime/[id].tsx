@@ -5,7 +5,8 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
   StatusBar,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -45,11 +46,9 @@ import { playTap, onTap } from '@/lib/sound';
 import { Library } from '@/lib/storage';
 import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
-import { isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
+import { contentWidth, isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 import CreatorTab from '@/components/ui/CreatorTab';
 import { getSakuraOriginalAuthor } from '@/lib/sakura-originals';
-
-const { width: W } = Dimensions.get('window');
 
 /**
  * Hero height.
@@ -65,9 +64,26 @@ const { width: W } = Dimensions.get('window');
  * point of having more screen.
  */
 const DESKTOP_HERO_H = 560;
-const HERO_H = isWideWeb(W) ? Math.min(W * 0.88, DESKTOP_HERO_H) : W * 0.88;
-const HEADER_TRIGGER = Math.round(HERO_H * 0.35);
 const HEADER_FADE_DISTANCE = 48;
+
+/**
+ * Read reactively, because these decide a layout MODE and not just a size.
+ *
+ * As module constants they were evaluated once when the bundle was required,
+ * and nothing in the app re-reads Dimensions — so `isWideWeb(W)` froze the
+ * desktop-vs-phone branch at bundle-evaluation time. W is the content width
+ * rather than the window width: on desktop web the sidebar is a sibling of this
+ * column, so sizing off the raw window overflows by exactly SIDEBAR_WIDTH.
+ */
+function useDetailMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const wide = isWideWeb(windowW);
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const HERO_H = wide ? Math.min(W * 0.88, DESKTOP_HERO_H) : W * 0.88;
+    return { wide, W, HERO_H, HEADER_TRIGGER: Math.round(HERO_H * 0.35) };
+  }, [windowW]);
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const BackIcon = () => (
@@ -109,6 +125,7 @@ const PlayIcon = ({ size = 16 }: { size?: number }) => (
 
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
 function DetailSkeleton({ onBack }: { onBack: () => void }) {
+  const { W, HERO_H } = useDetailMetrics();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const pulse = useSharedValue(1);
@@ -456,6 +473,7 @@ function EpisodeRow({
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 export default function AnimeDetail() {
+  const { wide, W, HERO_H, HEADER_TRIGGER } = useDetailMetrics();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -587,7 +605,7 @@ export default function AnimeDetail() {
       // Centre and cap it on desktop. Stretched edge to edge across a 1920px
       // window the button reads as a site-wide banner rather than an action
       // belonging to this title.
-      ...(isWideWeb(W)
+      ...(wide
         ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH, left: undefined, right: undefined }
         : null),
     },
@@ -599,7 +617,7 @@ export default function AnimeDetail() {
       borderWidth: 1, borderColor: colors.border,
     },
     saveBtnActive: { backgroundColor: `${colors.primary}18`, borderColor: `${colors.primary}45` },
-  }), [colors]);
+  }), [colors, wide, W, HERO_H]);
 
   const [anime, setAnime] = useState<AnimeInfo | null>(null);
   const [loading, setLoading] = useState(true);

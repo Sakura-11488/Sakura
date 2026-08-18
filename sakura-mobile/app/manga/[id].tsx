@@ -3,7 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   TouchableOpacity,
   StatusBar,
   Platform,
@@ -82,9 +82,8 @@ import { useFocusEffect } from 'expo-router';
 // import CreatorTab from '@/components/ui/CreatorTab';
 import { supabase } from '@/lib/supabase';
 import { getGatedChapterIds } from '@/lib/pass-gate';
-import { isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
+import { contentWidth, isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 
-const { width: W, height: SCREEN_H } = Dimensions.get('window');
 /**
  * Cap on the hero at desktop widths.
  *
@@ -94,10 +93,37 @@ const { width: W, height: SCREEN_H } = Dimensions.get('window');
  * The anime detail screen caps at 560 for the same reason.
  */
 const DESKTOP_HERO_H = 560;
-const HERO_H = isWideWeb(W) ? Math.min(W * 0.68, DESKTOP_HERO_H) : W * 0.68;
-const HEADER_TRIGGER = Math.round(HERO_H * 0.35);
 const HEADER_FADE_DISTANCE = 48;
-const CHAPTER_LIST_MAX_H = Math.min(SCREEN_H * 0.42, 400);
+
+/**
+ * Everything that depends on the window, read reactively.
+ *
+ * These were module-level `Dimensions.get('window')` constants, evaluated once
+ * when the bundle was first required and never again — no listener re-reads
+ * them anywhere in the app. The damage was not a slightly stale number: the
+ * desktop-vs-phone branch below was decided at bundle-evaluation time, so
+ * resizing across the 1000px breakpoint, or loading the tab in a window that
+ * was later resized, left the whole page in the wrong layout mode.
+ *
+ * W is the CONTENT width, not the window width. On desktop web the sidebar is a
+ * sibling of this column rather than an overlay, so anything sized off the raw
+ * window overflows by exactly SIDEBAR_WIDTH (232px).
+ */
+function useDetailMetrics() {
+  const { width: windowW, height: windowH } = useWindowDimensions();
+  return useMemo(() => {
+    const wide = isWideWeb(windowW);
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const HERO_H = wide ? Math.min(W * 0.68, DESKTOP_HERO_H) : W * 0.68;
+    return {
+      wide,
+      W,
+      HERO_H,
+      HEADER_TRIGGER: Math.round(HERO_H * 0.35),
+      CHAPTER_LIST_MAX_H: Math.min(windowH * 0.42, 400),
+    };
+  }, [windowW, windowH]);
+}
 const CHAPTER_ITEM_H = 64;
 
 type ChapterSort = 'oldest' | 'newest';
@@ -174,6 +200,7 @@ const SortIcon = ({ color, size = 14 }: { color: string; size?: number }) => (
 
 // ─── Skeleton loader ──────────────────────────────────────────────────────────
 function DetailSkeleton() {
+  const { W, HERO_H } = useDetailMetrics();
   const { colors } = useTheme();
   const pulse = useSharedValue(1);
   useEffect(() => {
@@ -454,6 +481,7 @@ const ChapterRow = memo(function ChapterRow({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function MangaDetail() {
+  const { wide, W, HERO_H, HEADER_TRIGGER, CHAPTER_LIST_MAX_H } = useDetailMetrics();
   const { id, source } = useLocalSearchParams<{ id: string; source?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -826,7 +854,7 @@ export default function MangaDetail() {
       // Cap and centre the body on desktop for the same reason as the CTA: a
       // synopsis and a chapter list run edge to edge across a 1920px window are
       // unreadable line lengths, and the page stops looking like a page.
-      ...(isWideWeb(W)
+      ...(wide
         ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH }
         : null),
     },
@@ -910,7 +938,7 @@ export default function MangaDetail() {
       // Centre and cap on desktop. Stretched edge to edge across a 1920px
       // window the button reads as a site-wide banner rather than an action
       // belonging to this title. Matches app/anime/[id].tsx.
-      ...(isWideWeb(W)
+      ...(wide
         ? { alignSelf: 'center', width: '100%', maxWidth: MAX_CONTENT_WIDTH, left: undefined, right: undefined }
         : null),
     },
@@ -1012,7 +1040,7 @@ export default function MangaDetail() {
       backgroundColor: colors.surfaceSecondary,
       overflow: 'hidden',
     },
-  }), [colors]);
+  }), [colors, wide, W, HERO_H]);
 
   const chaptersAsc = useMemo(
     () => [...chapters].sort((a, b) => a.number - b.number),

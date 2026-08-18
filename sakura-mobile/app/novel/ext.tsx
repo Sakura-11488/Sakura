@@ -3,13 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   TouchableOpacity,
   FlatList,
   Platform,
   type ListRenderItemInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { contentWidth, isWideWeb } from '@/constants/layout';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -56,12 +57,29 @@ import {
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import { isSakuraNovelPath } from '@/lib/sakura-novels';
 
-const { width: W, height: SCREEN_H } = Dimensions.get('window');
-const HERO_H = W * 0.68;
-/** Sticky bar fades in after ~35% of hero scroll (earlier than manga detail). */
-const HEADER_TRIGGER = Math.round(HERO_H * 0.35);
+/**
+ * Window-dependent metrics, read reactively rather than frozen at bundle
+ * evaluation. Same shape as the other three detail screens; see app/novel/[id].tsx
+ * for why the desktop cap exists.
+ */
+const DESKTOP_HERO_H = 560;
+
+function useDetailMetrics() {
+  const { width: windowW, height: windowH } = useWindowDimensions();
+  return useMemo(() => {
+    const wide = isWideWeb(windowW);
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const HERO_H = wide ? Math.min(W * 0.68, DESKTOP_HERO_H) : W * 0.68;
+    return {
+      wide,
+      W,
+      HERO_H,
+      HEADER_TRIGGER: Math.round(HERO_H * 0.35),
+      CHAPTER_LIST_MAX_H: Math.min(windowH * 0.42, 400),
+    };
+  }, [windowW, windowH]);
+}
 const HEADER_FADE_DISTANCE = 48;
-const CHAPTER_LIST_MAX_H = Math.min(SCREEN_H * 0.42, 400);
 const CHAPTER_ITEM_H = 64;
 
 type ChapterSort = 'oldest' | 'newest';
@@ -153,6 +171,7 @@ function SkeletonBox({ w, h, radius = 8, style: extra }: { w?: number | string; 
 }
 
 function DetailSkeleton({ onBack }: { onBack: () => void }) {
+  const { HERO_H } = useDetailMetrics();
   const { colors } = useTheme();
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -344,6 +363,7 @@ const ChapterRow = memo(function ChapterRow({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function NovelExtDetail() {
+  const { W, HERO_H, HEADER_TRIGGER, CHAPTER_LIST_MAX_H } = useDetailMetrics();
   const { path } = useLocalSearchParams<{ path: string }>();
   const router = useRouter();
   const { colors } = useTheme();
@@ -779,7 +799,7 @@ export default function NovelExtDetail() {
       backgroundColor: colors.surface,
     },
     dlOutlineText: { color: colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
-  }), [colors]);
+  }), [colors, W, HERO_H]);
 
   const chaptersAsc = useMemo(
     () =>
@@ -1090,7 +1110,9 @@ export default function NovelExtDetail() {
 }
 
 const s = StyleSheet.create({
-  heroContainer: { width: W, overflow: 'hidden' },
+  // '100%' rather than a frozen pixel width: the hero is full-bleed, so it
+  // fills its parent, and the parent is already width-correct.
+  heroContainer: { width: '100%', overflow: 'hidden' },
   heroCoverFallback: { backgroundColor: '#1a0a2e' },
   heroButtonsSafe: { position: 'absolute', top: 0, left: 0, right: 0 },
   heroButtons: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.md, paddingTop: 8 },

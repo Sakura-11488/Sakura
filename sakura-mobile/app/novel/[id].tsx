@@ -3,11 +3,13 @@ import {
   View,
   Text,
   StyleSheet,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
   TouchableOpacity,
   StatusBar,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { contentWidth, isWideWeb } from '@/constants/layout';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -43,9 +45,31 @@ import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import CommentsSection from '@/components/social/CommentsSection';
 // import CreatorTab from '@/components/ui/CreatorTab';
 
-const { width: W } = Dimensions.get('window');
-const HERO_H = W * 0.88;
-const HEADER_TRIGGER = HERO_H - 100;
+/**
+ * The only one of the four detail screens with no desktop branch at all.
+ *
+ * `W * 0.88` on a 1920px window is a ~1690px hero — taller than the viewport,
+ * so the title, the chapter list and the read button all sat below the fold and
+ * the page opened as a full-screen cover. manga and anime already capped at 560
+ * for exactly this; novels never got the same treatment.
+ *
+ * Reading it through a hook rather than a module constant matters twice over:
+ * the numbers follow a resize, and `isWideWeb` is no longer frozen at
+ * bundle-evaluation time, which is what pinned the whole page in one layout
+ * mode. W is the content width — the desktop sidebar is a sibling of this
+ * column, so raw window width overflows by SIDEBAR_WIDTH.
+ */
+const DESKTOP_HERO_H = 560;
+
+function useDetailMetrics() {
+  const { width: windowW } = useWindowDimensions();
+  return useMemo(() => {
+    const wide = isWideWeb(windowW);
+    const W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
+    const HERO_H = wide ? Math.min(W * 0.88, DESKTOP_HERO_H) : W * 0.88;
+    return { wide, W, HERO_H, HEADER_TRIGGER: HERO_H - 100 };
+  }, [windowW]);
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -101,6 +125,7 @@ const LockIcon = () => {
 
 // ─── Novel detail skeleton ────────────────────────────────────────────────────
 function NovelDetailSkeleton() {
+  const { W, HERO_H } = useDetailMetrics();
   const { colors } = useTheme();
   const pulse = useSharedValue(0.45);
 
@@ -438,6 +463,7 @@ function ChapterRow({
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NovelDetail() {
+  const { W, HERO_H, HEADER_TRIGGER } = useDetailMetrics();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { colors } = useTheme();
@@ -893,7 +919,7 @@ export default function NovelDetail() {
       fontFamily: Fonts.bodyMedium,
       color: colors.primary,
     },
-  }), [colors]);
+  }), [colors, W, HERO_H]);
 
   if (loading) return <NovelDetailSkeleton />;
 
