@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -53,7 +53,24 @@ type DiscoveryCard = { kind: string; id: string; title: string; image?: string; 
  */
 type Turn =
   | { role: 'user' | 'assistant'; content: string }
-  | { role: 'cards'; header: string; cards: DiscoveryCard[] };
+  | { role: 'cards'; header: string; cards: DiscoveryCard[] }
+  /**
+   * Shown to the reader, never sent back to the model.
+   *
+   * Errors used to be pushed in as `assistant` turns, and `history` is built
+   * from those — so after a 402 the next request carried an assistant message
+   * reading "Sakura AI is for holders and readers…" and the model would happily
+   * elaborate on its own error copy as though it had said it. app/ai.tsx always
+   * kept this split (errors to uiMessages, never chatHistory); the reader did
+   * not.
+   */
+  | { role: 'error'; content: string };
+
+/** The only turns that are conversation. Cards are a rendering of a tool result
+ *  the model already has, and errors are ours, not its. */
+function isSpeech(t: Turn): t is { role: 'user' | 'assistant'; content: string } {
+  return t.role === 'user' || t.role === 'assistant';
+}
 
 const SUGGESTIONS = [
   'Recap this chapter',
@@ -91,23 +108,87 @@ export default function ReaderAskSheet({
   const [thinking, setThinking] = useState('');
   const scrollRef = useRef<ScrollView>(null);
 
+  /**
+   * The transcript, mirrored in a ref.
+   *
+   * `setTurns(next)` built from the `turns` in scope is a snapshot
+   * replacement: anything appended while the request was in flight — a card row
+   * from a tool result, say — is silently overwritten by a list that predates
+   * it. Every mutation goes through `pushTurn`, which advances the ref
+   * synchronously, so a concurrent append can never lose a message.
+   */
+  const turnsRef = useRef<Turn[]>([]);
+  const pushTurn = useCallback((...added: Turn[]) => {
+    turnsRef.current = [...turnsRef.current, ...added];
+    setTurns(turnsRef.current);
+  }, []);
+  /**
+   * Bumped by every reset, captured by every send.
+   *
+   * A reset can land while a request is in flight — closing the sheet does it,
+   * and so does E13's navigation, which closes the sheet *because* the tool
+   * succeeded. Without this the reply arrives afterwards and is appended to the
+   * transcript it was supposed to have been discarded with, so reopening the
+   * sheet shows an orphan answer to a question that is no longer on screen —
+   * or, after a chapter jump, an answer about chapter 47 sitting under a
+   * chapter-52 header.
+   */
+  const genRef = useRef(0);
+  const resetTurns = useCallback(() => {
+    genRef.current += 1;
+    turnsRef.current = [];
+    setTurns([]);
+  }, []);
+
+  /** `busy` in the render closure is stale for two taps dispatched in one
+   *  batch — and the suggestion chips had no guard at all. */
+  const busyRef = useRef(false);
+
+  /**
+   * E10 — the transcript is per-open and per-chapter, which the doc comment
+   * claimed but nothing implemented. The sheet never unmounts, and
+   * goToAdjacentChapter uses router.replace precisely so the reader does *not*
+   * remount, so a chapter-47 conversation stayed on screen — and kept being
+   * resent as history — while the context block said chapter 52. Worse if
+   * spoilers were on earlier: that content sits in the transcript under a fresh
+   * SPOILER GUARD: ON header.
+   */
+  useEffect(() => {
+    if (!visible) resetTurns();
+  }, [visible, resetTurns]);
+
+  useEffect(() => {
+    resetTurns();
+  }, [context.chapterId, context.seriesId, resetTurns]);
+
   const subtitle = describeContext(context);
 
   const ask = useCallback(
     async (question: string) => {
       const trimmed = question.trim();
-      if (!trimmed || busy) return;
+      if (!trimmed || busyRef.current) return;
+      busyRef.current = true;
+      const gen = genRef.current;
 
       setInput('');
-      const next: Turn[] = [...turns, { role: 'user', content: trimmed }];
-      setTurns(next);
+      pushTurn({ role: 'user', content: trimmed });
       setBusy(true);
       setThinking('');
       requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
 
+      /**
+       * E12 — cards are held until the reply arrives.
+       *
+       * Tool results come back mid-turn and the framing sentence only in the
+       * final hop, so appending cards as they arrive put them *above* the
+       * sentence introducing them: question → cards → "here are a few you might
+       * like". Buffering costs nothing and reads correctly.
+       */
+      const pendingCards: Turn[] = [];
+
       try {
-        const history: ChatMessage[] = next
-          .filter((t): t is { role: 'user' | 'assistant'; content: string } => t.role !== 'cards')
+        const history: ChatMessage[] = turnsRef.current
+          .filter(isSpeech)
           .map((t) => ({ role: t.role, content: t.content }));
         const reply = await sendChatMessage(
           history,
@@ -117,12 +198,28 @@ export default function ReaderAskSheet({
               setThinking(labelForTool(name));
               return;
             }
+            /**
+             * E13 — a navigation that succeeded must not happen behind the
+             * sheet.
+             *
+             * Only the reader's own chapter branch used to close it, so
+             * `target: 'series'` and every tab target pushed a route while the
+             * modal still covered the screen: nothing appeared to happen, and
+             * backing out returned to the chapter the user started on. This
+             * callback sees the result of *every* tool call — the reader's
+             * dispatchExtra and the shared dispatcher alike — so it is the one
+             * place that covers all targets. Gated on ok, so a refusal
+             * ("Chapter 47 isn't in this series' list") stays on screen.
+             */
+            if (name === 'open_in_app' && (result as { ok?: boolean })?.ok === true) onClose();
+
             const cards = (result as { cards?: DiscoveryCard[]; header?: string })?.cards;
             if (Array.isArray(cards) && cards.length > 0) {
-              setTurns((prev) => [
-                ...prev,
-                { role: 'cards', header: (result as { header?: string }).header || '', cards: cards.slice(0, 8) },
-              ]);
+              pendingCards.push({
+                role: 'cards',
+                header: (result as { header?: string }).header || '',
+                cards: cards.slice(0, 8),
+              });
             }
           },
           undefined, // no confirmation flow: the reader never gets money tools
@@ -136,21 +233,25 @@ export default function ReaderAskSheet({
             dispatchExtra,
           },
         );
-        setTurns((prev) => [...prev, { role: 'assistant', content: reply }]);
+        // Sentence first, then the cards it introduces — and only if this
+        // conversation is still the one on screen.
+        if (genRef.current === gen) pushTurn({ role: 'assistant', content: reply }, ...pendingCards);
       } catch (e: any) {
         // SakuraAiError already carries the server's own wording — the gate
         // copy, the retry hint. Rewriting it here would bury the one sentence
-        // that tells the user what to do.
+        // that tells the user what to do. It goes in as an `error` turn so it
+        // is shown but never replayed to the model as its own speech.
         const content =
           e instanceof SakuraAiError ? e.message : `Something went wrong: ${e?.message ?? 'unknown error'}`;
-        setTurns((prev) => [...prev, { role: 'assistant', content }]);
+        if (genRef.current === gen) pushTurn({ role: 'error', content });
       } finally {
+        busyRef.current = false;
         setBusy(false);
         setThinking('');
         requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
       }
     },
-    [busy, turns, walletAddress, context, allowSpoilers, dispatchExtra],
+    [walletAddress, context, allowSpoilers, dispatchExtra, pushTurn, onClose],
   );
 
   return (
@@ -255,6 +356,13 @@ export default function ReaderAskSheet({
                           </TouchableOpacity>
                         ))}
                       </ScrollView>
+                    </View>
+                  ) : t.role === 'error' ? (
+                    <View
+                      key={i}
+                      style={[s.bubble, s.aiBubble, s.errorBubble, { borderColor: ACCENT }]}
+                    >
+                      <Text style={[s.bubbleText, { color: colors.textSecondary }]}>{t.content}</Text>
                     </View>
                   ) : (
                     <View
@@ -384,6 +492,7 @@ const s = StyleSheet.create({
   userBubble: { alignSelf: 'flex-end', borderBottomRightRadius: 6 },
   aiBubble: { alignSelf: 'flex-start', borderBottomLeftRadius: 6 },
   bubbleText: { fontSize: FontSize.sm, lineHeight: 20 },
+  errorBubble: { borderWidth: 1, backgroundColor: 'transparent' },
   cardRowWrap: { gap: 6 },
   cardHeader: { fontSize: FontSize.xs },
   cardRow: { gap: 10, paddingRight: 8 },

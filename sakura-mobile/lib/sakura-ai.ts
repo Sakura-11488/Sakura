@@ -297,7 +297,18 @@ async function dispatchTool(
             error: 'Opening a specific chapter only works from inside the reader.',
           };
         }
-        router.push({ pathname: '/chapter/[id]', params: { id: chapterId } } as never);
+        // The reader's route id is `mangaId~chapterId`, not a bare chapter id.
+        // Pushing the bare one opened a blank reader while this returned
+        // ok: true — the model then told the user it had taken them there.
+        // `seriesId` was already being computed here and simply not used.
+        if (!seriesId) {
+          return {
+            ok: false,
+            error: "I don't know which series that chapter belongs to.",
+          };
+        }
+        const routeId = `${seriesId}~${chapterId}`;
+        router.push({ pathname: '/chapter/[id]', params: { id: routeId } } as never);
         return { ok: true, opened: 'chapter', chapter_id: chapterId };
       }
 

@@ -1461,7 +1461,9 @@ export default function ChapterReader() {
   const askDispatch = useCallback(
     async (name: string, args: Record<string, any>) => {
       if (name !== 'open_in_app') return undefined;
-      if (String(args.target) !== 'chapter') return undefined; // shared dispatcher handles tabs
+      // Non-chapter targets fall through to the shared dispatcher, and
+      // ReaderAskSheet closes the sheet on any open_in_app that reports ok.
+      if (String(args.target) !== 'chapter') return undefined;
 
       const wanted = Number(args.chapter_number);
       const target = args.chapter_id
