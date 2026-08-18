@@ -112,6 +112,7 @@ function TipModal({
         receiverWallet,
         amount: selected,
         txid,
+        keypair: kp, // already unlocked for the tip; avoids a second biometric
       });
       showCelebration({
         role: 'sent',

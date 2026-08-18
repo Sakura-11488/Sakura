@@ -129,14 +129,11 @@ export async function registerCreator(input: {
   const available = await isUsernameAvailable(input.username);
   if (!available) throw new Error('That username is already taken.');
 
-  const now = new Date().toISOString();
   const displayName = input.displayName.trim() || input.username.trim();
   const bio = input.bio.trim();
 
-  await upsertProfile(input.walletAddress, displayName, bio || null);
-
-  // Handle claim goes with the profile write — one signed call, server-owned
-  // uniqueness. Re-running with the same handle is a no-op rather than an error.
+  // One signed call carries the profile and the handle claim together. The
+  // server owns uniqueness; re-running with the same handle is a no-op.
   await upsertProfile(input.walletAddress, displayName, bio || null, null, input.username.trim());
 }
 
@@ -145,23 +142,13 @@ export async function updateCreatorProfile(input: {
   displayName: string;
   bio: string;
 }): Promise<void> {
-  const now = new Date().toISOString();
+  // upsert-profile syncs display_name onto the handle row too, so this is the
+  // whole operation.
   await upsertProfile(
     input.walletAddress,
     input.displayName.trim() || null,
     input.bio.trim() || null,
   );
-
-  const { data: usernameRow } = await supabase
-    .from('sakura_usernames')
-    .select('username')
-    .eq('wallet_address', input.walletAddress)
-    .maybeSingle();
-
-  // upsert-profile already synced display_name onto the handle row, so there
-  // is nothing left to do here. Kept as a lookup only because callers below
-  // still read usernameRow.
-  void usernameRow;
 }
 
 export async function getCreatorWorks(walletAddress: string): Promise<CreatorWork[]> {
