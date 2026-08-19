@@ -48,7 +48,7 @@ import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
 import { contentWidth, isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 import CreatorTab from '@/components/ui/CreatorTab';
-import { getSakuraOriginalAuthor } from '@/lib/sakura-originals';
+import { getSakuraOriginalAuthor, isSakuraOriginal } from '@/lib/sakura-originals';
 
 /**
  * Hero height.
@@ -357,6 +357,7 @@ function EpisodeRow({
   offline,
   onPress,
   onDownload,
+  downloadable,
 }: {
   ep: AnimeEpisode;
   cover?: string;
@@ -364,6 +365,8 @@ function EpisodeRow({
   offline?: OfflineEpisode | null;
   onPress: () => void;
   onDownload: () => void;
+  /** False on web for sources a browser cannot fetch; the button explains itself. */
+  downloadable: boolean;
 }) {
   const { colors } = useTheme();
   const epS = useMemo(() => StyleSheet.create({
@@ -457,28 +460,37 @@ function EpisodeRow({
         )}
       </View>
       {/*
-        Native only. Anime cannot be downloaded on web at all: the HLS CDN 403s
-        without a Referer, which is a forbidden header name that fetch silently
-        drops, and it sends no CORS header. Worse than failing, it used to
-        SUCCEED into nothing — web/shims/expo-file-system-legacy.ts backs
-        FileSystem with localStorage and its downloadAsync did response.text()
-        on binary segments, so tapping this wrote mojibake into the same ~5MB
-        localStorage budget that lib/kv-store.ts uses for reading progress, and
-        left a stuck "downloading" row that survived a reload.
+        On web this depends on the SOURCE, not the platform.
+
+        Sakura Originals are progressive MP4/MOV files served same-origin
+        through /api/media-proxy/ with CORS and Range, so a browser can fetch
+        them like any other file. Third-party streamed episodes cannot be
+        fetched at all: their CDN 403s without a `Referer`, and `Referer` is a
+        forbidden request header name, so fetch silently drops it.
+
+        The button stays visible either way and the press path explains the
+        refusal, because a control that vanishes teaches the user nothing. It
+        is the guard in lib/anime-offline.web.ts that produces the message, so
+        the Downloads screen\u2019s retry path is covered too.
+
+        (It previously used to SUCCEED into nothing on web: the filesystem shim
+        was localStorage-backed and its downloadAsync ran response.text() over
+        binary. That shim now throws.)
       */}
-      {Platform.OS !== 'web' ? (
-        <TouchableOpacity
-          onPress={(e) => {
-            e.stopPropagation?.();
-            onDownload();
-          }}
-          style={epS.dlBtn}
-          hitSlop={8}
-          disabled={offline?.status === 'ready'}
-        >
-          <DownloadIcon color={colors.text} size={16} />
-        </TouchableOpacity>
-      ) : null}
+      <TouchableOpacity
+        onPress={(e) => {
+          e.stopPropagation?.();
+          onDownload();
+        }}
+        style={[epS.dlBtn, !downloadable && { opacity: 0.35 }]}
+        hitSlop={8}
+        disabled={offline?.status === 'ready'}
+        accessibilityLabel={
+          downloadable ? 'Download episode' : 'Download unavailable in the browser'
+        }
+      >
+        <DownloadIcon color={colors.text} size={16} />
+      </TouchableOpacity>
     </TouchableOpacity>
   );
 }
@@ -1056,6 +1068,10 @@ export default function AnimeDetail() {
                 episodes.map((ep, i) => (
                   <Animated.View key={ep.id} entering={FadeInDown.delay(i < 8 ? i * 35 : 0).duration(280)}>
                     <EpisodeRow
+                      // Native can fetch anything; on web only Sakura
+                      // Originals are reachable, because everything else is
+                      // a third-party HLS stream behind a Referer check.
+                      downloadable={Platform.OS !== 'web' || isSakuraOriginal(String(id))}
                       ep={ep}
                       cover={anime.localCover ? undefined : (anime.cover || anime.image)}
                       progress={watchProgress?.episodeId === ep.id ? watchProgress.progress : undefined}

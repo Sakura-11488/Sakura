@@ -305,14 +305,43 @@ export default function AnimeWatch() {
         }
       }
 
-      // Sakura Originals — stream directly via native video player
       const {
         fetchSakuraOriginalInfo,
         getSakuraOriginalEmbedUrl,
         isSakuraOriginal,
         resolveSakuraOriginalStreamUrl,
       } = await import('@/lib/sakura-originals');
-      if (isSakuraOriginal(String(id))) {
+      const isOriginal = isSakuraOriginal(String(id));
+
+      /**
+       * A downloaded copy wins over the network, for every source.
+       *
+       * This lookup used to sit BELOW the Sakura Originals branch, which
+       * returns as soon as it resolves a stream URL — so a downloaded Original
+       * was written to disk, listed in Downloads, opened with `offline: '1'`,
+       * and then streamed from the network anyway. The file was written and
+       * never once read. Offline, the user got a playback error with a perfect
+       * copy sitting on their device.
+       *
+       * That was a native bug too, not just a web one.
+       */
+      const cached = await getOfflinePlaybackUri(String(id), ep).catch(() => null);
+      if (cancelled) return;
+      if (cached) {
+        setLocalUri(cached);
+        // Metadata has to come from the right backend: fetchAnimeInfo is the
+        // Consumet call and returns nothing for an Originals id.
+        const info = await (isOriginal
+          ? fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 })
+          : fetchAnimeInfo(id)
+        ).catch(() => null);
+        if (info) setAnime(info);
+        setLoading(false);
+        return;
+      }
+
+      // Sakura Originals — stream directly via native video player
+      if (isOriginal) {
         const info = await fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 });
         if (info) setAnime(info);
 
@@ -331,16 +360,6 @@ export default function AnimeWatch() {
           setLoading(false);
           return;
         }
-      }
-
-      const cached = await getOfflinePlaybackUri(String(id), ep).catch(() => null);
-      if (cancelled) return;
-      if (cached) {
-        setLocalUri(cached);
-        const info = await fetchAnimeInfo(id).catch(() => null);
-        if (info) setAnime(info);
-        setLoading(false);
-        return;
       }
 
       if (forceOffline) {

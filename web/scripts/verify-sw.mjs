@@ -22,6 +22,15 @@ const check = (name, ok, detail) => {
 const store = new Map(); // cacheName -> Map(url -> Response-ish)
 const deleted = [];
 
+// Minimal Blob stand-in: the worker slices cached bodies to serve Range
+// requests, so the mock has to support the same two operations the real one
+// does — .size and .slice(start, end, type).
+class FakeBlob {
+  constructor(text, type) { this.text = text; this.type = type || ''; }
+  get size() { return this.text.length; }
+  slice(start, end, type) { return new FakeBlob(this.text.slice(start, end), type); }
+}
+
 class FakeResponse {
   constructor(body, init = {}) {
     this.body = body;
@@ -29,6 +38,20 @@ class FakeResponse {
     this.statusText = init.statusText ?? '';
     this.ok = this.status >= 200 && this.status < 300;
     this.headers = new Map(Object.entries(init.headers || {}));
+    // Header lookup is case-insensitive in the real thing.
+    const raw = this.headers;
+    this.headers = {
+      get: (k) => {
+        for (const [hk, hv] of raw) if (hk.toLowerCase() === String(k).toLowerCase()) return hv;
+        return null;
+      },
+    };
+  }
+  async blob() {
+    return new FakeBlob(
+      typeof this.body === 'string' ? this.body : String(this.body ?? ''),
+      this.headers.get('Content-Type') || '',
+    );
   }
   clone() { return new FakeResponse(this.body, { status: this.status, statusText: this.statusText }); }
 }
@@ -94,7 +117,8 @@ check('an unrecognised cache is left alone', store.has('some-other-app-cache'),
 async function doFetch(url, mode = 'no-cors') {
   let responded;
   const event = {
-    request: { url, method: 'GET', mode },
+    // A real Request always has headers; the worker reads Range off it.
+    request: { url, method: 'GET', mode, headers: { get: () => null } },
     respondWith: (p) => { responded = p; },
   };
   await handlers.fetch(event);
@@ -111,6 +135,51 @@ const miss = await doFetch('https://sakuraonseeker.com/app/__offline/manhwa/nope
 check('a missing page is an honest 404', miss && miss.status === 404,
   'a network fallback here would 200 with the SPA shell and render as a broken image');
 check('a missing page makes no network request', networkCalls === before);
+
+// ── Rule 3: Range, for downloaded video ─────────────────────────────────────
+// A <video> seeks by asking for byte ranges. Returning the stored 200 verbatim
+// let it play from the start but never seek.
+const VID = "https://sakuraonseeker.com/app/__offline/anime/show/ep1";
+store.get('sakura-offline-v1').set(VID, new FakeResponse('0123456789', {
+  headers: { 'Content-Type': 'video/mp4' },
+}));
+
+async function rangeFetch(url, range) {
+  let responded;
+  const headers = new Map(range ? [['range', range]] : []);
+  const event = {
+    request: { url, method: 'GET', mode: 'no-cors', headers: { get: (k) => headers.get(k.toLowerCase()) ?? null } },
+    respondWith: (p) => { responded = p; },
+  };
+  await handlers.fetch(event);
+  return responded ? await responded : null;
+}
+
+const noRange = await rangeFetch(VID, null);
+check('no Range header still returns the whole 200', noRange && noRange.status === 200,
+  'images take this path and must be untouched');
+
+const partial = await rangeFetch(VID, 'bytes=2-5');
+check('a Range request gets 206', partial && partial.status === 206, 'got ' + (partial && partial.status));
+check('206 carries a correct Content-Range',
+  partial && partial.headers.get('Content-Range') === 'bytes 2-5/10',
+  partial && partial.headers.get('Content-Range'));
+check('206 preserves the stored Content-Type',
+  partial && partial.headers.get('Content-Type') === 'video/mp4');
+
+const suffix = await rangeFetch(VID, 'bytes=-3');
+check('suffix ranges resolve from the end',
+  suffix && suffix.headers.get('Content-Range') === 'bytes 7-9/10',
+  suffix && suffix.headers.get('Content-Range'));
+
+const past = await rangeFetch(VID, 'bytes=99-200');
+check('a range past the end is 416, not a lie', past && past.status === 416,
+  'a 206 with no bytes would look like a corrupt file to the player');
+
+const openEnded = await rangeFetch(VID, 'bytes=8-');
+check('an open-ended range runs to the last byte',
+  openEnded && openEnded.headers.get('Content-Range') === 'bytes 8-9/10',
+  openEnded && openEnded.headers.get('Content-Range'));
 
 const other = await doFetch('https://sakuraonseeker.com/api/media-proxy/?path=%2Fx', 'cors');
 check('unrelated requests are not intercepted', other === null,

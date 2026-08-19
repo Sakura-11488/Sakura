@@ -31,7 +31,22 @@ export const OFFLINE_PREFIX = '/app/__offline/';
 export const IMAGE_MANIFEST_URL = `${OFFLINE_PREFIX}manifest.json`;
 export const NOVEL_MANIFEST_URL = `${OFFLINE_PREFIX}novel-manifest.json`;
 
+export const ANIME_MANIFEST_URL = `${OFFLINE_PREFIX}anime-manifest.json`;
+
 const NOVEL_PREFIX = `${OFFLINE_PREFIX}novel/`;
+const ANIME_PREFIX = `${OFFLINE_PREFIX}anime/`;
+
+/**
+ * Same-origin URL for one downloaded episode.
+ *
+ * Deliberately carries NO file extension. components/anime/WebVideoPlayer.web.tsx
+ * routes to hls.js when the URL looks like a playlist, and an extension-less URL
+ * falls through to the plain <video> path — which is what a progressive MP4
+ * wants. The content type comes from the stored Response's own headers.
+ */
+export function offlineEpisodeUrl(animeId: string, episodeId: string): string {
+  return `${ANIME_PREFIX}${encodeURIComponent(animeId)}/${encodeURIComponent(episodeId)}`;
+}
 
 /** Same-origin URL for one downloaded page. The service worker serves these. */
 export function offlinePageUrl(

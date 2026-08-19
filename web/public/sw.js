@@ -78,11 +78,67 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       (async () => {
         const cache = await caches.open(LIBRARY_CACHE);
+        // Match on the URL STRING, not the Request. cache.match(req) would take
+        // the Range header into account and miss every time.
         const hit = await cache.match(req.url);
-        if (hit) return hit;
-        // 404 rather than a network attempt, so the reader's own fallback runs
-        // and the user gets the online page instead of a broken image.
-        return new Response('Not downloaded', { status: 404, statusText: 'Not downloaded' });
+        if (!hit) {
+          // 404 rather than a network attempt, so the reader's own fallback
+          // runs and the user gets the online page instead of a broken image.
+          return new Response('Not downloaded', { status: 404, statusText: 'Not downloaded' });
+        }
+
+        /**
+         * Range support, for downloaded video.
+         *
+         * Images never send a Range header, so they take the early return below
+         * and behave exactly as before. Video is different: a <video> element
+         * asks for byte ranges to seek, and returning the stored 200 verbatim
+         * meant the browser could play from the start but could not seek at
+         * all — measured on a 43s clip, seeking to 34.74s left currentTime at
+         * 0.00 and buffered stuck at [0, 14.195]. Safari is stricter still and
+         * may refuse a media response that ignores Range outright.
+         */
+        const range = req.headers.get('range');
+        if (!range) return hit;
+
+        const blob = await hit.blob();
+        const size = blob.size;
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (!m) return hit;
+
+        const unsatisfiable = () =>
+          new Response(null, {
+            status: 416,
+            statusText: 'Range Not Satisfiable',
+            headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' },
+          });
+
+        let start;
+        let end;
+        if (m[1] === '') {
+          // Suffix form: the last N bytes.
+          const n = parseInt(m[2], 10);
+          if (!Number.isFinite(n) || n <= 0) return unsatisfiable();
+          start = Math.max(0, size - n);
+          end = size - 1;
+        } else {
+          start = parseInt(m[1], 10);
+          end = m[2] === '' ? size - 1 : Math.min(parseInt(m[2], 10), size - 1);
+        }
+        if (!Number.isFinite(start) || start > end || start >= size) return unsatisfiable();
+
+        const type = hit.headers.get('Content-Type') || 'application/octet-stream';
+        const slice = blob.slice(start, end + 1, type);
+        return new Response(slice, {
+          status: 206,
+          statusText: 'Partial Content',
+          headers: {
+            'Content-Type': type,
+            'Content-Length': String(slice.size),
+            'Content-Range': `bytes ${start}-${end}/${size}`,
+            'Accept-Ranges': 'bytes',
+          },
+        });
       })(),
     );
     return;
