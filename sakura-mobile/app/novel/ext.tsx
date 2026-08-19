@@ -35,8 +35,7 @@ import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
 import { Toast } from '@/components/ui/Toast';
 import { playTap, onTap } from '@/lib/sound';
-import { parseNovelDetail, parseChapterContent, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
-import { saveTextFile } from '@/lib/web-download';
+import { parseNovelDetail, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
 import { Library } from '@/lib/storage';
 import {
   downloadNovelChapter,
@@ -492,20 +491,12 @@ export default function NovelExtDetail() {
   const handleDownloadChapter = useCallback(async (ch: AllNovelChapter) => {
     if (!detail) return;
     playTap();
-    // Web has no offline store — save the chapter text straight to the browser's
-    // downloads as a .txt file instead of writing to the (null) filesystem.
-    if (Platform.OS === 'web') {
-      setToast('Preparing chapter…');
-      try {
-        const content = await parseChapterContent(ch.path);
-        if (!content?.trim()) throw new Error('Chapter has no content.');
-        saveTextFile(`${detail.name} - ${ch.name}`, content);
-        setToast('Chapter saved to your device');
-      } catch (e) {
-        setToast(e instanceof Error ? e.message : 'Download failed');
-      }
-      return;
-    }
+    // Web and native share this path. On web, downloadNovelChapter resolves to
+    // lib/novel-offline.web.ts, which stores the chapter text in Cache Storage
+    // — so the chapter is readable in the app offline rather than being dumped
+    // into the browser's Downloads folder as a .txt the app can never reopen.
+    // Batch download, pause/resume and the Downloads screen come with it,
+    // because the web store exports the same surface as the native one.
     const existing = offlineMap[ch.path];
     if (existing?.status === 'ready') {
       setToast('Chapter already downloaded');
@@ -1090,7 +1081,14 @@ export default function NovelExtDetail() {
               }
               onPress={() => openChapter(playChapter, canContinueNovel && !!resumeChapter)}
             />
-            {detail.chapters.length > 0 && Platform.OS !== 'web' && (
+            {/*
+              Available on web too now. This was hidden because web had no
+              offline store and the button would have fired one browser file
+              download per chapter. A novel chapter is ~8KB, so a whole book is
+              roughly 20MB — the storage ceiling that keeps image downloads to
+              one chapter at a time simply does not bite here.
+            */}
+            {detail.chapters.length > 0 && (
               <TouchableOpacity
                 style={dynS.dlOutlineBtn}
                 activeOpacity={0.85}
