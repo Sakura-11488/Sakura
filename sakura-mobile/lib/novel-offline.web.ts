@@ -1,4 +1,9 @@
 import { parseChapterContent } from '@/lib/allnovel';
+import {
+  NOVEL_MANIFEST_URL,
+  offlineNovelUrl,
+  openOfflineLibrary,
+} from '@/lib/offline-cache-keys';
 
 /**
  * Offline novel library on web.
@@ -44,10 +49,9 @@ export interface OfflineNovelChapter {
 
 // Same cache as the image library, so there is exactly one store to protect
 // from the service worker's activate sweep (see web/public/sw.js — it deletes
-// only `sakura-shell-*`).
-const LIBRARY_CACHE = 'sakura-offline-v1';
-const NOVEL_PREFIX = '/app/__offline/novel/';
-const MANIFEST_URL = '/app/__offline/novel-manifest.json';
+// only `sakura-shell-*`). Keys come from lib/offline-cache-keys.ts so the
+// exporter reads exactly what this writes.
+const MANIFEST_URL = NOVEL_MANIFEST_URL;
 
 type Manifest = { chapters: Record<string, OfflineNovelChapter> };
 
@@ -108,18 +112,8 @@ function chapterKey(novelPath: string, chapterPath: string) {
   return `${novelPath}::${chapterPath}`;
 }
 
-function contentUrl(novelPath: string, chapterPath: string): string {
-  return `${NOVEL_PREFIX}${encodeURIComponent(novelPath)}/${encodeURIComponent(chapterPath)}`;
-}
-
-async function openLibrary(): Promise<Cache | null> {
-  if (typeof caches === 'undefined') return null;
-  try {
-    return await caches.open(LIBRARY_CACHE);
-  } catch {
-    return null;
-  }
-}
+const contentUrl = offlineNovelUrl;
+const openLibrary = openOfflineLibrary;
 
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;

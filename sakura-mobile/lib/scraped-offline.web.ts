@@ -1,5 +1,10 @@
 import { SCRAPED_SOURCES, type ScrapedSource } from '@/lib/scraped-sources';
 import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
+import {
+  IMAGE_MANIFEST_URL,
+  offlinePageUrl,
+  openOfflineLibrary,
+} from '@/lib/offline-cache-keys';
 
 /**
  * Offline library for the droplet-scraped image sources, on web.
@@ -51,9 +56,10 @@ export interface OfflineScrapedChapter {
   bytes?: number;
 }
 
-const LIBRARY_CACHE = 'sakura-offline-v1';
-const OFFLINE_PREFIX = '/app/__offline/';
-const MANIFEST_URL = '/app/__offline/manifest.json';
+// Cache name and URL scheme live in lib/offline-cache-keys.ts so the exporter
+// reads exactly what this writes. A drift between them is invisible: the
+// write succeeds, the read misses, and the user is told they have nothing.
+const MANIFEST_URL = IMAGE_MANIFEST_URL;
 
 /**
  * The droplet's whole direct-fetch budget is 6 across all clients, on a
@@ -86,29 +92,8 @@ function chapterKey(source: ScrapedSource, contentId: string, chapterId: string)
   return `${source}:${contentId}:${chapterId}`;
 }
 
-/** Same-origin URL for one page. The service worker serves these. */
-function pageUrl(
-  source: ScrapedSource,
-  contentId: string,
-  chapterId: string,
-  index: number,
-): string {
-  const seg = [source, contentId, chapterId].map(encodeURIComponent).join('/');
-  return `${OFFLINE_PREFIX}${seg}/${String(index).padStart(4, '0')}`;
-}
-
-function cacheAvailable(): boolean {
-  return typeof caches !== 'undefined' && typeof fetch !== 'undefined';
-}
-
-async function openLibrary(): Promise<Cache | null> {
-  if (!cacheAvailable()) return null;
-  try {
-    return await caches.open(LIBRARY_CACHE);
-  } catch {
-    return null;
-  }
-}
+const pageUrl = offlinePageUrl;
+const openLibrary = openOfflineLibrary;
 
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;

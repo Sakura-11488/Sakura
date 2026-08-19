@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { confirmDestructive } from '@/lib/confirm-alert';
+import { CAN_EXPORT_OFFLINE, exportDownloadedChapter, type ExportTarget } from '@/lib/offline-export';
 import {
   Platform,
   View,
@@ -63,6 +64,14 @@ type DownloadRow =
   | { kind: 'novel'; data: OfflineNovelChapter }
   | { kind: 'scraped'; data: OfflineScrapedChapter };
 
+/** Stable per-row identity, so only the row being saved shows progress. */
+function rowKey(row: DownloadRow): string {
+  if (row.kind === 'anime') return `anime:${row.data.animeId}:${row.data.episodeId}`;
+  if (row.kind === 'manga') return `manga:${row.data.mangaId}:${row.data.chapterId}`;
+  if (row.kind === 'scraped') return `${row.data.source}:${row.data.mangaId}:${row.data.chapterId}`;
+  return `novel:${row.data.novelPath}:${row.data.chapterPath}`;
+}
+
 function BackIcon({ color }: { color: string }) {
   return (
     <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
@@ -79,6 +88,9 @@ export default function DownloadsScreen() {
   // Web only. Whether the browser has granted durable storage for this
   // origin, which decides which of the two honest sentences the header shows.
   const [persistedStorage, setPersistedStorage] = useState(false);
+  /** Row currently being written out, so its button can show progress. */
+  const [saving, setSaving] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -228,6 +240,49 @@ export default function DownloadsScreen() {
       }),
     [colors],
   );
+
+  /**
+   * Write a durable copy to the browser's Downloads folder.
+   *
+   * The library copy lives in Cache Storage and the browser may reclaim it;
+   * a file in Downloads sits outside the quota system and cannot be evicted.
+   * Costs no network — every byte is already on the device.
+   */
+  const saveCopy = (row: DownloadRow) => {
+    // Narrow before building the target rather than casting: only these two
+    // kinds are stored in Cache Storage, so only these two can be read back.
+    if (row.kind !== 'novel' && row.kind !== 'scraped') return;
+    playTap();
+
+    const target: ExportTarget =
+      row.kind === 'novel'
+        ? {
+            kind: 'novel',
+            novelPath: row.data.novelPath,
+            chapterPath: row.data.chapterPath,
+            label: `${row.data.title} - ${row.data.chapterTitle}`,
+          }
+        : {
+            kind: 'scraped',
+            source: row.data.source,
+            contentId: row.data.mangaId,
+            chapterId: row.data.chapterId,
+            pageCount: row.data.pageCount,
+            label: `${row.data.title} - Ch ${row.data.chapterNumber}`,
+          };
+
+    setSaving(rowKey(row));
+    void (async () => {
+      try {
+        const res = await exportDownloadedChapter(target);
+        setNotice(`Saved ${res.filename} to your Downloads folder`);
+      } catch (e) {
+        setNotice(e instanceof Error ? e.message : 'Could not save a copy');
+      } finally {
+        setSaving(null);
+      }
+    })();
+  };
 
   const confirmDelete = (row: DownloadRow) => {
     const label =
@@ -478,9 +533,29 @@ export default function DownloadsScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
-            <Text style={styles.deleteText}>Delete</Text>
-          </TouchableOpacity>
+          <View style={styles.rowActions}>
+            {/*
+              Web only, and only for the kinds stored in Cache Storage. The
+              library copy can be reclaimed by the browser; this writes a file
+              to the Downloads folder, which cannot. Costs no network — the
+              bytes are already on the device.
+            */}
+            {CAN_EXPORT_OFFLINE && row.data.status === 'ready' &&
+            (row.kind === 'scraped' || row.kind === 'novel') ? (
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                onPress={() => saveCopy(row)}
+                disabled={saving === rowKey(row)}
+              >
+                <Text style={[styles.deleteText, { color: colors.primary }]}>
+                  {saving === rowKey(row) ? 'Saving…' : 'Save a copy'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </TouchableOpacity>
     );
@@ -507,6 +582,11 @@ export default function DownloadsScreen() {
         here would be the kind of lie that only surfaces when a user is offline
         and their chapter has quietly vanished.
       */}
+      {notice ? (
+        <Text style={[styles.sub, { color: colors.primary }]} onPress={() => setNotice('')}>
+          {notice}
+        </Text>
+      ) : null}
       {Platform.OS === 'web' ? (
         <Text style={[styles.sub, { opacity: 0.7 }]}>
           {persistedStorage
