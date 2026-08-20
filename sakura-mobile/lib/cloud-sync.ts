@@ -27,6 +27,44 @@ function debouncedPush(key: string, fn: () => Promise<void>, delay = 2500) {
   }, delay);
 }
 
+/**
+ * Cloud rows are untrusted input, not our own data coming home.
+ *
+ * `user_library`, `anime_history` and `manga_progress` each carry a single
+ * `FOR ALL … USING (true)` policy, so until every write moves behind a
+ * signature-verified function, any holder of the anon key that ships in the
+ * public bundle can put arbitrary JSON in another wallet's row. These pulls
+ * used to cast that straight into `LibraryItem[]` and merge it into local
+ * storage — stored client-side injection, and completely silent.
+ *
+ * Validating here is worth keeping even after the writes are locked down: a
+ * malformed row from an old client version should be dropped, not merged.
+ */
+function keepValid<T>(value: unknown, isValid: (entry: unknown) => boolean): T[] {
+  if (!Array.isArray(value)) return [];
+  // Drop bad entries rather than rejecting the whole payload, so one corrupt
+  // row cannot cost the user their entire synced library.
+  return value.filter(isValid) as T[];
+}
+
+const isLibraryItem = (e: unknown): boolean => {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as Record<string, unknown>;
+  return (
+    typeof o.id === 'string' &&
+    o.id.length > 0 &&
+    o.id.length < 512 &&
+    typeof o.title === 'string' &&
+    (o.type === 'anime' || o.type === 'manga' || o.type === 'novel')
+  );
+};
+
+const isWatchProgress = (e: unknown): boolean => {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as Record<string, unknown>;
+  return typeof o.animeId === 'string' && o.animeId.length > 0 && o.animeId.length < 512;
+};
+
 // ─── Library ──────────────────────────────────────────────────────────────────
 export async function pushLibrary(wallet: string): Promise<void> {
   if (!wallet) return;
@@ -39,8 +77,8 @@ export async function pushLibrary(wallet: string): Promise<void> {
 export async function pullLibrary(wallet: string): Promise<void> {
   if (!wallet) return;
   const { data } = await supabase.from('user_library').select('data').eq('wallet_address', wallet).maybeSingle();
-  const cloud = (data?.data as LibraryItem[] | undefined) || [];
-  if (Array.isArray(cloud) && cloud.length) await Library.mergeAll(cloud);
+  const cloud = keepValid<LibraryItem>(data?.data, isLibraryItem);
+  if (cloud.length) await Library.mergeAll(cloud);
 }
 
 // ─── Anime watch progress ─────────────────────────────────────────────────────
@@ -55,8 +93,8 @@ export async function pushWatchProgress(wallet: string): Promise<void> {
 export async function pullWatchProgress(wallet: string): Promise<void> {
   if (!wallet) return;
   const { data } = await supabase.from('anime_history').select('data').eq('wallet_address', wallet).maybeSingle();
-  const cloud = (data?.data as AnimeWatchProgress[] | undefined) || [];
-  if (Array.isArray(cloud) && cloud.length) await importWatchProgress(cloud);
+  const cloud = keepValid<AnimeWatchProgress>(data?.data, isWatchProgress);
+  if (cloud.length) await importWatchProgress(cloud);
 }
 
 // ─── Reading progress (manga + novels) ────────────────────────────────────────

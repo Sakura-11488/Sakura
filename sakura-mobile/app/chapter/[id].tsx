@@ -129,6 +129,28 @@ export default function ChapterReader() {
   // Real per-page aspect ratios (height/width), filled in as each image loads so
   // tall manhwa strips get their full height instead of being cropped to 1.5.
   const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
+
+  /**
+   * Pages whose image failed to load.
+   *
+   * Tracked so the reader can tell "this chapter is unavailable" from "this
+   * chapter is empty".
+   *
+   * Never reset. The guard that uses it asks whether every row CURRENTLY on
+   * screen has failed, rather than comparing this set's size against the row
+   * count — so entries left over from an earlier chapter in a continuous
+   * scroll session cannot make a healthy chapter look dead. That matters here
+   * because the reader scrolls through multiple chapters without remounting.
+   */
+  const [failedPages, setFailedPages] = useState<Set<string>>(new Set());
+  const notePageFailed = useCallback((id: string) => {
+    setFailedPages((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
   /**
    * Overlay fade, on React Native's own Animated rather than Reanimated.
    *
@@ -907,6 +929,7 @@ export default function ChapterReader() {
             transition={0}
             recyclingKey={item.id}
             onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
+            onError={() => notePageFailed(item.id)}
           />
         );
       }
@@ -921,10 +944,11 @@ export default function ChapterReader() {
           transition={0}
           recyclingKey={item.id}
           onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
+          onError={() => notePageFailed(item.id)}
         />
       );
     },
-    [readingMode, isRtlPageMode, pageRatios, handlePageLoad],
+    [readingMode, isRtlPageMode, pageRatios, handlePageLoad, notePageFailed],
   );
 
 
@@ -1671,6 +1695,32 @@ export default function ChapterReader() {
     return (
       <View style={[styles.screen, styles.center]}>
         <ActivityIndicator size="large" color={Colors.white} />
+      </View>
+    );
+  }
+
+  /**
+   * Every page in the list failed to load.
+   *
+   * Distinct from "no pages found": the source handed us a page list and then
+   * 404d every image, which is exactly what the comics source does today —
+   * upstream serves HTML for page-image paths, the proxy correctly refuses it,
+   * and the reader used to render N blank pages and say nothing. A chapter that
+   * silently renders blank is worse than one that admits it is unavailable.
+   */
+  if (rows.length > 0 && rows.every((r) => failedPages.has(r.id))) {
+    return (
+      <View style={[styles.screen, styles.center]}>
+        <StatusBar hidden />
+        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtn}>
+          <BackIcon />
+        </TouchableOpacity>
+        <EmptyState
+          inverted
+          compact
+          title="This chapter's pages are unavailable"
+          subtitle="The source is not serving images right now. Try another chapter, or come back later."
+        />
       </View>
     );
   }

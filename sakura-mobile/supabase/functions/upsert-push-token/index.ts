@@ -1,16 +1,21 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
+import { corsHeaders as sharedCors, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
+/**
+ * Shared CORS, not a local literal.
+ *
+ * The local object omitted x-wallet-address / x-signature / x-message, so a
+ * browser preflight would have stripped exactly the headers this function now
+ * requires — push registration would fail on web only, silently, while native
+ * kept working.
+ */
+const corsHeaders = sharedCors();
 
 type PushAction = 'upsert' | 'disable' | 'ping';
 
 interface PushTokenBody {
   action?: PushAction;
-  wallet_address?: string;
+  /** Ignored. Identity comes from the signature; kept out of the type on purpose. */
   expo_push_token?: string;
   platform?: 'ios' | 'android' | 'web' | 'unknown';
   notify_episodes?: boolean;
@@ -28,10 +33,6 @@ function jsonResponse(status: number, body: Record<string, unknown>) {
   });
 }
 
-function isValidWallet(value: unknown): value is string {
-  return typeof value === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
-}
-
 function isValidExpoPushToken(value: unknown): value is string {
   return typeof value === 'string' && /^(ExponentPushToken|ExpoPushToken)\[[A-Za-z0-9_-]+\]$/.test(value);
 }
@@ -41,6 +42,25 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' });
 
   try {
+    /**
+     * Ownership, proved — not asserted.
+     *
+     * This was the only wallet-scoped function with no signature check. The
+     * platform JWT is satisfied by the anon key that ships in the APK and the
+     * PWA bundle, so anyone could bind their own device to any wallet and
+     * receive that wallet's private DM previews and transfer notifications —
+     * and victim addresses are trivially discoverable through search-users.
+     *
+     * The wallet now comes from the Ed25519 signature and the body is never
+     * consulted for identity.
+     */
+    let walletAddress: string;
+    try {
+      ({ walletAddress } = verifyWalletHeaders(req.headers, 'push-token'));
+    } catch {
+      return jsonResponse(401, { error: 'Could not verify your wallet.' });
+    }
+
     const body = (await req.json()) as PushTokenBody;
     const token = body.expo_push_token;
     if (!isValidExpoPushToken(token)) return jsonResponse(400, { error: 'Invalid Expo push token.' });
@@ -57,7 +77,9 @@ Deno.serve(async (req) => {
       const { error } = await supabase
         .from('push_tokens')
         .update({ enabled: false, updated_at: now })
-        .eq('expo_push_token', token);
+        .eq('expo_push_token', token)
+        // Scoped to the signer: a token alone is not proof of ownership.
+        .eq('wallet_address', walletAddress);
       if (error) return jsonResponse(500, { error: error.message });
       return jsonResponse(200, { ok: true });
     }
@@ -66,18 +88,16 @@ Deno.serve(async (req) => {
       const { error } = await supabase
         .from('push_tokens')
         .update({ last_opened_at: now, updated_at: now })
-        .eq('expo_push_token', token);
+        .eq('expo_push_token', token)
+        .eq('wallet_address', walletAddress);
       if (error) return jsonResponse(500, { error: error.message });
       return jsonResponse(200, { ok: true });
     }
 
-    if (!isValidWallet(body.wallet_address)) {
-      return jsonResponse(400, { error: 'Invalid wallet address.' });
-    }
-
     const { error } = await supabase.from('push_tokens').upsert(
       {
-        wallet_address: body.wallet_address,
+        // From the signature. The body never decides whose device this is.
+        wallet_address: walletAddress,
         expo_push_token: token,
         platform: body.platform ?? 'unknown',
         notify_episodes: body.notify_episodes ?? true,

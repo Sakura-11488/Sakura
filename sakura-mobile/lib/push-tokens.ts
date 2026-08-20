@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 import { AppSettings } from './settings';
+import { buildWalletAuthHeaders } from './wallet-auth';
+import { getPassiveSessionKeypair } from './wallet/app-session';
 
 export interface PushTokenPrefs {
   notifyEpisodes: boolean;
@@ -14,6 +16,26 @@ export interface PushRegistrationInput extends PushTokenPrefs {
   walletAddress: string;
   expoPushToken: string;
   enabled: boolean;
+}
+
+/**
+ * Signed headers for upsert-push-token, which now derives the wallet from the
+ * signature rather than trusting the body — otherwise anyone could bind their
+ * device to any wallet and receive that wallet's DM previews.
+ *
+ * Passive only. Push registration runs at app start and from the settings
+ * screen, so it must never raise a biometric prompt; getPassiveSessionKeypair
+ * returns a warm session key or nothing. When there is no key we throw rather
+ * than sending an unsigned request, so the failure is visible to the caller
+ * instead of the server rejecting it as a mystery 401.
+ *
+ * The action string must stay 'push-token' — it is bound into the signed
+ * message and the server checks it exactly.
+ */
+async function pushAuthHeaders(): Promise<Record<string, string>> {
+  const kp = await getPassiveSessionKeypair();
+  if (!kp) throw new Error("Unlock your wallet to change notification settings.");
+  return buildWalletAuthHeaders(kp, 'push-token');
 }
 
 function platformLabel(): 'ios' | 'android' | 'web' | 'unknown' {
@@ -47,7 +69,10 @@ export async function upsertPushRegistration(input: PushRegistrationInput): Prom
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await supabase.functions.invoke('upsert-push-token', { body: row });
+  const { error } = await supabase.functions.invoke('upsert-push-token', {
+    body: row,
+    headers: await pushAuthHeaders(),
+  });
   if (error) throw error;
 }
 
@@ -55,6 +80,7 @@ export async function disablePushRegistration(expoPushToken: string): Promise<vo
   if (!expoPushToken) return;
   const { error } = await supabase.functions.invoke('upsert-push-token', {
     body: { action: 'disable', expo_push_token: expoPushToken },
+    headers: await pushAuthHeaders(),
   });
   if (error) throw error;
 }
@@ -126,6 +152,7 @@ export async function pingPushActivity(walletAddress: string | null): Promise<vo
 
   const { error } = await supabase.functions.invoke('upsert-push-token', {
     body: { action: 'ping', expo_push_token: token },
+    headers: await pushAuthHeaders(),
   });
 
   if (error) throw error;
