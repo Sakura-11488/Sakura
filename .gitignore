@@ -60,7 +60,12 @@ src/lib/sources/atsumaru-source.ts
 src/lib/sources/comics/
 src/plugins/anime.ts
 android/app/src/main/java/com/millw14/sakura/anime/AnimePlugin.kt
-scripts/droplet/
+scripts/droplet/*
+!scripts/droplet/comics-scraper/
+# ...but never the API-key templates or the on-disk image cache
+scripts/droplet/comics-scraper/proxy-template*.txt
+scripts/droplet/comics-scraper/image-proxy-template*.txt
+scripts/droplet/comics-scraper/img-cache/
 scripts/recover-wallet*.py
 scripts/smoke-sakura-ai*.mjs
 scripts/run-manga-source-bakeoff.mjs
