@@ -1,6 +1,7 @@
 import { Image as RNImage, Platform } from 'react-native';
 import { type AnimeInfo } from './anime';
 import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
+import { r2UrlFor } from '@/lib/r2-media';
 import { MEDIA_BASE_DEFAULT } from '@/lib/content-hosts';
 
 // ─── Media server (nip.io for iOS ATS compliance) ─────────────────────────────
@@ -517,6 +518,21 @@ export async function fetchSakuraOriginalInfo(
 // ─── Stream URL resolver ──────────────────────────────────────────────────────
 function proxyStreamUrlForWeb(url: string | null): string | null {
   if (!url) return null;
+  /**
+   * R2 first, on BOTH platforms.
+   *
+   * Returned directly rather than through the media proxy: R2 serves CORS and
+   * Range natively, so the proxy would only add a hop, a metered transfer and
+   * Vercel's 10MB cacheable-response ceiling. Native benefits too — it fetches
+   * the droplet directly today, and moving those bytes off a 1GB box shared by
+   * nine nginx locations is the whole point.
+   *
+   * A null result means "not migrated, leave it alone", so an un-migrated show
+   * keeps its current URL instead of 404ing into a black player.
+   */
+  const r2 = r2UrlFor(url);
+  if (r2) return r2;
+
   if (Platform.OS !== 'web') return url;
   return getWebMediaProxyUrl(url);
 }
