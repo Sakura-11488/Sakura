@@ -25,6 +25,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const hianime = require('./scrapers/hianime');
 const cheerio = require('cheerio');
+const malMap = require('./scrapers/mal-map');
 
 const LIVE = process.env.SKIP_LIVE !== '1';
 
@@ -134,6 +135,73 @@ describe('malformed upstream markup — the 2026-08-22 outage', () => {
 
     const rawContainers = (broken.match(/class="[^"]*\bflw-item\b/g) || []).length;
     assert.ok(rawContainers > 0, 'but the raw bytes still carry the evidence');
+  });
+});
+
+describe('mal-map — the title matcher that routes playback to megaplay', () => {
+  // These run entirely offline. The 16MB index is not needed, and must not be,
+  // or the rules below could only be checked on a machine that had already run
+  // the build script.
+  const TV = (m, e) => ({ m, e, t: 'TV' });
+
+  test('season markers collapse to one form across both datasets', () => {
+    // hianime writes "2nd Season", the database writes "Season 2", and some
+    // titles use a bare roman numeral. Without this, Jujutsu Kaisen matches
+    // nothing at all.
+    assert.equal(malMap.canonicalSeason('jujutsu kaisen 2nd season'), 'jujutsu kaisen season 2');
+    assert.equal(malMap.canonicalSeason('overlord season iv'), 'overlord season 4');
+    assert.equal(malMap.canonicalSeason('bleach season 3'), 'bleach season 3');
+  });
+
+  test('spacing differences resolve — "Dan Da Dan" vs "Dandadan"', () => {
+    assert.ok(malMap.candidateKeys('Dan Da Dan').includes('dandadan'));
+  });
+
+  test('a trailing subtitle is retried on the head — the Frieren case', () => {
+    const keys = malMap.candidateKeys('Sousou no Frieren - Marumaru no Mahou');
+    assert.ok(keys.includes('sousou no frieren'), 'must retry without the subtitle');
+  });
+
+  test('an unresolvable collision returns null rather than guessing', () => {
+    // Two DIFFERENT shows, different lengths, no episode count to separate
+    // them. Guessing here is how you serve someone the wrong series.
+    assert.equal(malMap.__decide([TV(1, 12), TV(2, 24)], 0, true), null);
+  });
+
+  test('episode count separates a series from its specials and films', () => {
+    const picked = malMap.__decide(
+      [TV(100, 24), { m: 101, e: 1, t: 'SPECIAL' }, { m: 102, e: 1, t: 'MOVIE' }],
+      24,
+      false,
+    );
+    assert.equal(picked.m, 100);
+  });
+
+  test('a bare title picks the ORIGINAL when seasons tie on length', () => {
+    // "Dan Da Dan" matches two 12-episode TV entries — seasons 1 and 2 — and
+    // no episode count separates them because both genuinely have 12. MAL ids
+    // are issued chronologically, so the original is the lowest.
+    const picked = malMap.__decide([TV(60543, 12), TV(57334, 12)], 12, false);
+    assert.equal(picked.m, 57334, 'must pick season 1 for an unmarked title');
+  });
+
+  test('a title that NAMES a season never takes the lowest-id shortcut', () => {
+    // There the remaining ambiguity is between genuinely different things, and
+    // picking the oldest would be a coin flip. Refusing costs a fallback to
+    // hianime's own servers; guessing costs the user the wrong show.
+    assert.equal(malMap.__decide([TV(60543, 12), TV(57334, 12)], 12, true), null);
+  });
+
+  test('hasSeasonMarker distinguishes the two asks', () => {
+    assert.equal(malMap.hasSeasonMarker('Dan Da Dan'), false);
+    assert.equal(malMap.hasSeasonMarker('Dan Da Dan Season 2'), true);
+    assert.equal(malMap.hasSeasonMarker('JUJUTSU KAISEN 2nd Season'), true);
+    assert.equal(malMap.hasSeasonMarker('Attack on Titan Final Season'), true);
+  });
+
+  test('an empty or junk title resolves to nothing, never to a show', () => {
+    assert.equal(malMap.resolveMal('', 12), null);
+    assert.deepEqual(malMap.candidateKeys(''), []);
   });
 });
 

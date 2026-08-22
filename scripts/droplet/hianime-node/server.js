@@ -2,6 +2,7 @@ var express = require("express");
 var config = require("./config");
 var hianime = require("./scrapers/hianime");
 var extractor = require("./extractors/index");
+var malMap = require("./scrapers/mal-map");
 var app = express();
 
 // ─── Readiness ───────────────────────────────────────────────────────────────
@@ -13,62 +14,112 @@ var READY_FAIL_TTL_MS = 15000;
 var readyCache = { at: 0, payload: null };
 var readyInFlight = null;
 
-async function runReadiness() {
-  var checks = {
-    keyword: process.env.ANIME_READY_KEYWORD || "bleach",
-    searchResults: 0, slug: null, animeId: null, name: null,
-    episodes: 0, episodeId: null, servers: 0, embedUrl: null,
-    playbackOk: false, playbackReason: null,
-  };
+/**
+ * Walk the real read path for SEVERAL titles, not one.
+ *
+ * This probed a single keyword until 2026-08-22, and that made it actively
+ * misleading. It sampled "bleach", which happened to sit on megacloud.help
+ * while that host was Cloudflare-1027'd, and reported PLAYBACK DOWN for the
+ * whole service — while One Piece, on a different embed host, was playing
+ * perfectly the entire time. One title's luck decided the verdict for the
+ * catalogue.
+ *
+ * Different titles resolve through genuinely different hosts, so a health check
+ * that samples one of them is measuring a coin flip. This samples several and
+ * reports the FRACTION, which is the only honest summary of a catalogue whose
+ * backends differ per title.
+ */
+var READY_TITLES = (process.env.ANIME_READY_KEYWORDS || "one piece,jujutsu kaisen,dandadan")
+  .split(",").map(function(s) { return s.trim(); }).filter(Boolean);
 
-  var results = await hianime.search(checks.keyword);
-  checks.searchResults = results.length;
-  if (!results.length) return { ok: false, reason: "search parsed 0 results", checks: checks };
+async function probeTitle(keyword) {
+  var probe = { keyword: keyword, slug: null, name: null, episodes: 0, server: null, playable: false, reason: null };
 
-  checks.slug = results[0].slug;
-  checks.name = results[0].name;
+  var results = await hianime.search(keyword);
+  if (!results.length) { probe.reason = "search returned 0 results"; return probe; }
+  probe.slug = results[0].slug;
+  probe.name = results[0].name;
 
-  var info = await hianime.getInfo(checks.slug);
-  checks.animeId = info.animeId;
-  if (!info.animeId) return { ok: false, reason: "info produced no animeId", checks: checks };
+  var info = await hianime.getInfo(probe.slug);
+  if (!info.animeId) { probe.reason = "no animeId from info"; return probe; }
+  // An empty name is not cosmetic: mal-map matches on it, so playback silently
+  // never reaches megaplay. Worth surfacing separately from a hard failure.
+  if (!info.name) probe.reason = "info produced an empty name";
 
-  var eps = await hianime.getEpisodes(info.animeId, checks.slug);
-  checks.episodes = eps.length;
-  if (!eps.length) return { ok: false, reason: "0 episodes parsed", checks: checks };
+  var eps = await hianime.getEpisodes(info.animeId, probe.slug);
+  probe.episodes = eps.length;
+  if (!eps.length) { probe.reason = "0 episodes"; return probe; }
 
-  // Deliberately not episode 1: a stale cache entry somewhere upstream is most
-  // likely to be warm for the first episode of a popular show.
-  var probe = eps[Math.min(eps.length - 1, Math.floor(eps.length / 2))] || eps[0];
-  checks.episodeId = probe.ids || null;
-  if (!probe.ids) return { ok: false, reason: "episode carries no id for the servers call", checks: checks };
-
-  var servers = await hianime.getServersFromList(probe.ids, checks.slug);
-  checks.servers = servers.length;
-  if (!servers.length) return { ok: false, reason: "0 playable servers", checks: checks };
-  checks.embedUrl = servers[0].linkId || null;
-
-  // The last leg: can we actually pull sources from the embed host? Reported
-  // ALWAYS, gating only when asked — megacloud currently answers 429 to this
-  // droplet's IP for every request including its homepage, and hard-failing
-  // here would mean no deploy of this service could pass its own gate until
-  // that clears. Flip ANIME_READY_REQUIRE_PLAYBACK=1 once it does.
+  // Go through resolveEmbedForEpisode rather than a hand-rolled chain, so this
+  // exercises the same server selection and megaplay/mal-map path that real
+  // playback uses. A check that walks its own route can pass while the route
+  // users take is broken.
   try {
-    var out = await extractor.extract(servers[0].linkId, config.HIANIME_BASE + "/");
-    checks.playbackOk = Boolean(out && out.sources && out.sources.length);
-    if (!checks.playbackOk) checks.playbackReason = "extractor returned no sources";
+    var embed = await hianime.resolveEmbedForEpisode(probe.slug, eps[0].number, "sub");
+    probe.server = embed.serverName;
+    var out = await extractor.extract(embed.embedUrl, config.HIANIME_BASE + "/");
+    probe.playable = Boolean(out && out.sources && out.sources.length);
+    if (!probe.playable) probe.reason = "extractor returned no sources";
   } catch (err) {
-    checks.playbackOk = false;
-    checks.playbackReason = String(err && err.message ? err.message : err).slice(0, 160);
+    probe.reason = String(err && err.message ? err.message : err).slice(0, 140);
+  }
+  return probe;
+}
+
+async function runReadiness() {
+  var probes = [];
+  for (var i = 0; i < READY_TITLES.length; i += 1) {
+    try {
+      probes.push(await probeTitle(READY_TITLES[i]));
+    } catch (err) {
+      probes.push({
+        keyword: READY_TITLES[i],
+        playable: false,
+        reason: (err && err.code ? err.code + ": " : "") + String(err && err.message ? err.message : err).slice(0, 140),
+      });
+    }
   }
 
-  if (!checks.playbackOk) {
-    if (String(process.env.ANIME_READY_REQUIRE_PLAYBACK || "0") === "1") {
-      return { ok: false, reason: "playback extraction failed", checks: checks };
-    }
+  var playable = probes.filter(function(p) { return p.playable; }).length;
+  var browsable = probes.filter(function(p) { return p.episodes > 0; }).length;
+  var checks = {
+    sampled: probes.length,
+    playable: playable,
+    browsable: browsable,
+    malIndexLoaded: malMap.isLoaded(),
+    malIndexKeys: malMap.indexSize(),
+    probes: probes,
+  };
+
+  // Browsing broken everywhere is a real outage; the parser or the upstream has
+  // moved and nothing works.
+  if (!browsable) {
+    return { ok: false, reason: "no sampled title produced an episode list", checks: checks };
+  }
+
+  // mal-map is what routes playback to megaplay. Without the index every title
+  // falls back to hianime's own servers, which is where the dead host lives —
+  // so a missing index looks like "playback is down" unless it is called out.
+  if (!malMap.isLoaded()) {
     return {
-      ok: true,
-      degraded: true,
-      reason: "BROWSE OK, PLAYBACK DOWN: " + (checks.playbackReason || "extractor failed"),
+      ok: true, degraded: true,
+      reason: "MAL INDEX MISSING — playback will fall back to hianime's own servers. "
+        + "Run: node scripts/build-mal-index.js",
+      checks: checks,
+    };
+  }
+
+  if (!playable) {
+    if (String(process.env.ANIME_READY_REQUIRE_PLAYBACK || "0") === "1") {
+      return { ok: false, reason: "no sampled title was playable", checks: checks };
+    }
+    return { ok: true, degraded: true, reason: "BROWSE OK, PLAYBACK DOWN for all " + probes.length + " sampled titles", checks: checks };
+  }
+
+  if (playable < probes.length) {
+    return {
+      ok: true, degraded: true,
+      reason: "playback works for " + playable + " of " + probes.length + " sampled titles",
       checks: checks,
     };
   }

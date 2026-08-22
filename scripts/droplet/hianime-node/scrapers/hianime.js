@@ -1,6 +1,7 @@
 var config = require("../config");
 var http = require("../utils/http");
 var cheerio = require("cheerio");
+var malMap = require("./mal-map");
 
 function decodeHtml(value) {
   return (value || "")
@@ -201,8 +202,37 @@ async function search(keyword) {
   return results;
 }
 
-async function getInfo(slug) {
+/**
+ * Fetch a title's page, accepting either URL shape.
+ *
+ * Both /watch/<slug> and the root-level /<slug> serve the real page today, for
+ * every slug tested. /watch/ is tried first because it is the long-standing
+ * form; root-level is the shape the 2026-08-19 redesign moved links to, so it
+ * is the more likely survivor if one of them is retired.
+ *
+ * The fallback matters because of HOW this fails. An unknown slug does not 404
+ * — it 301s to /home, redirects are followed, and the HOMEPAGE comes back with
+ * HTTP 200. There is no #ani_detail on it, so getInfo yields an empty name and
+ * an id guessed from the slug suffix, and the damage lands somewhere else
+ * entirely: mal-map matches on the title, so playback silently never reaches
+ * megaplay, and the episode-list endpoint selects by Referer, so it is handed
+ * /home and answers with zero episodes. Trying both shapes means one retired
+ * URL form cannot quietly produce that state.
+ */
+async function fetchTitlePage(slug) {
   var html = await http.fetchText(config.HIANIME_BASE + "/watch/" + slug);
+  if (/id="ani_detail"/.test(html)) return html;
+
+  var rootLevel = await http.fetchText(config.HIANIME_BASE + "/" + slug);
+  if (/id="ani_detail"/.test(rootLevel)) return rootLevel;
+
+  // Neither shape produced a title page — almost always a slug that no longer
+  // exists. Return the legacy body so the caller's own check reports on it.
+  return html;
+}
+
+async function getInfo(slug) {
+  var html = await fetchTitlePage(slug);
   // The anime id lives on #ani_detail as data-anime-id. Do NOT fall back to the
   // first data-id on the page: since the 2026-08-19 redesign that is the first
   // EPISODE's id, which the episode-list endpoint silently rejects (it answers
@@ -499,13 +529,47 @@ async function resolveEmbedForEpisode(slug, epNum, category) {
   }
 
   var tryList = sortServersForPlayback(filtered);
+
+  /**
+   * megaplay goes to the FRONT of the list, not in place of it.
+   *
+   * hianime hands out megacloud.help embeds for almost every title, and that
+   * host has been serving Cloudflare 1027 zone-wide since 2026-08-22 — dead for
+   * everyone, unfixable from our side. megaplay carries the same content but is
+   * addressed by MAL id, which mal-map resolves offline from a static index.
+   *
+   * Prepending rather than replacing is deliberate: if mal-map cannot resolve
+   * the title, or megaplay has no file for it (movies and specials, mostly),
+   * the loop falls straight through to the original server list and behaves
+   * exactly as it did before. A miss can only cost one extra request.
+   */
+  var mal = malMap.resolveMal(info.name, episodes.length);
+  if (mal) {
+    tryList = [{
+      name: "megaplay",
+      type: category,
+      source: "megaplay-mal",
+      linkId: config.MEGAPLAY_BASE + "/stream/mal/" + mal.mal + "/" + epNum + "/" + category,
+    }].concat(tryList);
+    console.log("[hianime] mal-map: \"" + info.name + "\" (" + episodes.length + " eps) -> MAL "
+      + mal.mal + " via key \"" + mal.matchedKey + "\"");
+  } else {
+    console.log("[hianime] mal-map: no confident match for \"" + info.name
+      + "\" — falling back to hianime's own servers");
+  }
+
   var serverErrors = [];
 
   for (var index = 0; index < tryList.length; index += 1) {
     var server = tryList[index];
     try {
       console.log("[hianime] Trying: " + server.name + " (" + server.type + ", " + server.source + ")");
-      var embed = await getEmbedFromServer(server.linkId);
+      // The megaplay entry is already a player URL. getEmbedFromServer exists to
+      // turn a hianime server id into one, and would fail on a URL it did not
+      // mint, so it is skipped for this source only.
+      var embed = server.source === "megaplay-mal"
+        ? { url: server.linkId, skipData: null }
+        : await getEmbedFromServer(server.linkId);
       if (embed && embed.url) {
         return {
           embedUrl: embed.url,
