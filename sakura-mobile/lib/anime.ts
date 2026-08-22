@@ -590,7 +590,9 @@ async function offlineMetaFull(id: string): Promise<JikanFull | null> {
       status: String(m.status || '') === 'UPCOMING' ? 'Not yet aired' : String(m.status || ''),
       type: String(m.type || 'TV'),
       year: (m.year as number) ?? undefined,
-      score: (m.score as number) ?? null,
+      // Rounded. The dump stores a raw arithmetic mean, and passing it straight
+      // through rendered "8.370108431251289 /10" on the detail page.
+      score: typeof m.score === 'number' ? Math.round(m.score * 100) / 100 : null,
       images: { webp: { large_image_url: image, image_url: image } },
       genres: Array.isArray(m.genres)
         ? (m.genres as string[]).map((name) => ({ name: String(name) }))

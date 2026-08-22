@@ -207,10 +207,26 @@ function decide(candidates, episodeCount, titled) {
    * is the failure this file exists to avoid.
    */
   if (!titled && pool.length > 1) {
-    var sameShape = pool.every(function(c) { return c.e === pool[0].e; });
-    if (sameShape) {
-      return pool.reduce(function(lowest, c) { return c.m < lowest.m ? c : lowest; });
-    }
+    /**
+     * Two shapes reach here, and both mean "the original".
+     *
+     * Equal episode counts are sequential seasons — Dan Da Dan's two 12-episode
+     * runs. Unequal ones are usually a COUR SPLIT: hianime lists "Haikyu!! To
+     * The Top" as one 25-episode season while the database holds it as 13 + 12.
+     * That mismatch made the episode count veto the correct answer outright, so
+     * a show with 25 episodes sitting right there resolved to nothing and fell
+     * back to the dead host.
+     *
+     * The count has already done its real job by this point — separating a
+     * series from its films and specials, which step two above filtered on type
+     * anyway. Letting it also veto a cour split costs more than it protects.
+     *
+     * Still bounded: every candidate here shares an EXACT normalised title, so
+     * they are the same franchise, and ids are chronological so the lowest is
+     * the first cour. Worst case is cour 1 instead of cour 2 of the show that
+     * was asked for — not a different series.
+     */
+    return pool.reduce(function(lowest, c) { return c.m < lowest.m ? c : lowest; });
   }
 
   return null;

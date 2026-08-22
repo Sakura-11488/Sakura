@@ -141,7 +141,74 @@ function rankResults(results, keyword) {
     .map(function(x) { return x.r; });
 }
 
+/**
+ * Collapse long-vowel romanisation, or return "" when nothing changes.
+ *
+ * Japanese long vowels get romanised two ways and the databases disagree
+ * constantly: MAL writes "Haikyuu!! To the Top", hianime writes "Haikyu!! To
+ * The Top". Searching hianime for "haikyuu" returns six specials and movies and
+ * NOT the series, while "haikyu" returns the whole franchise — so a title that
+ * is fully available reads as "No streaming source found".
+ *
+ * Same shape for Juujutsu/Jujutsu, Ryuu/Ryu, Touhou/Tohou, Shounen/Shonen.
+ */
+function collapseLongVowels(keyword) {
+  var variant = String(keyword)
+    .replace(/([aiueo])\1+/gi, "$1")
+    .replace(/ou/gi, "o");
+  return variant.toLowerCase() === String(keyword).toLowerCase() ? "" : variant;
+}
+
+/**
+ * Did we get the thing asked for, or only its siblings?
+ *
+ * EXACT match only, deliberately. A prefix test looks reasonable and is too
+ * lenient: searching "haikyuu" returns "Haikyuu!!: vs. Akaten", which starts
+ * with the query, so a prefix rule calls that a hit and never retries — while
+ * the series itself sits under the single-u spelling and stays invisible.
+ *
+ * Being strict here only costs one extra upstream request, and only for
+ * queries that have an alternate romanisation at all.
+ */
+function hasStrongMatch(results, keyword) {
+  var q = normalizeTitleForRank(keyword);
+  if (!q) return true;
+  return results.some(function(r) {
+    return normalizeTitleForRank(r.name || "") === q;
+  });
+}
+
 async function search(keyword) {
+  var results = await searchOnce(keyword);
+
+  /**
+   * Retry with the other romanisation, but ONLY when the first attempt found
+   * nothing that actually answers the query. "haikyuu" returns six Haikyu
+   * specials — non-empty, so a length check would not catch it — while the
+   * series itself is indexed under the single-u spelling.
+   *
+   * Gated on a weak result rather than run always: it costs an extra upstream
+   * request, and this box fronts nine locations on one nginx worker.
+   */
+  if (!hasStrongMatch(results, keyword)) {
+    var variant = collapseLongVowels(keyword);
+    if (variant) {
+      try {
+        var extra = await searchOnce(variant);
+        var seen = {};
+        results.forEach(function(r) { seen[r.slug] = 1; });
+        extra.forEach(function(r) { if (!seen[r.slug]) { seen[r.slug] = 1; results.push(r); } });
+      } catch (err) {
+        // A failed variant lookup must not lose the results we already have.
+        console.warn("[hianime] variant search failed for \"" + variant + "\": " + err.message);
+      }
+    }
+  }
+
+  return rankResults(results, keyword);
+}
+
+async function searchOnce(keyword) {
   var url = config.HIANIME_BASE + "/search?keyword=" + encodeURIComponent(keyword);
   var html = await http.fetchText(url);
   var $ = cheerio.load(repairUnterminatedTags(html));
@@ -250,7 +317,7 @@ async function search(keyword) {
       );
     }
   }
-  return rankResults(results, keyword);
+  return results;
 }
 
 /**
@@ -659,6 +726,8 @@ module.exports = {
   // testable without the network if the repair step can be exercised directly.
   repairUnterminatedTags: repairUnterminatedTags,
   rankResults: rankResults,
+  collapseLongVowels: collapseLongVowels,
+  hasStrongMatch: hasStrongMatch,
   getServersFromList: getServersFromList,
   getInfo: getInfo,
   getEpisodes: getEpisodes,

@@ -73,6 +73,22 @@ function canonicalSeason(normalized) {
   return out.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Collapse long-vowel romanisation to a single canonical spelling.
+ *
+ * The two databases disagree constantly: MAL writes "Haikyuu!! To the Top",
+ * hianime writes "Haikyu!! To The Top". Lookups here are exact, so without a
+ * shared form the hianime title misses entirely — no MAL id, no megaplay, and
+ * playback silently falls back to the dead host on a show with 25 episodes
+ * sitting right there. Indexing the collapsed form ALONGSIDE the original makes
+ * either spelling resolve.
+ *
+ * Same shape for Juujutsu/Jujutsu, Ryuu/Ryu, Touhou/Tohou, Shounen/Shonen.
+ */
+function collapseLongVowels(normalized) {
+  return normalized.replace(/([aiueo])\1+/g, "$1").replace(/ou/g, "o");
+}
+
 function malIdOf(entry) {
   const source = (entry.sources || []).find(function(s) {
     return /myanimelist\.net\/anime\/\d+/.test(s);
@@ -121,7 +137,14 @@ async function buildIndex(entries) {
     for (const title of [entry.title].concat(entry.synonyms || [])) {
       const base = normalizeTitle(title);
       if (!base || base.length < 2) continue;
-      for (const key of new Set([base, canonicalSeason(base), base.replace(/ /g, "")])) {
+      // Four key forms at most, and the collapsed one only when it actually
+      // differs. Emitting all six unconditionally OOM-killed the build: `ou`->`o`
+      // touches a large share of romanised titles, so it was adding keys for
+      // most of the 41,500 entries rather than the handful with long vowels.
+      const collapsed = collapseLongVowels(base);
+      const forms = [base, canonicalSeason(base), base.replace(/ /g, "")];
+      if (collapsed !== base) forms.push(collapsed);
+      for (const key of new Set(forms)) {
         if (!key) continue;
         let bucket = index.get(key);
         if (!bucket) { bucket = []; index.set(key, bucket); }
