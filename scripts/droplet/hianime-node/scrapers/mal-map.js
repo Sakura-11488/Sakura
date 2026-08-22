@@ -216,8 +216,48 @@ function decide(candidates, episodeCount, titled) {
   return null;
 }
 
+/**
+ * MAL id -> detail-page metadata, for when Jikan will not answer.
+ *
+ * Loaded lazily and separately from the title index: a request that only needs
+ * playback should not pay ~45MB of heap for metadata it never reads.
+ */
+var META_PATH = process.env.MAL_META_PATH
+  || path.join(__dirname, "..", "data", "mal-meta.json");
+var meta = null;
+var metaError = null;
+
+function loadMeta() {
+  if (meta || metaError) return meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(META_PATH, "utf8"));
+  } catch (err) {
+    metaError = err;
+    meta = null;
+  }
+  return meta;
+}
+
+function metaFor(malId) {
+  var table = loadMeta();
+  if (!table) return null;
+  return table[String(malId)] || null;
+}
+
+function metaLoaded() {
+  return Boolean(loadMeta());
+}
+
+function metaSize() {
+  var table = loadMeta();
+  return table ? Object.keys(table).length : 0;
+}
+
 module.exports = {
   resolveMal: resolveMal,
+  metaFor: metaFor,
+  metaLoaded: metaLoaded,
+  metaSize: metaSize,
   isLoaded: isLoaded,
   indexSize: indexSize,
   // Exported for the offline suite, which must be able to test the matching

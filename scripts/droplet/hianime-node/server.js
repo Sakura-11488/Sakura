@@ -233,6 +233,42 @@ app.get("/api/episodes/:animeId", async function(req, res) {
   }
 });
 
+/**
+ * Anime metadata by MAL id, served from the offline index.
+ *
+ * The app gets this from Jikan directly, with no proxy in between, and renders
+ * "Could not load anime — No data returned for this title" when the call fails.
+ * Jikan fails PER ID rather than wholesale: on 2026-08-22, MAL 38883 (Haikyuu!!
+ * To the Top — finished, 13 episodes, and playable through megaplay) returned
+ * 504 on every attempt while MAL 60636 returned 200 in the same second. Nothing
+ * about that is visible to a retry or a health check, and the show is perfectly
+ * available — only the metadata lookup is missing.
+ *
+ * So this is the fallback: the same 30,561 shows, already on disk for the title
+ * index, answered from a file that cannot go down. It carries no synopsis
+ * because the dump has none — the client keeps whatever description it already
+ * had rather than inventing one.
+ */
+app.get("/api/meta/:malId", function(req, res) {
+  var malId = String(req.params.malId || "").trim();
+  if (!/^\d+$/.test(malId)) {
+    return res.status(400).json({ error: "malId must be numeric", code: "BAD_MAL_ID" });
+  }
+  if (!malMap.metaLoaded()) {
+    // Distinguished from "not found" on purpose: one is a deployment problem
+    // this box can fix, the other is a show the database has never heard of.
+    return res.status(503).json({
+      error: "metadata index not built — run scripts/build-mal-index.js",
+      code: "META_INDEX_MISSING",
+    });
+  }
+  var found = malMap.metaFor(malId);
+  if (!found) {
+    return res.status(404).json({ error: "no metadata for MAL " + malId, code: "META_NOT_FOUND" });
+  }
+  res.json(found);
+});
+
 app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
   var slug = req.params.slug, epNum = req.params.epNum;
   var category = req.query.category || "sub";

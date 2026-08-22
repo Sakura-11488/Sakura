@@ -553,7 +553,49 @@ async function jikanByGenre(genreId: number): Promise<AnimeResult[]> {
 async function jikanFull(id: string): Promise<JikanFull | null> {
   try {
     const d = await jikanGet(`/anime/${id}/full`);
-    return (d.data as JikanFull) || null;
+    const data = (d.data as JikanFull) || null;
+    if (data) return data;
+  } catch {
+    // fall through to the offline index
+  }
+  return offlineMetaFull(id);
+}
+
+/**
+ * Anime metadata from our own offline index, for when Jikan will not answer.
+ *
+ * Jikan is fetched directly, with no proxy in between, and a failure here used
+ * to return null — which fetchAnimeInfo turns into "Could not load anime — No
+ * data returned for this title" on a show that is perfectly available. It fails
+ * PER ID rather than wholesale: on 2026-08-22, MAL 38883 (Haikyuu!! To the Top,
+ * finished, 13 episodes, and playable) returned 504 on every attempt while MAL
+ * 60636 returned 200 in the same second. A retry does not help, and neither
+ * does a health check.
+ *
+ * The droplet serves the same 30,561 shows from a file built out of
+ * anime-offline-database, so this fallback cannot itself go down. It carries no
+ * synopsis — the dump has none — so the description stays empty rather than
+ * being invented, and everything else the detail page needs is present.
+ */
+async function offlineMetaFull(id: string): Promise<JikanFull | null> {
+  try {
+    const m = await consuGet(`/api/meta/${encodeURIComponent(id)}`);
+    if (!m || typeof m !== 'object' || !m.malId) return null;
+    const image = String(m.image || '');
+    return {
+      mal_id: Number(m.malId),
+      title: String(m.title || ''),
+      title_english: String(m.title || ''),
+      synopsis: '',
+      status: String(m.status || '') === 'UPCOMING' ? 'Not yet aired' : String(m.status || ''),
+      type: String(m.type || 'TV'),
+      year: (m.year as number) ?? undefined,
+      score: (m.score as number) ?? null,
+      images: { webp: { large_image_url: image, image_url: image } },
+      genres: Array.isArray(m.genres)
+        ? (m.genres as string[]).map((name) => ({ name: String(name) }))
+        : [],
+    } as unknown as JikanFull;
   } catch {
     return null;
   }
