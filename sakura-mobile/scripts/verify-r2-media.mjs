@@ -29,9 +29,23 @@ if (!base) {
 const DROPLET = 'http://165-232-83-159.nip.io';
 // One per migrated prefix, so a prefix that never uploaded cannot hide behind
 // a sibling that did.
+// One per migrated prefix AND one per file extension.
+//
+// This list claimed to cover every prefix and did not: '/2heanime/' had no
+// sample at all, so the entire 2heAnime catalogue could have cut over with
+// nothing checking it — exactly the hiding-behind-a-sibling failure the
+// comment promised to prevent.
+//
+// Extension coverage matters just as much and was missing entirely. The
+// migration is 91 .mp4 and 21 .mov, and both original samples were .mp4. The
+// droplet serves .mov as video/quicktime; if R2 guessed application/octet-
+// stream instead, every .mov would refuse to play and the gate would have
+// passed anyway. Two of the four Originals are .mov-only.
 const SAMPLES = [
   '/psyopanime/videos/BnBj8sRUu6o.mp4',
   '/sakura-originals/burnie-senders/episodes/ep1.mp4',
+  '/2heanime/videos/STAR.mov',
+  '/sakura-originals/degegen-files/episodes/z-crash.mov',
 ];
 
 let failed = 0;
