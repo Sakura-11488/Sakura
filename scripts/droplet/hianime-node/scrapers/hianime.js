@@ -50,10 +50,62 @@ function makeStageError(stage, code, message, details) {
   return error;
 }
 
+// Elements whose content is raw text to a parser, so an unclosed one swallows
+// the rest of the document rather than just breaking its own subtree.
+var SWALLOWING_TAGS = { script: 1, style: 1, textarea: 1, title: 1 };
+
+/**
+ * Repair opening tags that never terminate.
+ *
+ * On 2026-08-22 hianime.dk began serving a Google Analytics tag with neither
+ * its attribute quote nor its angle bracket closed:
+ *
+ *     <script async src="https://www.googletagmanager.com/gtag/js?id=G-E
+ *     </head>
+ *     <body class="">   ...the 30 result cards...
+ *
+ * A conforming parser MUST treat everything after an unclosed <script> as raw
+ * script text, so cheerio produced a 213KB <head> and an empty <body> —
+ * $("a").length was 0 on a page with hundreds of links. Nothing threw; search
+ * just returned [] with HTTP 200, which the app cannot tell from "no matches".
+ *
+ * An opening tag that reaches the next '<' without ever closing is malformed by
+ * definition: a well-formed tag ends at '>' before any '<' can appear. So the
+ * match itself is the detector, and well-formed markup cannot match.
+ */
+function repairUnterminatedTags(html) {
+  return String(html).replace(
+    /<([a-zA-Z][\w-]*)\b[^>]*?(?=<[a-zA-Z/])/g,
+    function(match, tag) {
+      var fixed = match;
+      // Close a dangling attribute value first. Without this the '>' we append
+      // lands INSIDE the open quote and terminates nothing.
+      if ((fixed.match(/"/g) || []).length % 2) fixed += '"';
+      if ((fixed.match(/'/g) || []).length % 2) fixed += "'";
+      fixed += ">";
+      if (SWALLOWING_TAGS[tag.toLowerCase()]) fixed += "</" + tag + ">";
+      return fixed;
+    }
+  );
+}
+
 async function search(keyword) {
   var url = config.HIANIME_BASE + "/search?keyword=" + encodeURIComponent(keyword);
   var html = await http.fetchText(url);
-  var $ = cheerio.load(html);
+  var $ = cheerio.load(repairUnterminatedTags(html));
+
+  // A large document that parses to an empty <body> did not parse. Checked
+  // before anything reads the DOM, because every selector below would return
+  // empty and look like an ordinary "no results" answer.
+  if (html.length > 10000 && $("body").children().length === 0) {
+    throw makeStageError(
+      "search",
+      "PARSE_BROKEN",
+      "Document parsed to an empty <body> — upstream markup is malformed beyond repair.",
+      { htmlLength: html.length, scriptTags: (html.match(/<script\b/gi) || []).length }
+    );
+  }
+
   var results = [];
   $(".flw-item").each(function(_, element) {
     // hianime.dk moved item links from /watch/<slug> to a root-level /<slug>
@@ -99,7 +151,24 @@ async function search(keyword) {
    */
   if (!results.length) {
     var pageTitle = $("title").first().text().trim();
-    var containers = $(".flw-item").length;
+    /**
+     * Count containers in the RAW BYTES, not in the parsed DOM.
+     *
+     * This counted $(".flw-item") until 2026-08-22, which made it blind to the
+     * one failure it exists to catch. When the document itself stops parsing,
+     * the DOM reports zero containers, `containers > 0` is false — and the
+     * title still parses, because <title> sits before the malformed tag, so
+     * looksLikeSearchPage stays true as well. Both branches pass and search
+     * returns [] exactly as if the keyword had no matches. That is precisely
+     * the silent failure this block was written to prevent, reproduced inside
+     * the block itself.
+     *
+     * A check must never be computed from the machinery it is checking. The
+     * received bytes are the only thing still trustworthy once parsing has
+     * collapsed, so the guard reads those and reports both numbers.
+     */
+    var containers = (html.match(/class="[^"]*\bflw-item\b/g) || []).length;
+    var parsedContainers = $(".flw-item").length;
     // Two distinguishable failures, and neither may return [] quietly:
     //
     //  - containers present but nothing parsed  -> our selectors broke
@@ -117,9 +186,15 @@ async function search(keyword) {
         "search",
         "SEARCH_UNUSABLE",
         containers > 0
-          ? "Found " + containers + " result containers but parsed 0 — upstream markup changed."
+          ? "Upstream served " + containers + " result cards but " + parsedContainers
+            + " parsed — markup changed, or the document failed to parse."
           : "Upstream did not return a search page (title: \"" + pageTitle.slice(0, 60) + "\").",
-        { containers: containers, pageTitle: pageTitle.slice(0, 80), htmlLength: html.length }
+        {
+          containers: containers,
+          parsedContainers: parsedContainers,
+          pageTitle: pageTitle.slice(0, 80),
+          htmlLength: html.length,
+        }
       );
     }
   }
@@ -465,6 +540,9 @@ async function resolveEmbedForEpisode(slug, epNum, category) {
 
 module.exports = {
   search: search,
+  // Exported for the offline regression suite: the 2026-08-22 outage is only
+  // testable without the network if the repair step can be exercised directly.
+  repairUnterminatedTags: repairUnterminatedTags,
   getServersFromList: getServersFromList,
   getInfo: getInfo,
   getEpisodes: getEpisodes,

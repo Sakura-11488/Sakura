@@ -80,6 +80,63 @@ describe('anime id resolution', () => {
   });
 });
 
+describe('malformed upstream markup — the 2026-08-22 outage', () => {
+  // The exact shape hianime.dk served: a gtag <script> with neither its
+  // attribute quote nor its angle bracket closed. A conforming parser must
+  // treat everything after it as raw script text, so the whole document —
+  // </head>, <body>, and every result card — was swallowed.
+  const broken = [
+    '<html><head><title>Search: one piece | HiAnime</title>',
+    '<script async src="https://www.googletagmanager.com/gtag/js?id=G-E',
+    '</head>',
+    '<body class="">',
+    '<div class="film_list-wrap">',
+    '<div class="flw-item flw-item-big">',
+    '<a class="film-poster-ahref" href="https://hianime.dk/one-piece-8719"></a>',
+    '<img class="film-poster-img" src="/p.jpg">',
+    '<div class="film-name"><a href="https://hianime.dk/one-piece-8719">One Piece</a></div>',
+    '</div></div></body></html>',
+  ].join('\n');
+
+  test('without repair the document parses to an empty body — the silent failure', () => {
+    const $ = cheerio.load(broken);
+    assert.equal($('.flw-item').length, 0, 'demonstrates the bug: no containers survive the parse');
+    assert.equal($('a').length, 0, 'zero anchors on a page full of links is the tell');
+  });
+
+  test('repair recovers the result cards', () => {
+    const $ = cheerio.load(hianime.repairUnterminatedTags(broken));
+    assert.equal($('.flw-item').length, 1, 'the card must survive repair');
+    assert.equal($('.film-name a').first().text(), 'One Piece');
+    assert.equal(
+      $('.film-poster-ahref').attr('href'),
+      'https://hianime.dk/one-piece-8719',
+    );
+  });
+
+  test('well-formed markup is left byte-identical — the repair must not corrupt good pages', () => {
+    // A tag cannot reach '<' before '>' unless it is malformed, so a correct
+    // document has nothing for the pattern to match. Asserted rather than
+    // assumed: a repair that rewrites healthy input is worse than the bug.
+    const fine = '<html><head><script src="/a.js"></script></head>'
+      + '<body><div class="flw-item"><a href="/x">t</a></div></body></html>';
+    assert.equal(hianime.repairUnterminatedTags(fine), fine);
+  });
+
+  test('the guard counts raw bytes, so a collapsed parse cannot look like "no matches"', () => {
+    // The original guard counted $('.flw-item'). On this input that is 0, and
+    // <title> parses fine because it precedes the malformed tag — so the title
+    // check also passes. Both branches fall through and search returns []. The
+    // guard must read the bytes instead.
+    const $ = cheerio.load(broken);
+    assert.equal($('.flw-item').length, 0, 'the DOM-based count is defeated');
+    assert.match($('title').first().text(), /search/i, 'and the title check still passes');
+
+    const rawContainers = (broken.match(/class="[^"]*\bflw-item\b/g) || []).length;
+    assert.ok(rawContainers > 0, 'but the raw bytes still carry the evidence');
+  });
+});
+
 describe('failing loudly', () => {
   test('getEpisodes refuses without a slug rather than returning []', async () => {
     // The upstream selects the anime by Referer, so no slug means no correct
