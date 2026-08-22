@@ -138,6 +138,57 @@ describe('malformed upstream markup — the 2026-08-22 outage', () => {
   });
 });
 
+describe('search ranking — the series must come first', () => {
+  // hianime's own order buried the series people search for: "naruto" put the
+  // actual Naruto at 20 of 27, behind an unaired announcement, Boruto and
+  // eleven films. The app plays the first result, so tapping it landed on
+  // something with no episodes and read as "anime is broken" while playback
+  // was fine.
+  const named = (...names) => names.map((name) => ({ name, slug: 'x' }));
+
+  test('an exact title match outranks everything', () => {
+    const ranked = hianime.rankResults(
+      named('NARUTO (Shinsaku Anime)', 'Boruto: Naruto Next Generations', 'Naruto Shippuden the Movie', 'Naruto'),
+      'naruto',
+    );
+    assert.equal(ranked[0].name, 'Naruto');
+  });
+
+  test('films, OVAs and recaps sink below series', () => {
+    const ranked = hianime.rankResults(
+      named('Demon Slayer: Kimetsu no Yaiba - The Movie', 'Demon Slayer: Kimetsu no Yaiba'),
+      'demon slayer',
+    );
+    assert.equal(ranked[0].name, 'Demon Slayer: Kimetsu no Yaiba');
+  });
+
+  test('among real series the base entry beats a season or arc', () => {
+    const ranked = hianime.rankResults(
+      named('Jujutsu Kaisen Season 2', 'Jujutsu Kaisen'),
+      'jujutsu kaisen',
+    );
+    assert.equal(ranked[0].name, 'Jujutsu Kaisen');
+  });
+
+  test('ranking REORDERS only — nothing is dropped', () => {
+    const input = named('A Movie', 'B', 'C Special', 'D');
+    const ranked = hianime.rankResults(input, 'b');
+    assert.equal(ranked.length, input.length, 'every result must survive');
+    assert.deepEqual(
+      ranked.map((r) => r.name).sort(),
+      input.map((r) => r.name).sort(),
+      'the set must be identical, only the order may change',
+    );
+  });
+
+  test('ties keep upstream order, so this can only refine it', () => {
+    const input = named('Zeta', 'Alpha', 'Beta');
+    // Nothing matches the query, so every score is equal.
+    const ranked = hianime.rankResults(input, 'nomatchatall');
+    assert.deepEqual(ranked.map((r) => r.name), ['Zeta', 'Alpha', 'Beta']);
+  });
+});
+
 describe('mal-map — the title matcher that routes playback to megaplay', () => {
   // These run entirely offline. The 16MB index is not needed, and must not be,
   // or the rules below could only be checked on a machine that had already run
@@ -151,6 +202,10 @@ describe('mal-map — the title matcher that routes playback to megaplay', () =>
     assert.equal(malMap.canonicalSeason('jujutsu kaisen 2nd season'), 'jujutsu kaisen season 2');
     assert.equal(malMap.canonicalSeason('overlord season iv'), 'overlord season 4');
     assert.equal(malMap.canonicalSeason('bleach season 3'), 'bleach season 3');
+  });
+
+  test('parenthetical qualifiers are stripped — "Jujutsu Kaisen (TV)"', () => {
+    assert.ok(malMap.candidateKeys('Jujutsu Kaisen (TV)').includes('jujutsu kaisen'));
   });
 
   test('spacing differences resolve — "Dan Da Dan" vs "Dandadan"', () => {

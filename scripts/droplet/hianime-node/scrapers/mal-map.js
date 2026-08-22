@@ -88,7 +88,16 @@ function candidateKeys(title) {
   // shorten to something so generic it would collide (>= 3 chars).
   var head = base.split(/ (?:the movie|movie|part|cour) /)[0];
   var dashHead = title.split(/\s+[-–—:]\s+/)[0];
-  [head, normalizeTitle(dashHead)].forEach(function(candidate) {
+
+  // Parenthetical qualifiers — "Jujutsu Kaisen (TV)", "(Dub)", "(2011)" — are
+  // hianime's disambiguation, not part of the name. Left in, they normalise to
+  // "jujutsu kaisen tv", which is not a key, so the title resolves to nothing
+  // and playback silently falls back to the dead host. Some of them ARE indexed
+  // as synonyms ("Naruto (TV)" is), which is why this is an extra candidate
+  // rather than a replacement: the fuller form still gets first refusal.
+  var deparenthesised = normalizeTitle(title.replace(/\s*\([^)]*\)/g, ""));
+
+  [head, normalizeTitle(dashHead), deparenthesised].forEach(function(candidate) {
     var trimmed = (candidate || "").trim();
     if (trimmed.length >= 3 && keys.indexOf(trimmed) === -1) {
       keys.push(trimmed, canonicalSeason(trimmed), compact(trimmed));

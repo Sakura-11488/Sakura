@@ -90,6 +90,57 @@ function repairUnterminatedTags(html) {
   );
 }
 
+/**
+ * Re-rank search results so the SERIES someone asked for comes first.
+ *
+ * hianime's own ordering buries it. Searching "naruto" returns 27 results with
+ * the actual Naruto at position 20, behind an unaired announcement, Boruto and
+ * eleven movies; "demon slayer" puts the series at 7 of 13, behind four films
+ * and two arc compilations. Since the app plays the first result, tapping it
+ * lands on something with no episodes — which reads as "anime is broken" even
+ * though playback is fine, and that is exactly what it looked like.
+ *
+ * This only ever REORDERS. Nothing is dropped and nothing is invented, so the
+ * worst a bad score can do is put a title lower than someone wanted — never
+ * hide it, and never substitute a different show.
+ */
+var SIDE_CONTENT = /\b(movie|ova|ona|special|specials|spin[- ]?off|recap|compilation|picture drama|summary)\b/i;
+
+function scoreResult(result, normalizedQuery) {
+  var name = normalizeTitleForRank(result.name || "");
+  var score = 0;
+
+  if (name === normalizedQuery) score += 1000;                 // "Naruto" for "naruto"
+  else if (name.indexOf(normalizedQuery + " ") === 0) score += 400;  // begins with the query
+  else if (name.indexOf(normalizedQuery) !== -1) score += 100;       // mentions it
+
+  // Films, OVAs and recap compilations share the franchise name and are almost
+  // never what a bare franchise search means.
+  if (SIDE_CONTENT.test(result.name || "")) score -= 500;
+
+  // Among genuine series, the base entry has the shortest name; every extra
+  // word is a season, arc or subtitle qualifier the user did not ask for.
+  var extraWords = name.split(" ").length - normalizedQuery.split(" ").length;
+  if (extraWords > 0) score -= Math.min(extraWords, 12) * 12;
+
+  return score;
+}
+
+function normalizeTitleForRank(value) {
+  return String(value).toLowerCase().normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function rankResults(results, keyword) {
+  var q = normalizeTitleForRank(keyword);
+  if (!q) return results;
+  return results
+    .map(function(r, i) { return { r: r, i: i, s: scoreResult(r, q) }; })
+    // Ties keep upstream order, so this can only ever be a refinement of it.
+    .sort(function(a, b) { return b.s - a.s || a.i - b.i; })
+    .map(function(x) { return x.r; });
+}
+
 async function search(keyword) {
   var url = config.HIANIME_BASE + "/search?keyword=" + encodeURIComponent(keyword);
   var html = await http.fetchText(url);
@@ -199,7 +250,7 @@ async function search(keyword) {
       );
     }
   }
-  return results;
+  return rankResults(results, keyword);
 }
 
 /**
@@ -607,6 +658,7 @@ module.exports = {
   // Exported for the offline regression suite: the 2026-08-22 outage is only
   // testable without the network if the repair step can be exercised directly.
   repairUnterminatedTags: repairUnterminatedTags,
+  rankResults: rankResults,
   getServersFromList: getServersFromList,
   getInfo: getInfo,
   getEpisodes: getEpisodes,
