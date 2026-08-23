@@ -5,7 +5,6 @@ import {
   getActiveConsumetUrl,
   setActiveConsumetUrl,
 } from '@/lib/consumet-client';
-import { Platform } from 'react-native';
 import {
   HIANIME_BASE,
   fetchUpstreamText,
@@ -168,22 +167,40 @@ export function buildStreamEmbedUrl(
   }
 
   if (streamMalId && streamMalId !== '0') {
-    // Web goes straight to the player; native keeps the wrapper, which is what
-    // its injected shield and progress scripts are written against.
-    if (Platform.OS === 'web') {
-      return `${MEGAPLAY_BASE}/stream/mal/${streamMalId}/${epNum}/${category}`;
-    }
-    return `${HIANIME_BASE}/player/mal/${streamMalId}/${epNum}/${category}`;
+    /**
+     * BOTH platforms get megaplay's bare player. Native used to get hianime's
+     * /player/mal/ wrapper instead, and that wrapper is where the ads were.
+     *
+     * Measured, same episode, same minute:
+     *     megaplay /stream/mal/  ->   3,704 bytes, 3 external scripts,
+     *                                 0 popup markers. Its only third party is
+     *                                 statlytic.net, which carries data-domain=
+     *                                 and is Plausible analytics, not an ad net.
+     *     hianime  /player/mal/  -> 208,380 bytes, 60 scripts, 4 _blank links.
+     *
+     * A 56x heavier page from a full ad-supported site, loaded only on native.
+     * That is why the app showed ads and the website largely did not.
+     *
+     * The old comment here claimed native "keeps the wrapper, which is what its
+     * injected shield and progress scripts are written against". That was not
+     * true: buildAnimePlayerShieldScript nulls window.open and blocks clicks by
+     * host pattern, and the progress poll just looks for a <video> — neither
+     * knows anything about hianime's DOM.
+     *
+     * This is the fallback path only. With the Referer fix in place the player
+     * should resolve the stream directly and never reach an iframe at all; this
+     * makes the iframe harmless on the occasions it still appears.
+     */
+    return `${MEGAPLAY_BASE}/stream/mal/${streamMalId}/${epNum}/${category}`;
   }
 
   if (slug) {
     return `${HIANIME_BASE}/watch/${encodeURIComponent(slug)}?ep=${epNum}`;
   }
 
-  if (Platform.OS === 'web') {
-    return `${MEGAPLAY_BASE}/stream/mal/${malId}/${epNum}/${category}`;
-  }
-  return `${HIANIME_BASE}/player/mal/${malId}/${epNum}/${category}`;
+  // Same reasoning as the branch above: megaplay's bare player on both
+  // platforms, never hianime's 208KB ad-carrying wrapper.
+  return `${MEGAPLAY_BASE}/stream/mal/${malId}/${epNum}/${category}`;
 }
 
 export function buildPlaybackHeaders(referer?: string): Record<string, string> {
