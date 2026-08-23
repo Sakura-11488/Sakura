@@ -152,6 +152,52 @@ function sniffImageType(buf) {
 
 const isImageBuf = (buf) => sniffImageType(buf) !== null;
 
+/**
+ * Is this plausibly a real comic PAGE, or a placeholder wearing image bytes?
+ *
+ * sniffImageType only proves "these bytes are an image". That is enough against
+ * xoxocomic, which returns 106KB of HTML for dead pages and is caught on the
+ * magic bytes. It is NOT enough in general: comichubfree.com serves a valid
+ * 2,462-byte 80x104 PNG for every page of a chapter — byte-identical across
+ * pages, identical from a residential IP, so it is unconditional rather than IP
+ * filtering. Verified against this file's own sniffImageType: an 88-byte
+ * synthetic PNG of those dimensions is certified `image/png`.
+ *
+ * Left unguarded, that is the worst failure this service can have. /pages would
+ * verify the chapter, /readyz would go green, and the reader would render a
+ * wall of identical grey tiles with nothing anywhere reporting a problem — the
+ * exact silent-success shape the rest of this file is built to refuse.
+ *
+ * Returns null when the buffer looks like a real page, or a reason string.
+ *
+ * ONLY apply this where a PAGE is expected. Covers are legitimately small
+ * (xoxocomic covers measure ~16.9KB) and are served by the same /img route, so
+ * a global floor would break them. minBytes is passed by the /pages sampler and
+ * the /readyz image leg, and by nothing else.
+ */
+const MIN_PAGE_IMAGE_BYTES = Number(process.env.COMICS_MIN_PAGE_BYTES || 8192);
+// Below this in either axis nothing is a readable comic page; real scans are
+// ~600-1600px wide. Generous on purpose — this is a floor, not a quality bar.
+const MIN_PAGE_IMAGE_EDGE = 200;
+
+function plausiblePageImage(buf, { minBytes = MIN_PAGE_IMAGE_BYTES } = {}) {
+    const type = sniffImageType(buf);
+    if (!type) return "not an image";
+    if (buf.length < minBytes) {
+        return `only ${buf.length} bytes — placeholder, not a page`;
+    }
+    // PNG carries its dimensions at a fixed offset, so this costs nothing.
+    // JPEG needs a segment walk and its byte floor already does the work.
+    if (type === "image/png" && buf.length >= 24) {
+        const width = buf.readUInt32BE(16);
+        const height = buf.readUInt32BE(20);
+        if (width < MIN_PAGE_IMAGE_EDGE || height < MIN_PAGE_IMAGE_EDGE) {
+            return `${width}x${height} — placeholder, not a page`;
+        }
+    }
+    return null;
+}
+
 // BYTE-bounded, not entry-bounded. A 36-item list entry serialises to ~13.7 KB
 // and a /pages entry with 189 URLs to ~17.7 KB, so `max: 1000` alone is a
 // 14-18 MB JSON budget and considerably more as a live V8 object graph — on a
@@ -582,16 +628,23 @@ async function fetchChapterPages(slug, chapterId, { noCache = false, ...opts } =
  * `allowProxy: false` guarantees a call cannot spend money — the /pages sampler
  * and the /readyz image leg both use it, so validation is always free.
  */
-async function loadImage(url, { allowProxy = true, probe = false } = {}) {
+async function loadImage(url, { allowProxy = true, probe = false, minBytes = 0 } = {}) {
     const cachePath = imgCachePath(url);
     try {
         const cached = await readFile(cachePath);
         const ct = sniffImageType(cached);
         if (ct) {
+            // The disk path needs the placeholder check too. Entries written
+            // before this guard existed were only magic-verified, so a cached
+            // placeholder would otherwise sail straight past it — and the cache
+            // has no eviction, so it would do so indefinitely.
+            const bad = minBytes ? plausiblePageImage(cached, { minBytes }) : null;
+            if (bad) throw new UpstreamError("INVALID", bad);
             imgCacheStats.hits += 1;
             return { buf: cached, contentType: ct, via: "disk" };
         }
-    } catch {
+    } catch (err) {
+        if (err instanceof UpstreamError) throw err;
         // cache miss — fall through to the network
     }
 
@@ -612,6 +665,14 @@ async function loadImage(url, { allowProxy = true, probe = false } = {}) {
         }
     }
     const contentType = sniffImageType(buf);
+
+    // Reject a placeholder BEFORE it reaches the cache. Throwing INVALID here
+    // reuses the ladder's existing classification: INVALID is `final`, so it is
+    // memoised dead and never escalated to the paid tier — a placeholder is the
+    // origin working as designed, not us being blocked, and there is nothing to
+    // buy our way past.
+    const implausible = minBytes ? plausiblePageImage(buf, { minBytes }) : null;
+    if (implausible) throw new UpstreamError("INVALID", implausible);
 
     // Persist for next time (best effort — never block the response on it).
     // Only magic-verified image bytes are ever written, so an HTML soft-404 can
@@ -785,7 +846,9 @@ async function runReadiness() {
     const sample = pages[Math.min(pages.length - 1, Math.floor(pages.length / 2))] || pages[0];
     checks.samplePage = sample;
     try {
-        const img = await loadImage(sample, { allowProxy: false, probe: true });
+        // minBytes: this leg exists to prove a PAGE is readable, so a
+        // placeholder tile must fail it rather than turn the check green.
+        const img = await loadImage(sample, { allowProxy: false, probe: true, minBytes: MIN_PAGE_IMAGE_BYTES });
         checks.pageImageVia = img.via;
         checks.pageImageOk = Boolean(img.contentType) && img.via !== "disk";
         if (!checks.pageImageOk) checks.pageImageReason = "served from the disk cache, not proven live";
@@ -1001,7 +1064,7 @@ app.get("/pages", async (req, res) => {
                 let invalid = 0;
                 for (const candidate of candidates) {
                     try {
-                        await loadImage(candidate, { allowProxy: false });
+                        await loadImage(candidate, { allowProxy: false, minBytes: MIN_PAGE_IMAGE_BYTES });
                         liveHits += 1;
                     } catch (err) {
                         if (err instanceof UpstreamError && err.code === "INVALID") invalid += 1;
@@ -1113,6 +1176,8 @@ export {
     parseChapters,
     parsePages,
     sniffImageType,
+    plausiblePageImage,
+    MIN_PAGE_IMAGE_BYTES,
     hostAllowed,
     validateListPage,
     validateSearchPage,
