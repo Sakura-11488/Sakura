@@ -194,8 +194,24 @@ export function buildPlaybackHeaders(referer?: string): Record<string, string> {
   } catch {
     // keep default
   }
+  /**
+   * Referer must be the ORIGIN with a trailing slash — never the player path.
+   *
+   * The CDN gates the playlists and every segment on an exact Referer string.
+   * Measured against one URL in one minute, varying nothing else:
+   *
+   *     https://megaplay.buzz/                       -> 200
+   *     https://megaplay.buzz                        -> 403  (no trailing slash)
+   *     https://megaplay.buzz/stream/mal/57334/1/sub -> 403  (a player path)
+   *
+   * This function already computed `origin` and then used it only for the
+   * Origin header, passing the full path through as Referer — so callers got a
+   * 403, direct playback failed, and the player fell back to the megaplay
+   * iframe. That iframe is where the ads are. The ads were never the price of
+   * access; they were the symptom of sending a Referer the CDN rejects.
+   */
   return {
-    Referer: ref,
+    Referer: `${origin}/`,
     Origin: origin,
     'User-Agent': MOBILE_SAFARI_UA,
   };

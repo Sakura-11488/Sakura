@@ -295,7 +295,29 @@ async function extractM3u8(embedUrl) {
       },
     ],
     subtitles: pickTracks(data),
-    headers: { Referer: resolvedEmbedUrl },
+    /**
+     * ORIGIN FORM, WITH THE TRAILING SLASH. Not the embed URL.
+     *
+     * The CDN gates every layer — master playlist, variant playlist and each
+     * segment — on an EXACT Referer string. Verified against one URL in one
+     * minute, varying nothing else:
+     *
+     *     https://megaplay.buzz/                      -> 200
+     *     https://megaplay.buzz                       -> 403   (no trailing slash)
+     *     https://megaplay.buzz/stream/mal/57334/1/sub -> 403   (what we used to send)
+     *
+     * We were emitting the full embed path, so every client that honoured our
+     * own headers got 403 and fell back to the megaplay IFRAME — which is where
+     * the ads live. The ads were not something we had to tolerate for access;
+     * they were the symptom of sending a Referer the CDN rejects.
+     *
+     * The 403 body is Cloudflare's generic "Sorry, you have been blocked" page,
+     * so this reads as a WAF/bot block and invites a hunt for fingerprinting or
+     * IP reputation. It is neither: a request with NO User-Agent, no Origin and
+     * no cookies still returns 200 with the right Referer. The header is the
+     * entire gate.
+     */
+    headers: { Referer: new URL(resolvedEmbedUrl).origin + "/" },
     category: category,
   };
 
