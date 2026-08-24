@@ -76,19 +76,25 @@ export async function getProfile(walletAddress: string): Promise<UserProfile | n
 // edge function. Re-exported here so existing imports keep working.
 export { upsertProfile } from './profile-write';
 
-export interface ReadingHistory {
-  wallet_address: string;
-  content_id: string;
-  content_type: 'anime' | 'manga' | 'novel';
-  chapter_id: string;
-  progress: number;
-  updated_at: string;
-}
-
-export async function updateHistory(entry: Omit<ReadingHistory, 'updated_at'>): Promise<void> {
-  const { error } = await supabase.from('reading_history').upsert({
-    ...entry,
-    updated_at: new Date().toISOString(),
-  });
-  if (error) throw error;
-}
+/**
+ * Reading history lives in `lib/reading-history.ts`. Use that.
+ *
+ * A `ReadingHistory` interface and an `updateHistory()` helper used to sit here
+ * and described a table that does not exist. It declared content_id,
+ * content_type and progress; the actual `reading_history` table is
+ * (id, wallet_address, manga_id, chapter_id, last_page, updated_at).
+ *
+ * It could never have worked, not merely written the wrong columns: `manga_id`
+ * and `id` are both NOT NULL with no default and no sequence, so every call
+ * would have thrown on the insert. Nothing ever called it — which is why the
+ * breakage was invisible, and why the table sat at zero rows.
+ *
+ * Removed rather than repaired. A fixed-up version would still have had no
+ * callers, and a plausible-looking helper next to the real one is how someone
+ * ends up writing through the wrong path a year from now.
+ *
+ * Note for anyone reading a profile's `chaptersRead`: `lib/profile-stats.ts`
+ * derives it from a bare row count on `reading_history`, so it reported 0 for
+ * every user while that table was empty. It is schema-agnostic and was never
+ * broken — just empty.
+ */
