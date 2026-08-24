@@ -198,6 +198,10 @@ export default function QuestsScreen() {
             <TouchableOpacity onPress={onTap(() => router.push('/badges' as any))}>
               <Text style={s.link}>View all badges ›</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity onPress={onTap(() => router.push('/leaderboard' as any))}>
+              <Text style={s.link}>XP leaderboard ›</Text>
+            </TouchableOpacity>
           </ScrollView>
         )}
       </SafeAreaView>
