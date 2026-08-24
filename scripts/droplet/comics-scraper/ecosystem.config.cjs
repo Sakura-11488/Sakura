@@ -49,6 +49,22 @@ module.exports = {
                 COMICS_SCRAPER_PORT: "3100",
                 COMICS_UPSTREAM_BASE: "https://xoxocomic.com",
 
+                // Which source answers a SOURCELESS /popular and /search.
+                // `cbp` (Comic Book Plus) because xoxocomic's reader died in
+                // 2026-08: it still browses, so defaulting there would hand
+                // users a catalogue they cannot open. Ids are namespaced
+                // (`cbp-1325` vs the XOXO slug `invincible`), so /details,
+                // /chapters and /pages route by id and ignore this — an id
+                // stored by a client before the switch still resolves to XOXO.
+                // Set to "xoxo" the day their page images come back.
+                COMICS_DEFAULT_SOURCE: "cbp",
+                // comicbookplus.com/robots.txt asks every unnamed agent for
+                // Crawl-delay: 5. Page fetches are the crawl-shaped ones and are
+                // serialised behind this floor; reader images are ordinary
+                // traffic and go through the normal concurrency, once each,
+                // straight into the disk cache.
+                COMICS_CBP_MIN_GAP_MS: "1000",
+
                 // Entry ceiling AND a byte bound. A 36-item list entry is ~13.7 KB
                 // and a /pages entry ~17.7 KB, so 1000 entries alone is 14-18 MB
                 // of JSON and considerably more as a live object graph — on a 1 GB
@@ -133,13 +149,24 @@ module.exports = {
                 // internet and from the Vercel media-proxy allowlist (which
                 // forwards ANY http(s) URL). Allowlist the hosts this scraper can
                 // legitimately emit.
-                COMICS_IMG_HOSTS: "xoxocomic.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
+                // comicbookplus.com covers box01.comicbookplus.com by suffix.
+                // Both serve reader images and which host an issue uses is not
+                // predictable from its id, so neither can be dropped.
+                COMICS_IMG_HOSTS: "xoxocomic.com,comicbookplus.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
 
                 COMICS_READY_TTL_MS: "60000",
                 COMICS_READY_FAIL_TTL_MS: "10000",
                 // PINNED. Using whatever comic leads the popular page today makes
                 // the deploy gate depend on a third party's merchandising.
                 COMICS_READY_SLUG: "invincible",
+                // Same idea for the Comic Book Plus walk: "The Spirit"
+                // (Quality), 22 issues, reader verified by hand 2026-08-24.
+                COMICS_READY_CBP_ID: "cbp-1324",
+                // Comic Book Plus serves page bytes today, so if it stops, the
+                // deploy stops. This is deliberately the opposite of
+                // COMICS_READY_REQUIRE_IMAGE above, which stays off only because
+                // XOXO's images are broken upstream for everyone.
+                COMICS_READY_REQUIRE_IMAGE_CBP: "1",
                 // During a block the proxy IS the read path; readiness must be
                 // allowed to use it or the one scenario this design exists for
                 // reports NOT READY and blocks the deploy of the fix. At most one

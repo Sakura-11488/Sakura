@@ -634,7 +634,7 @@ export function createUpstream(options = {}) {
      *   health counters.
      * @returns {Promise<{html:string, via:"direct"|"proxy", value:any}>}
      */
-    async function fetchHtml(url, { validate = null, allowProxy = true, probe = false, budgetMs } = {}) {
+    async function fetchHtml(url, { validate = null, allowProxy = true, probe = false, budgetMs, referer = upstreamBase } = {}) {
         const deadline = Date.now() + Number(budgetMs || totalBudgetMs);
         const { tryDirect, isProbe } = claimDirect("html");
         let directErr = null;
@@ -646,7 +646,10 @@ export function createUpstream(options = {}) {
                 const res = await directFetch(url, {
                     accept: "text/html,application/xhtml+xml",
                     timeoutMs: Math.min(directTimeoutMs, Math.max(1000, deadline - Date.now())),
-                    referer: upstreamBase,
+                    // Defaults to the XOXO base; a second source passes its own,
+                    // because sending one site's Referer to another is both wrong
+                    // and, on hotlink-protected hosts, a 403.
+                    referer,
                     maxBytes: maxHtmlBytes,
                     what: "html body",
                 });

@@ -40,6 +40,7 @@ import { mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createUpstream, UpstreamError } from "./upstream.js";
+import { createComicBookPlus, isCbpId, CBP_REFERER } from "./comicbookplus.js";
 
 const PORT = Number(process.env.COMICS_SCRAPER_PORT || 3100);
 const UPSTREAM_BASE = process.env.COMICS_UPSTREAM_BASE || "https://xoxocomic.com";
@@ -70,7 +71,9 @@ const PAGES_VERIFY = String(process.env.COMICS_PAGES_VERIFY ?? "1") !== "0";
 // its reader falls back to.
 const IMG_HOST_ALLOW = String(
     process.env.COMICS_IMG_HOSTS
-    || "xoxocomic.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
+    // comicbookplus.com covers box01.comicbookplus.com by suffix — both host
+    // reader images, and which one an issue uses is not predictable.
+    || "xoxocomic.com,comicbookplus.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
 )
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -235,6 +238,54 @@ const htmlCache = new LRUCache({
     sizeCalculation: (v) => Math.max(1, String(v).length * 2),
     ttl: HTML_CACHE_TTL_MS,
 });
+
+// ---------------------------------------------------------------------------
+// Sources.
+//
+// XOXO is the original path and stays wired exactly as it was; its ids are
+// slugs (`invincible`). Comic Book Plus is the second source and its ids are
+// namespaced (`cbp-1325`), so an id alone says which source owns it and a
+// client that stored an id before this change keeps resolving to XOXO.
+//
+// The default only decides where a SOURCELESS request (/popular, /search) goes.
+// It is `cbp` because XOXO's reader is dead: browse still works there, so
+// defaulting to it would hand users a catalogue they cannot read. Flip
+// COMICS_DEFAULT_SOURCE back to `xoxo` the day their images return.
+// ---------------------------------------------------------------------------
+const DEFAULT_SOURCE = String(process.env.COMICS_DEFAULT_SOURCE || "cbp").toLowerCase();
+
+const cbp = createComicBookPlus({
+    upstream,
+    htmlCache,
+    minGapMs: Number(process.env.COMICS_CBP_MIN_GAP_MS || 1000),
+});
+
+/** Which source owns this id? `null` means the legacy XOXO path. */
+function sourceForId(id) {
+    return isCbpId(id) ? cbp : null;
+}
+
+/** Which source should a sourceless list request use? */
+function sourceForRequest(req) {
+    const q = String(req.query.source || "").trim().toLowerCase();
+    if (q === "cbp" || q === "comicbookplus") return cbp;
+    if (q === "xoxo" || q === "xoxocomic") return null;
+    return DEFAULT_SOURCE === "cbp" ? cbp : null;
+}
+
+/**
+ * Hotlink protection is per-host: Comic Book Plus answers 403 to an image
+ * request with no Referer, and would answer it to one carrying xoxocomic's.
+ */
+function refererForImage(url) {
+    try {
+        const h = new URL(url).hostname.toLowerCase();
+        if (h === "comicbookplus.com" || h.endsWith(".comicbookplus.com")) return CBP_REFERER;
+    } catch {
+        /* fall through to the ladder's default */
+    }
+    return undefined;
+}
 
 /**
  * @param {(value:any) => boolean} shouldCache guard so an EMPTY result is never
@@ -628,9 +679,16 @@ async function fetchChapterPages(slug, chapterId, { noCache = false, ...opts } =
  * `allowProxy: false` guarantees a call cannot spend money — the /pages sampler
  * and the /readyz image leg both use it, so validation is always free.
  */
-async function loadImage(url, { allowProxy = true, probe = false, minBytes = 0 } = {}) {
+async function loadImage(url, { allowProxy = true, probe = false, minBytes = 0, skipDiskCache = false } = {}) {
     const cachePath = imgCachePath(url);
     try {
+        // `skipDiskCache` is for readiness: that leg exists to prove the NETWORK
+        // path works, and the disk cache has no eviction, so the first probe of
+        // a pinned page would otherwise cache it and every later walk would
+        // grade itself against its own artifact — reporting healthy forever,
+        // including through a total upstream outage. Reading past the cache is
+        // what makes the check mean anything.
+        if (skipDiskCache) throw new Error("bypassing disk cache");
         const cached = await readFile(cachePath);
         const ct = sniffImageType(cached);
         if (ct) {
@@ -652,6 +710,7 @@ async function loadImage(url, { allowProxy = true, probe = false, minBytes = 0 }
         isImage: isImageBuf,
         allowProxy,
         probe,
+        referer: refererForImage(url),
     });
     // `redirect: follow` can land us somewhere we never vetted. Re-check.
     if (finalUrl && finalUrl !== url) {
@@ -767,6 +826,10 @@ app.get("/healthz", (_req, res) => {
     res.status(healthy ? 200 : 503).json({
         ok: healthy,
         upstream: UPSTREAM_BASE,
+        defaultSource: DEFAULT_SOURCE,
+        // Zero after a restart and until the first list request — the catalogue
+        // is built lazily, so this is "has it been built", not "is it healthy".
+        cbpCatalogSize: cbp.catalogSize(),
         mode: fetchStats.mode,
         observedTraffic: fetchStats.requests > 0,
         cacheEntries: cache.size,
@@ -805,7 +868,94 @@ app.get("/healthz", (_req, res) => {
 let readyCache = { at: 0, payload: null };
 let readyInFlight = null;
 
+/**
+ * The decisive leg, shared by both sources: does a sampled page return real
+ * image BYTES, off the network?
+ *
+ * It reads PAST the disk cache. The cache has no eviction and still holds real
+ * page images from before the XOXO reader died, so a disk hit would certify a
+ * chapter that is entirely dead — and on a working source the first probe would
+ * cache the sample and every later walk would grade itself against its own
+ * artifact. `via !== "disk"` then stays as a cheap invariant on top.
+ * `minBytes` is the other half: this leg exists to prove a PAGE is readable, so
+ * a placeholder tile that is technically valid JPEG must fail it.
+ */
+async function proveSamplePage(pages, checks) {
+    const sample = pages[Math.min(pages.length - 1, Math.floor(pages.length / 2))] || pages[0];
+    checks.samplePage = sample;
+    try {
+        const img = await loadImage(sample, {
+            allowProxy: false, probe: true, minBytes: MIN_PAGE_IMAGE_BYTES, skipDiskCache: true,
+        });
+        checks.pageImageVia = img.via;
+        checks.pageImageOk = Boolean(img.contentType) && img.via !== "disk";
+        if (!checks.pageImageOk) checks.pageImageReason = "served from the disk cache, not proven live";
+    } catch (err) {
+        checks.pageImageOk = false;
+        checks.pageImageReason = err instanceof UpstreamError
+            ? `${err.code}: ${err.message}`
+            : String(err?.message || err).slice(0, 160);
+    }
+}
+
+/**
+ * Readiness for the Comic Book Plus path — the one the app actually reads from
+ * now, so this is what deploy.sh must gate on. Walks the same five links.
+ *
+ * UNLIKE the XOXO walk, a dead image leg here is a HARD FAIL. That asymmetry is
+ * the point: XOXO's images are broken upstream for everyone, so gating on them
+ * would mean no deploy could ever pass until a third party fixed their site.
+ * Comic Book Plus serves bytes today, so if it stops, the deploy should stop.
+ *
+ * The HTML legs may be served from htmlCache (up to 5 minutes stale). The image
+ * leg may not — `proveSamplePage` rejects a disk hit — and that is the leg that
+ * decides the verdict.
+ */
+async function runReadinessCbp() {
+    const checks = {
+        source: "cbp",
+        listItems: 0, slug: null, title: null,
+        chapters: 0, chapterId: null, pageUrls: 0, samplePage: null,
+        pageImageOk: false, pageImageVia: null, pageImageReason: null,
+    };
+
+    const list = await cbp.popular(24);
+    checks.listItems = list.length;
+    if (!list.length) return { ok: false, reason: "comicbookplus catalogue parsed 0 titles", checks };
+
+    // Pinned, for the same reason COMICS_READY_SLUG is: a gate that follows
+    // whatever leads the list today fails for reasons unrelated to the deploy.
+    // Default is a 22-issue run whose reader was verified by hand on 2026-08-24.
+    const id = String(process.env.COMICS_READY_CBP_ID || "").trim() || list[0].id;
+    checks.slug = id;
+
+    const detail = await cbp.details(id);
+    if (!detail || !detail.title) return { ok: false, reason: "detail parse produced no title", checks };
+    checks.title = detail.title;
+
+    const chapters = await cbp.chapters(id);
+    checks.chapters = chapters.length;
+    if (!chapters.length) return { ok: false, reason: "0 issues parsed", checks };
+
+    checks.chapterId = chapters[0].id;
+    const pages = await cbp.pages(id, chapters[0].id);
+    checks.pageUrls = pages.length;
+    if (!pages.length) return { ok: false, reason: "0 page URLs parsed", checks };
+
+    await proveSamplePage(pages, checks);
+    if (!checks.pageImageOk) {
+        if (String(process.env.COMICS_READY_REQUIRE_IMAGE_CBP || "1") === "1") {
+            return { ok: false, reason: `sampled page did not return live image bytes (${checks.pageImageReason})`, checks };
+        }
+        return { ok: true, degraded: true, mode: upstream.mode(), reason: "reader degraded", checks };
+    }
+    return { ok: true, degraded: false, mode: upstream.mode(), checks };
+}
+
 async function runReadiness() {
+    // Gate on the source that actually answers users. Readiness that walks a
+    // path the default no longer uses is a green light for the wrong thing.
+    if (DEFAULT_SOURCE === "cbp") return runReadinessCbp();
     const checks = {
         listItems: 0, slug: null, title: null,
         chapters: 0, chapterId: null, pageUrls: 0, samplePage: null,
@@ -841,23 +991,8 @@ async function runReadiness() {
     checks.pageUrls = pages.length;
     if (pages.length === 0) return { ok: false, reason: "0 page URLs parsed", checks };
 
-    // The leg that would have caught the outage three weeks ago. Prefer a page
-    // that is NOT already on disk so a historical artifact cannot green it.
-    const sample = pages[Math.min(pages.length - 1, Math.floor(pages.length / 2))] || pages[0];
-    checks.samplePage = sample;
-    try {
-        // minBytes: this leg exists to prove a PAGE is readable, so a
-        // placeholder tile must fail it rather than turn the check green.
-        const img = await loadImage(sample, { allowProxy: false, probe: true, minBytes: MIN_PAGE_IMAGE_BYTES });
-        checks.pageImageVia = img.via;
-        checks.pageImageOk = Boolean(img.contentType) && img.via !== "disk";
-        if (!checks.pageImageOk) checks.pageImageReason = "served from the disk cache, not proven live";
-    } catch (err) {
-        checks.pageImageOk = false;
-        checks.pageImageReason = err instanceof UpstreamError
-            ? `${err.code}: ${err.message}`
-            : String(err?.message || err).slice(0, 160);
-    }
+    // The leg that would have caught the outage three weeks ago.
+    await proveSamplePage(pages, checks);
 
     if (!checks.pageImageOk) {
         // Reported ALWAYS, gating only when asked. Page images are broken
@@ -950,7 +1085,17 @@ app.get("/debug/probe", async (req, res) => {
 
 app.get("/popular", async (req, res) => {
     const limit = clampInt(req.query.limit, { min: 1, max: 60, def: 24 });
+    const src = sourceForRequest(req);
     try {
+        if (src) {
+            const items = await cacheWrap(
+                `popular:${src.id}:${limit}`,
+                () => src.popular(limit),
+                { shouldCache: (v) => Array.isArray(v) && v.length > 0 },
+            );
+            if (!items.length) return res.status(502).json({ error: ERROR_TEXT.INVALID, code: "INVALID" });
+            return res.json({ items });
+        }
         const items = await cacheWrap(
             `popular:${limit}`,
             async () => (await fetchList(`${UPSTREAM_BASE}/popular-comic`)).slice(0, limit),
@@ -972,7 +1117,16 @@ app.get("/search", async (req, res) => {
     const limit = clampInt(req.query.limit, { min: 1, max: 60, def: 20 });
     const offset = clampInt(req.query.offset, { min: 0, max: 500, def: 0 });
     if (!q) return res.json({ items: [] });
+    const src = sourceForRequest(req);
     try {
+        if (src) {
+            const items = await cacheWrap(
+                `search:${src.id}:${q.toLowerCase()}:${limit}:${offset}`,
+                () => src.search(q, limit, offset),
+                { shouldCache: (v) => Array.isArray(v) && v.length > 0 },
+            );
+            return res.json({ items });
+        }
         const items = await cacheWrap(
             `search:${q.toLowerCase()}:${limit}:${offset}`,
             async () => {
@@ -993,7 +1147,17 @@ app.get("/search", async (req, res) => {
 app.get("/details", async (req, res) => {
     const slug = String(req.query.id || "").trim();
     if (!slug) return res.status(400).json({ error: "missing id" });
+    const src = sourceForId(slug);
     try {
+        if (src) {
+            const comic = await cacheWrap(
+                `details:${src.id}:${slug}`,
+                () => src.details(slug),
+                { shouldCache: (v) => Boolean(v && v.id && v.title) },
+            );
+            if (!comic) return res.status(502).json({ error: ERROR_TEXT.INVALID, code: "INVALID" });
+            return res.json({ comic });
+        }
         const comic = await cacheWrap(
             `details:${slug}`,
             async () => (await fetchComic(slug)).detail,
@@ -1013,7 +1177,19 @@ app.get("/chapters", async (req, res) => {
     const limit = clampInt(req.query.limit, { min: 1, max: 2000, def: 500 });
     const offset = clampInt(req.query.offset, { min: 0, max: 5000, def: 0 });
     if (!slug) return res.status(400).json({ error: "missing id" });
+    const src = sourceForId(slug);
     try {
+        if (src) {
+            const issues = await cacheWrap(
+                `chapters:${src.id}:${slug}`,
+                () => src.chapters(slug),
+                { shouldCache: (v) => Array.isArray(v) && v.length > 0 },
+            );
+            if (offset === 0 && !issues.length) {
+                return res.status(502).json({ error: ERROR_TEXT.INVALID, code: "INVALID" });
+            }
+            return res.json({ issues: issues.slice(offset, offset + limit) });
+        }
         const all = await cacheWrap(
             `chapters:${slug}`,
             async () => (await fetchComic(slug)).chapters,
@@ -1045,11 +1221,20 @@ app.get("/pages", async (req, res) => {
     // list back anyway — 29 wasted requests for nothing. Replaced by two sampled
     // byte-checks below.
     const verify = req.query.validate !== "0" && PAGES_VERIFY;
+    // The chapter id is the authoritative one: it is what actually addresses the
+    // images. Falling back to the series id keeps a mixed pair working.
+    const src = sourceForId(chapterId) || sourceForId(slug);
     try {
         const result = await cacheWrap(
-            `pages:v5:${slug}:${chapterId}:${verify ? "checked" : "raw"}`,
+            `pages:v5:${src ? src.id : "xoxo"}:${slug}:${chapterId}:${verify ? "checked" : "raw"}`,
             async () => {
-                const pages = await fetchChapterPages(slug, chapterId);
+                // Whichever source produced the list, it goes through the SAME
+                // sampled byte-check below — that check is what turns a
+                // non-viewable issue into an honest error instead of a wall of
+                // broken images, and no source gets to skip it.
+                const pages = src
+                    ? await src.pages(slug, chapterId)
+                    : await fetchChapterPages(slug, chapterId);
                 if (!verify || pages.length === 0) {
                     return { pages, droppedCount: 0, totalDiscovered: pages.length, verified: false };
                 }
