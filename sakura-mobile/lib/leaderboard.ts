@@ -41,16 +41,27 @@ export interface LeaderboardPage {
 /** The board opens on the top 100; "show more" pulls the next 100. */
 export const LEADERBOARD_PAGE_SIZE = 100;
 
+/** Below this a search matches almost everyone, so it is not worth a round trip. */
+export const MIN_SEARCH_LENGTH = 2;
+
 export async function fetchLeaderboard(opts?: {
   limit?: number;
   offset?: number;
   walletAddress?: string | null;
+  /**
+   * Searches the whole board, not just loaded rows. Ranks come back as true
+   * global positions, so a hit at 4,000th reports 4,000. Results are a single
+   * page — search is for finding someone, not for browsing.
+   */
+  query?: string;
 }): Promise<LeaderboardPage> {
+  const query = (opts?.query ?? '').trim();
   const { data, error } = await supabase.functions.invoke('xp-leaderboard', {
     body: {
       limit: opts?.limit ?? LEADERBOARD_PAGE_SIZE,
       offset: opts?.offset ?? 0,
       wallet_address: opts?.walletAddress || undefined,
+      query: query.length >= MIN_SEARCH_LENGTH ? query : undefined,
     },
   });
 

@@ -32,6 +32,65 @@ const DEFAULT_LIMIT = 100;
  */
 const MAX_LIMIT = 200;
 const MAX_OFFSET = 10_000;
+/** Search returns the best matches, not every match — this is unauthenticated. */
+const SEARCH_MAX = 50;
+
+type StateRow = {
+  wallet_address: string;
+  xp: number;
+  level: number;
+  current_streak: number;
+  longest_streak: number;
+  last_active_day: string | null;
+};
+
+/**
+ * Attach display data to ranked rows.
+ *
+ * Shared by the paged and search paths so the two can never drift into
+ * returning differently-shaped entries. Names come from the publicly-readable
+ * tables; half the accounts legitimately have neither, and those come back with
+ * display_name null so the client can fall back to a truncated address.
+ */
+async function decorate(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  rows: StateRow[],
+  rankOf: (index: number) => number,
+) {
+  const wallets = rows.map((r) => r.wallet_address);
+  if (wallets.length === 0) return [];
+
+  const [{ data: names }, { data: profiles }] = await Promise.all([
+    supabase.from('sakura_usernames').select('wallet_address, username, display_name').in('wallet_address', wallets),
+    supabase.from('user_profiles').select('wallet_address, display_name, avatar_seed, avatar_url').in('wallet_address', wallets),
+  ]);
+
+  // deno-lint-ignore no-explicit-any
+  const nameByWallet = new Map((names ?? []).map((n: any) => [n.wallet_address, n]));
+  // deno-lint-ignore no-explicit-any
+  const profByWallet = new Map((profiles ?? []).map((p: any) => [p.wallet_address, p]));
+
+  return rows.map((r, i) => {
+    // deno-lint-ignore no-explicit-any
+    const n = nameByWallet.get(r.wallet_address) as any;
+    // deno-lint-ignore no-explicit-any
+    const p = profByWallet.get(r.wallet_address) as any;
+    return {
+      rank: rankOf(i),
+      wallet_address: r.wallet_address,
+      username: n?.username ?? null,
+      display_name: n?.display_name ?? p?.display_name ?? null,
+      avatar_seed: p?.avatar_seed ?? r.wallet_address.slice(0, 8),
+      avatar_url: p?.avatar_url ?? null,
+      xp: r.xp,
+      level: r.level,
+      current_streak: r.current_streak,
+      longest_streak: r.longest_streak,
+      last_active_day: r.last_active_day,
+    };
+  });
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -62,10 +121,76 @@ Deno.serve(async (req) => {
       limit?: number;
       offset?: number;
       wallet_address?: string;
+      query?: string;
     };
 
     const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(Number(body.limit) || DEFAULT_LIMIT)));
     const offset = Math.min(MAX_OFFSET, Math.max(0, Math.floor(Number(body.offset) || 0)));
+    const query = String(body.query ?? '').trim().slice(0, 64);
+
+    /**
+     * Search.
+     *
+     * Names live in sakura_usernames / user_profiles while the ranking lives in
+     * user_xp_state, so this resolves candidate wallets by name FIRST and then
+     * looks up their XP — the reverse would mean scanning the whole ranked table
+     * for every keystroke.
+     *
+     * Rank is computed per match by counting higher scores, not by locating the
+     * row in a page, so a search hit at position 4,000 reports 4,000 rather than
+     * an index within the result set.
+     *
+     * Wildcards are escaped: an unescaped '%' would match every user, which is a
+     * quiet way to dump the whole table one search at a time.
+     */
+    if (query) {
+      const esc = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+      const like = `%${esc}%`;
+
+      const [{ data: byName }, { data: byProfile }] = await Promise.all([
+        supabase.from('sakura_usernames').select('wallet_address')
+          .or(`username.ilike.${like},display_name.ilike.${like}`).limit(SEARCH_MAX),
+        supabase.from('user_profiles').select('wallet_address')
+          .ilike('display_name', like).limit(SEARCH_MAX),
+      ]);
+
+      const candidates = new Set<string>([
+        ...(byName ?? []).map((r) => r.wallet_address),
+        ...(byProfile ?? []).map((r) => r.wallet_address),
+      ]);
+      // An address is the only identifier an unnamed account has, so searching
+      // by one has to work — half the accounts have no name at all.
+      if (query.length >= 3) {
+        const { data: byWallet } = await supabase
+          .from('user_xp_state').select('wallet_address')
+          .ilike('wallet_address', `${esc}%`).limit(SEARCH_MAX);
+        (byWallet ?? []).forEach((r) => candidates.add(r.wallet_address));
+      }
+
+      if (candidates.size === 0) {
+        return jsonResponse(200, { ok: true, entries: [], total: 0, limit, offset: 0, has_more: false, self: null, query }, cors);
+      }
+
+      const { data: scored } = await supabase
+        .from('user_xp_state')
+        .select('wallet_address, xp, level, current_streak, longest_streak, last_active_day')
+        .in('wallet_address', [...candidates])
+        .order('xp', { ascending: false })
+        .limit(SEARCH_MAX);
+
+      const found = scored ?? [];
+      const ranks = await Promise.all(found.map(async (r) => {
+        const { count } = await supabase
+          .from('user_xp_state').select('*', { count: 'exact', head: true }).gt('xp', r.xp);
+        return (count ?? 0) + 1;
+      }));
+
+      const decorated = await decorate(supabase, found, (i) => ranks[i]);
+      return jsonResponse(200, {
+        ok: true, entries: decorated, total: decorated.length,
+        limit, offset: 0, has_more: false, self: null, query,
+      }, cors);
+    }
 
     // Explicit column list — see the note above about xp_spent.
     const { data: rows, error, count } = await supabase
@@ -81,37 +206,9 @@ Deno.serve(async (req) => {
 
     if (error) throw error;
 
-    const wallets = (rows ?? []).map((r) => r.wallet_address);
-
-    // Display data comes from the publicly-readable tables. Two small queries
-    // rather than a view, so this needs no schema change to ship.
-    const [{ data: names }, { data: profiles }] = await Promise.all([
-      supabase.from('sakura_usernames').select('wallet_address, username, display_name').in('wallet_address', wallets),
-      supabase.from('user_profiles').select('wallet_address, display_name, avatar_seed, avatar_url').in('wallet_address', wallets),
-    ]);
-
-    const nameByWallet = new Map((names ?? []).map((n) => [n.wallet_address, n]));
-    const profByWallet = new Map((profiles ?? []).map((p) => [p.wallet_address, p]));
-
-    const entries = (rows ?? []).map((r, i) => {
-      const n = nameByWallet.get(r.wallet_address);
-      const p = profByWallet.get(r.wallet_address);
-      return {
-        // Rank is derived from the offset, so it stays correct across pages
-        // instead of restarting at 1 on every request.
-        rank: offset + i + 1,
-        wallet_address: r.wallet_address,
-        username: n?.username ?? null,
-        display_name: n?.display_name ?? p?.display_name ?? null,
-        avatar_seed: p?.avatar_seed ?? r.wallet_address.slice(0, 8),
-        avatar_url: p?.avatar_url ?? null,
-        xp: r.xp,
-        level: r.level,
-        current_streak: r.current_streak,
-        longest_streak: r.longest_streak,
-        last_active_day: r.last_active_day,
-      };
-    });
+    // Rank derives from the offset, so it stays correct across pages instead of
+    // restarting at 1 on every request.
+    const entries = await decorate(supabase, (rows ?? []) as StateRow[], (i) => offset + i + 1);
 
     /**
      * The caller's own standing, when they supplied a wallet.
