@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
-  TextInput, useWindowDimensions,
+  TextInput, useWindowDimensions, Platform,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -139,8 +139,11 @@ export default function LeaderboardScreen() {
     },
     searchInput: {
       flex: 1, paddingVertical: 10, fontSize: FontSize.sm, color: colors.text,
-      // RNW draws a focus ring that clashes with the container border.
-      outlineStyle: 'none' as any,
+      // react-native-web draws a focus ring that clashes with the container's
+      // own border. `outlineStyle` is a DOM property with no native equivalent,
+      // so it is applied on web only rather than handed to the native style
+      // system, which has no business receiving it.
+      ...(Platform.OS === 'web' ? { outlineStyle: 'none' as any } : null),
     },
     clearBtn: { paddingHorizontal: 6, paddingVertical: 4 },
     clearText: { fontSize: FontSize.md, color: colors.textSecondary },
