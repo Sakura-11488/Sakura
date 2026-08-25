@@ -54,13 +54,28 @@ const check = (name, ok, detail) => {
   if (!ok) failed++;
 };
 
+/**
+ * The origin the PWA actually loads from.
+ *
+ * This MUST be sent on every request. R2 — like S3 — only emits
+ * Access-Control-Allow-Origin in response to a request that carries an Origin
+ * header. Without one it stays silent no matter how the bucket is configured,
+ * so a CORS check that omits it reports "missing" for a correctly configured
+ * bucket and would block a legitimate cutover forever.
+ *
+ * Sending the real origin also makes the check meaningful rather than
+ * decorative: a policy scoped to some other site would answer a wildcard probe
+ * and still fail in the browser.
+ */
+const ORIGIN = process.env.R2_VERIFY_ORIGIN || 'https://sakuraonseeker.com';
+
 async function head(url) {
-  const res = await fetch(url, { method: 'HEAD' });
+  const res = await fetch(url, { method: 'HEAD', headers: { Origin: ORIGIN } });
   return { status: res.status, headers: res.headers };
 }
 
 async function range(url, from, to) {
-  const res = await fetch(url, { headers: { Range: `bytes=${from}-${to}` } });
+  const res = await fetch(url, { headers: { Range: `bytes=${from}-${to}`, Origin: ORIGIN } });
   const buf = Buffer.from(await res.arrayBuffer());
   return {
     status: res.status,
@@ -89,11 +104,40 @@ for (const path of SAMPLES) {
   const type = meta.headers.get('content-type') || '';
   check('served as video', /^video\//.test(type), type || '(none)');
 
+  // Presence is not enough: the value has to actually cover our origin, or the
+  // browser rejects the response despite the header being there.
   const acao = meta.headers.get('access-control-allow-origin');
+  const corsOk = acao === '*' || acao === ORIGIN;
   check(
     'CORS allows the browser',
-    !!acao,
-    acao || 'missing — the PWA cannot fetch this and downloads fail opaquely',
+    corsOk,
+    acao
+      ? `${acao}${corsOk ? '' : ` — does not cover ${ORIGIN}`}`
+      : `missing for ${ORIGIN} — the PWA cannot fetch this and downloads fail opaquely`,
+  );
+
+  // Range is what makes seeking work. Access-Control-Allow-Headers comes back
+  // only on a PREFLIGHT, never on a plain GET/HEAD — reading it off the HEAD
+  // above would report "missing" for every correctly configured bucket, which
+  // is the same false-negative this script was just fixed for. So ask properly.
+  let acah = null;
+  try {
+    const pre = await fetch(r2, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: ORIGIN,
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'range',
+      },
+    });
+    acah = (pre.headers.get('access-control-allow-headers') || '').toLowerCase();
+  } catch {
+    acah = null;
+  }
+  check(
+    'CORS preflight permits Range (seeking)',
+    acah !== null && (acah.includes('range') || acah === '*'),
+    acah || 'preflight did not allow Range — video will load but not scrub',
   );
 
   const total = Number(meta.headers.get('content-length') || 0);
