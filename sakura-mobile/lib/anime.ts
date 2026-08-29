@@ -623,6 +623,22 @@ async function offlineMetaFull(id: string): Promise<JikanFull | null> {
       status: String(m.status || '') === 'UPCOMING' ? 'Not yet aired' : String(m.status || ''),
       type: String(m.type || 'TV'),
       year: (m.year as number) ?? undefined,
+      // The dump carries this and dropping it was silently fatal.
+      //
+      // This whole function exists because Jikan fails; it 504s for individual
+      // titles while serving others fine — Haikyuu!! Second Season (MAL 28891)
+      // 504s on both `/anime/28891` and `/anime/28891/episodes` while Attack on
+      // Titan answers immediately, and the comment in `jikanGet` records
+      // `/episodes` having 504'd for hours. So this is the normal path for an
+      // unlucky title, not an edge case.
+      //
+      // Without `episodes`, `estimateJikanEpisodeCount` finds nothing here, asks
+      // the same dead Jikan endpoint, and returns 0. Zero expected episodes means
+      // no fallback list is built, and the detail page renders "0 eps" and
+      // "No streaming source found" for a title this very response says has 25.
+      // The fallback that exists to survive an outage was dropping the one field
+      // that decides whether the page works.
+      episodes: typeof m.episodes === 'number' && m.episodes > 0 ? m.episodes : undefined,
       // Rounded. The dump stores a raw arithmetic mean, and passing it straight
       // through rendered "8.370108431251289 /10" on the detail page.
       score: typeof m.score === 'number' ? Math.round(m.score * 100) / 100 : null,
