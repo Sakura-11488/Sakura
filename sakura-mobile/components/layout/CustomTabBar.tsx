@@ -334,7 +334,22 @@ const ts = StyleSheet.create({
   },
   tabSlot: {
     height: 42,
-    overflow: 'hidden',
+    // Both of these are here for the web build, where this bar was cropping
+    // every inactive icon into a vertical sliver — a magnifier read as a hook,
+    // a book and a video-folder as identical bars.
+    //
+    // `flexShrink: 0` because the slot carries a HARD width (ICON_SLOT /
+    // ACTIVE_SLOT, animated) and React Native defaults flexShrink to 0 while CSS
+    // defaults it to 1. On native the slot keeps its 42px; on web the row was
+    // free to squeeze all six below it.
+    //
+    // The `overflow: 'hidden'` that used to sit here then cropped whatever no
+    // longer fitted. It is gone rather than kept alongside the shrink guard,
+    // because it also cropped an icon whose glyph rendered larger than the slot
+    // for any other reason — iOS text-size-adjust inflating it, say — and it was
+    // never what clipped the label: `labelWrap` has its own overflow, and `pill`
+    // has its own for the rounded corners.
+    flexShrink: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
