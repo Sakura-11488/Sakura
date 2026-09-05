@@ -24,6 +24,9 @@ verify_jwt = false
 [functions.publish-creator-work]
 verify_jwt = false
 
+[functions.manage-creator-work]
+verify_jwt = false
+
 [functions.notify-creator-followers]
 verify_jwt = false
 
