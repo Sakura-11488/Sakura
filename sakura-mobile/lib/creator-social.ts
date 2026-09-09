@@ -197,6 +197,10 @@ export async function requestCreatorCoinLaunch(input: {
     launch_request_id: string;
     status: string;
     unsigned_transaction?: string | null;
+    /** The mint the server reserved. The client validates against this. */
+    mint_address?: string | null;
+    /** The builder's expiry for the blockhash it baked in. */
+    last_valid_block_height?: number | null;
   };
 }
 

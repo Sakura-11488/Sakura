@@ -186,19 +186,29 @@ Deno.serve(async (req) => {
 
     // Reclaim abandoned attempts before the guard reads them, so a stranded row
     // expires instead of locking the creator out permanently.
+    //
+    // THE TRAP THIS AVOIDS: if a creator signed, the transaction landed, and
+    // verify never ran, a blind reclaim would free the slot and let them launch
+    // a SECOND real coin — permanently, since a launch cannot be undone. So a
+    // stale row is only failed when it has no mint assigned. Once
+    // creator-coin-launch has recorded the mint the builder reserved, the coin
+    // may already exist on chain, and the right move is to re-run verify rather
+    // than reclaim. Those rows are left alone and reported below.
+    const staleBefore = new Date(Date.now() - LAUNCH_STALE_AFTER_MS).toISOString();
     const { error: reclaimErr } = await supabase
       .from('creator_coins')
       .update({ status: 'failed', updated_at: new Date().toISOString() })
       .eq('creator_wallet', walletAddress)
       .in('status', ['requested', 'pending_signature'])
-      .lt('created_at', new Date(Date.now() - LAUNCH_STALE_AFTER_MS).toISOString());
+      .is('mint_address', null)
+      .lt('created_at', staleBefore);
     if (reclaimErr) return jsonResponse(500, { error: reclaimErr.message }, cors);
 
     // One coin per creator. A launch cannot be undone, so a second request is
     // far more likely to be a double-tap or a retry than a genuine intent.
     const { data: existingCoin, error: existingErr } = await supabase
       .from('creator_coins')
-      .select('id, symbol, status')
+      .select('id, symbol, status, mint_address')
       .eq('creator_wallet', walletAddress)
       .in('status', BLOCKING_COIN_STATUSES)
       .limit(1)
@@ -211,7 +221,9 @@ Deno.serve(async (req) => {
         {
           error: launched
             ? `You already have a coin (${existingCoin.symbol}). Launching is permanent, so it is one per creator.`
-            : 'A launch is already in progress. If it did not finish, you can try again in half an hour.',
+            : existingCoin.mint_address
+              ? 'A launch for this coin already reached the signing step. If you signed it, it may already be on chain — verify that attempt rather than starting a new one.'
+              : 'A launch is already in progress. If it did not finish, you can try again in half an hour.',
           coin_id: existingCoin.id,
           status: existingCoin.status,
         },
@@ -237,6 +249,13 @@ Deno.serve(async (req) => {
 
     let providerResponse: Record<string, unknown> = {};
     let unsignedTransaction: string | null = null;
+    // Hoisted so it can be returned to the client, which must assert the
+    // transaction it is about to sign really carries this mint.
+    let reservedMint: string | null = null;
+    // Forwarded so the client can tell "expired" from "timed out". Refetching a
+    // blockhash on the device would give a later deadline than the transaction
+    // actually has.
+    let lastValidBlockHeight: number | null = null;
     const builderUrl = Deno.env.get('PUMPFUN_UNSIGNED_TX_URL')?.trim();
 
     if (builderUrl) {
@@ -280,6 +299,9 @@ Deno.serve(async (req) => {
         await supabase.from('creator_coins').update({ status: 'failed' }).eq('id', coin.id);
         return jsonResponse(502, { error: 'Coin launch provider returned no mint address.' }, cors);
       }
+      reservedMint = mintAddress;
+      const height = providerResponse.lastValidBlockHeight;
+      lastValidBlockHeight = typeof height === 'number' ? height : null;
       const { error: mintErr } = await supabase
         .from('creator_coins')
         .update({ mint_address: mintAddress })
@@ -323,6 +345,10 @@ Deno.serve(async (req) => {
         launch_request_id: requestRow.id,
         status: requestRow.status,
         unsigned_transaction: unsignedTransaction,
+        // The client validates the transaction against this before signing, so
+        // a compromised builder cannot swap in a mint the server never issued.
+        mint_address: reservedMint,
+        last_valid_block_height: lastValidBlockHeight,
       },
       cors,
     );
