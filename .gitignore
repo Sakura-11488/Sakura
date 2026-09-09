@@ -55,6 +55,10 @@ luna.md
 !PRIVACY.md
 !COPYRIGHT.md
 !supabase/README.md
+# Technical reference that has to survive: derived third-party layouts and
+# similar. The *.md rule above exists to keep scratch notes out of a public
+# repo, not to make a docs/ directory impossible.
+!sakura-mobile/docs/*.md
 supabase*.sql
 comments_schema.sql
 aniyomi-main/
