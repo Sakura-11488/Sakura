@@ -137,6 +137,33 @@ Deno.serve(async (req) => {
     // Eligibility. Errors are checked rather than coalesced away — the old gate
     // destructured only `data`, so a failed query was indistinguishable from an
     // ineligible creator and both produced the same 403.
+    // The "recognized work" half of the rule, and the reason this feature
+    // exists at all: a coin is launched against work published on Sakura, not
+    // against a follower count alone. Without this a wallet that has never
+    // published anything could launch purely on follows.
+    //
+    // Keyed on publication_status, NOT visibility. The four Sakura Originals
+    // are deliberately `unlisted` — their episodes live in droplet manifests,
+    // so a public row would render a catalog card that opens an empty reader —
+    // and they are precisely the works this has to recognize.
+    const { count: workCount, error: workErr } = await supabase
+      .from('creator_works')
+      .select('*', { count: 'exact', head: true })
+      .eq('creator_wallet', walletAddress)
+      .eq('publication_status', 'published');
+    if (workErr) return jsonResponse(500, { error: workErr.message }, cors);
+    const publishedWorks = workCount ?? 0;
+    if (publishedWorks < 1) {
+      return jsonResponse(
+        403,
+        {
+          error: 'Publish a work on Sakura before launching a coin.',
+          published_works: publishedWorks,
+          required_works: 1,
+        },
+        cors,
+      );
+    }
     const required = minFollowers();
     const { count: followerCount, error: followerErr } = await supabase
       .from('creator_follows')
