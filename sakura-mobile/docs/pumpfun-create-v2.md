@@ -65,7 +65,7 @@ decoder that stops after `creator` reports "2 trailing bytes" and looks broken.
 | 10 | `global_params` | readonly | PDA `["global-params"]` **under mayhem** |
 | 11 | `sol_vault` | writable | PDA `["sol-vault"]` **under mayhem** |
 | 12 | `mayhem_state` | writable | PDA `["mayhem-state", mint]` **under mayhem** |
-| 13 | `mayhem_token_vault` | writable | **UNRESOLVED — see below** |
+| 13 | `mayhem_token_vault` | writable | any writable non-executable account; use ATA(`mayhem_state`, `mint`, Token-2022) |
 | 14 | `event_authority` | readonly | PDA `["__event_authority"]` under pump.fun |
 | 15 | `program` | readonly | the pump.fun program id |
 
@@ -78,18 +78,43 @@ Two things that are easy to get wrong and cost real time:
   This repo already treats that distinction as a recurring hazard — SAKURA
   itself is Token-2022 — so derive ATAs with the right program id.
 
-### The one unresolved account
+### `mayhem_token_vault` — resolved by simulation
 
-`mayhem_token_vault` (13) is caller-supplied and **created and closed inside the
-same transaction**, so it cannot be inspected after the fact. 22 candidate
-derivations were tried against two live launches — ATAs of `mayhem_state`, the
-mayhem program and the user under both token programs, and PDAs over six seed
-strings under both programs — none matched.
+It is **not validated when `is_mayhem_mode` is false**, which is what an
+ordinary launch passes. Established with `simulateTransaction` (no signatures,
+no state change, free):
 
-To settle it, build a `create_v2` with a candidate and call
-`simulateTransaction`. That is free, needs no signature, and the program either
-accepts the account or names it in the failure. Do that before the first real
-launch; do not guess it.
+| account 13 | `is_mayhem_mode` | result |
+|---|---|---|
+| ATA(`mayhem_state`, mint, Token-2022) | false | program **succeeds**, ~104k CU |
+| ATA(`mayhem_state`, mint, classic SPL) | false | program **succeeds** |
+| a completely random pubkey | false | program **succeeds** |
+| the System Program | false | fails `ConstraintMut` (2000) |
+| any of the above | true | fails `MissingAccount` |
+
+So the only requirement is that it be **writable and non-executable** — the
+System Program case is what proves it, since that is the one property it lacks.
+The random-pubkey case is what proves nothing else is checked.
+
+Pass `ATA(mayhem_state, mint, Token-2022)`. It is what the name implies, it
+works, and it stays correct if pump.fun later starts enforcing the account.
+
+Do not set `is_mayhem_mode = true`: it needs accounts this instruction does not
+carry, and fails with `MissingAccount` regardless of what is in slot 13.
+
+### One open artifact
+
+Simulation returns a transaction-level `InsufficientFundsForRent` on account
+index 1 (the mint) **even though the program itself succeeds** — the logs end
+with `Program 6EF8rre… success` after MintTo and SetAuthority. It is not a
+program rejection and it is not the payer's balance: it reproduces with a payer
+holding 13.5 SOL.
+
+It is most likely an artifact of simulating a mint that is a declared signer
+whose signature is skipped. Real launches of exactly this shape land on chain
+continuously. Confirm it disappears when the builder assembles a properly
+signed transaction; if it does not, that is a real bug to chase before the
+first launch.
 
 ## Verification performed
 
@@ -100,6 +125,9 @@ launch; do not guess it.
   constant-vs-per-launch split identical across them.
 - All 12 derivable accounts re-derived from `(mint, creator)` and matched
   position-for-position against two further live launches.
+- The full instruction assembled and simulated end to end against mainnet: the
+  program executes and reports success, consuming ~97-104k CU. That is what
+  validates the encoding and the account list as a whole, not just the parts.
 
 ## How this was derived
 
