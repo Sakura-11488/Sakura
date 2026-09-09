@@ -8,6 +8,7 @@ import {
   Platform,
   useWindowDimensions,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -21,6 +22,12 @@ import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
+import {
+  getCreatorCoinStatus,
+  DEFAULT_MIN_FOLLOWERS,
+  type CreatorCoinStatus,
+} from '@/lib/creator-coin-status';
+import { solanaExplorerToken } from '@/lib/wallet/config';
 import { onTap } from '@/lib/sound';
 import { CreatorDashboardSkeleton } from '@/components/creator/CreatorSkeletons';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
@@ -78,6 +85,7 @@ export default function CreatorDashboardScreen() {
   const [filter, setFilter] = useState<'all' | CreatorWorkKind>('all');
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [works, setWorks] = useState<CreatorWork[]>([]);
+  const [coinStatus, setCoinStatus] = useState<CreatorCoinStatus | null>(null);
 
   const refresh = useCallback(async () => {
     if (!address) {
@@ -95,6 +103,12 @@ export default function CreatorDashboardScreen() {
       }
       setCreator(profile);
       setWorks(await getCreatorWorks(address));
+      // Deliberately not in the same try as the profile: the coin card is
+      // supplementary, and a failure to count followers should not empty the
+      // creator's library.
+      getCreatorCoinStatus(address)
+        .then(setCoinStatus)
+        .catch(() => setCoinStatus(null));
     } catch {
       setCreator(null);
       setWorks([]);
@@ -281,6 +295,18 @@ export default function CreatorDashboardScreen() {
         },
         statValue: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: colors.text },
         statLabel: { fontSize: 10, color: colors.textSecondary, marginTop: 2, fontWeight: FontWeight.semibold },
+        coinCard: {
+          marginHorizontal: Spacing.md,
+          marginBottom: Spacing.md,
+          padding: Spacing.md,
+          borderRadius: Radius.lg,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.border,
+        },
+        coinTitle: { fontSize: FontSize.md, fontWeight: FontWeight.bold, color: colors.text },
+        coinSub: { fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 4, lineHeight: 16 },
+        coinLink: { fontSize: FontSize.sm, fontWeight: FontWeight.bold, color: colors.primary, marginTop: 8 },
         actionsRow: { flexDirection: 'row', marginHorizontal: Spacing.md, gap: Spacing.sm, marginBottom: Spacing.md },
         actionCard: {
           flex: 1,
@@ -533,6 +559,47 @@ export default function CreatorDashboardScreen() {
         </Animated.View>
 
         <View style={styles.sectionHead}>
+          {coinStatus ? (
+            <Animated.View entering={FadeInUp.delay(120).duration(380)} style={styles.coinCard}>
+              {coinStatus.launchedCoin ? (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={onTap(() => {
+                    const mint = coinStatus.launchedCoin?.mint_address;
+                    if (mint) Linking.openURL(solanaExplorerToken(mint));
+                  })}
+                >
+                  <Text style={styles.coinTitle}>${coinStatus.launchedCoin.symbol} is live</Text>
+                  <Text style={styles.coinSub}>
+                    {coinStatus.launchedCoin.mint_address ?? 'Mint address unavailable'}
+                  </Text>
+                  <Text style={styles.coinLink}>View on Solscan</Text>
+                </TouchableOpacity>
+              ) : coinStatus.likelyEligible ? (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={onTap(() => router.push('/creator-coin-launch'))}
+                >
+                  <Text style={styles.coinTitle}>Launch your creator coin</Text>
+                  <Text style={styles.coinSub}>
+                    One coin per creator, on pump.fun, with a contract address ending in
+                    {' '}sakura. Launching is permanent.
+                  </Text>
+                  <Text style={styles.coinLink}>Start</Text>
+                </TouchableOpacity>
+              ) : (
+                <View>
+                  <Text style={styles.coinTitle}>Creator coin</Text>
+                  <Text style={styles.coinSub}>
+                    {coinStatus.publishedWorks < 1
+                      ? 'Publish a work on Sakura to unlock this.'
+                      : `${coinStatus.followerCount} of ${DEFAULT_MIN_FOLLOWERS} followers.`}
+                  </Text>
+                </View>
+              )}
+            </Animated.View>
+          ) : null}
+
           <Text style={styles.sectionTitle}>Your library</Text>
           <Text style={styles.sectionCount}>{filteredWorks.length} shown</Text>
         </View>
