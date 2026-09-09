@@ -152,7 +152,39 @@ begin
 end;
 $$;
 
+-- ── Return ONE reservation ──────────────────────────────────────────────────
+-- The builder calls this when a build fails after taking a mint.
+--
+-- It exists as a separate function because the obvious shortcut,
+-- release_stale_vanity_reservations(0), releases every reservation older than
+-- zero minutes — which is all of them, including other creators' in-flight
+-- launches. That would hand one mint to two creators while the first is still
+-- signing for it.
+create or replace function public.release_vanity_mint(p_public_key text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  updated int;
+begin
+  update public.vanity_mints vm
+     set state = 'available', reserved_for_wallet = null, reserved_at = null
+   where vm.public_key = p_public_key
+     and vm.state = 'reserved'
+     and not exists (
+           select 1 from public.creator_coins cc
+            where cc.mint_address = vm.public_key
+              and cc.status in ('requested', 'pending_signature', 'launched')
+         );
+  get diagnostics updated = row_count;
+  return updated > 0;
+end;
+$$;
+
 revoke all on function public.reserve_vanity_mint(text) from public, anon, authenticated;
+revoke all on function public.release_vanity_mint(text) from public, anon, authenticated;
 revoke all on function public.mark_vanity_mint_consumed(text, text) from public, anon, authenticated;
 revoke all on function public.release_stale_vanity_reservations(int) from public, anon, authenticated;
 

@@ -1,4 +1,8 @@
 /node_modules
+# Anchored rules only cover the root, so every nested package needs its own.
+# A junctioned node_modules under services/ made `git add -A` walk the whole
+# linked tree before this was added.
+services/*/node_modules/
 /.pnp
 .pnp.*
 .yarn/*

@@ -240,9 +240,17 @@ Deno.serve(async (req) => {
     const builderUrl = Deno.env.get('PUMPFUN_UNSIGNED_TX_URL')?.trim();
 
     if (builderUrl) {
+      // The builder holds vanity mint keys, so it refuses unauthenticated
+      // callers — without this header every launch comes back 401. The secret
+      // is shared with the builder service and never reaches the client.
+      const builderSecret = Deno.env.get('PUMPFUN_BUILDER_SECRET')?.trim();
+      if (!builderSecret) {
+        await supabase.from('creator_coins').update({ status: 'failed' }).eq('id', coin.id);
+        return jsonResponse(500, { error: 'Coin launch builder is not configured.' }, cors);
+      }
       const response = await fetch(builderUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-builder-secret': builderSecret },
         body: JSON.stringify({
           creatorWallet: walletAddress,
           name,
@@ -259,6 +267,27 @@ Deno.serve(async (req) => {
       }
       const maybeTx = providerResponse.unsignedTransaction ?? providerResponse.transaction;
       unsignedTransaction = typeof maybeTx === 'string' ? maybeTx : null;
+
+      // Bind the mint the builder reserved to this coin, NOW.
+      //
+      // This is what lets verify stop trusting a client-supplied mint_address.
+      // Without it the only record of which mint was issued lives on the
+      // caller's device, so anyone could claim any confirmed transaction — and
+      // because creator_coins.mint_address is UNIQUE, a false claim also
+      // permanently locks out the real owner of that mint.
+      const mintAddress = providerResponse.mintAddress;
+      if (typeof mintAddress !== 'string' || !mintAddress) {
+        await supabase.from('creator_coins').update({ status: 'failed' }).eq('id', coin.id);
+        return jsonResponse(502, { error: 'Coin launch provider returned no mint address.' }, cors);
+      }
+      const { error: mintErr } = await supabase
+        .from('creator_coins')
+        .update({ mint_address: mintAddress })
+        .eq('id', coin.id);
+      if (mintErr) {
+        await supabase.from('creator_coins').update({ status: 'failed' }).eq('id', coin.id);
+        return jsonResponse(500, { error: mintErr.message }, cors);
+      }
     }
 
     const { data: requestRow, error: requestErr } = await supabase
