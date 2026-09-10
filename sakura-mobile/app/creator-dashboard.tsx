@@ -22,6 +22,7 @@ import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
+import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import {
   getCreatorCoinStatus,
   DEFAULT_MIN_FOLLOWERS,
@@ -78,7 +79,7 @@ export default function CreatorDashboardScreen() {
   const { SCREEN_W, WORK_W } = useDashboardMetrics();
   const { colors } = useTheme();
   const router = useRouter();
-  const { connected, address, shortAddress, restoring, signWithBiometrics } = useWallet();
+  const { connected, address, shortAddress, restoring, signWithBiometrics, unlockForAppSession } = useWallet();
 
   const [loading, setLoading] = useState(true);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -102,7 +103,19 @@ export default function CreatorDashboardScreen() {
         return;
       }
       setCreator(profile);
-      setWorks(await getCreatorWorks(address));
+      // Drafts are no longer readable with the anon key, so the dashboard signs
+      // for them. unlockForAppSession, not signWithBiometrics: this is reading
+      // your own shelf, not authorising a payment, and it is cached for the
+      // process so opening the dashboard does not prompt repeatedly. If the
+      // wallet cannot be unlocked, fall back to the published-only view rather
+      // than showing an empty library.
+      const sessionKeypair = await unlockForAppSession();
+      setWorks(
+        await getCreatorWorks(
+          address,
+          sessionKeypair ? buildWalletAuthHeaders(sessionKeypair, 'creator-manage-work') : undefined,
+        ),
+      );
       // Deliberately not in the same try as the profile: the coin card is
       // supplementary, and a failure to count followers should not empty the
       // creator's library.
@@ -115,7 +128,7 @@ export default function CreatorDashboardScreen() {
     } finally {
       setLoading(false);
     }
-  }, [address, router]);
+  }, [address, router, unlockForAppSession]);
 
   useFocusEffect(
     useCallback(() => {

@@ -141,24 +141,58 @@ export async function updateCreatorProfile(input: {
   );
 }
 
-export async function getCreatorWorks(walletAddress: string): Promise<CreatorWork[]> {
+/**
+ * A creator's works.
+ *
+ * WITH `authHeaders`, this returns everything the signer owns, drafts included,
+ * through the `manage-creator-work` edge function. WITHOUT them it returns only
+ * published rows, because that is now all the anon key can see.
+ *
+ * The SELECT policies used to be `USING (true)`, so any holder of the anon key
+ * — it ships in the web bundle — could read every creator's unpublished drafts.
+ * RLS cannot express "my own drafts" here, because wallets are not Supabase auth
+ * users and there is no session to key a policy on, so the owner-scoped read has
+ * to go through a signature.
+ *
+ * Callers that only need a public count should omit the headers rather than
+ * unlock a wallet for it.
+ */
+export async function getCreatorWorks(
+  walletAddress: string,
+  authHeaders?: WalletAuthHeaders,
+): Promise<CreatorWork[]> {
+  if (authHeaders) {
+    const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+      body: { action: 'list_works' },
+      headers: authHeaders,
+    });
+    if (error) throw new Error(await invokeMessage(error, 'Could not load your works.'));
+    return (data?.works ?? []) as CreatorWork[];
+  }
+
   const { data, error } = await supabase
     .from('creator_works')
     .select('*')
     .eq('creator_wallet', walletAddress)
+    // Published only. Drafts are not readable with the anon key any more, so
+    // asking for them here would silently return a short list rather than fail.
+    .eq('publication_status', 'published')
     .order('updated_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as CreatorWork[];
 }
 
-export async function getWorkReleases(workId: string): Promise<CreatorRelease[]> {
-  const { data, error } = await supabase
-    .from('work_releases')
-    .select('*')
-    .eq('work_id', workId)
-    .order('sequence_number', { ascending: true });
-  if (error) throw error;
-  return (data ?? []) as CreatorRelease[];
+/** Releases under a work you own, drafts included. Requires a signature. */
+export async function getWorkReleases(
+  workId: string,
+  authHeaders: WalletAuthHeaders,
+): Promise<CreatorRelease[]> {
+  const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'list_releases', work_id: workId },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not load chapters.'));
+  return (data?.releases ?? []) as CreatorRelease[];
 }
 
 /**

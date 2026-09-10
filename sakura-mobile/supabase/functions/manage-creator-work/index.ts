@@ -24,14 +24,13 @@ import { checkRateLimit } from '../_shared/rate-limit.ts';
  * Releases inherit ownership by loading the parent work and refusing unless it
  * belongs to the signer — the same check `publish-creator-work` already makes.
  *
- * NOT FIXED HERE, and it is a separate live leak: `creator_works_public_read`
- * and `work_releases_public_read` are `USING (true)`, so every draft and private
- * row — including `work_releases.body_text`, which stores novel prose inline —
- * is readable by anyone with the anon key. Closing that requires moving the two
- * dashboard reads (`getCreatorWorks`, `getWorkReleases`) behind a signed
- * function too, because wallets are not Supabase auth users and RLS cannot
- * express "my own drafts" for `anon`. Deliberately left for its own change
- * rather than folded into a migration that would silently break the dashboard.
+ * READING YOUR OWN DRAFTS also lives here, for the same reason. The SELECT
+ * policies on both tables used to be `USING (true)`, so every draft was
+ * readable with the anon key — including `work_releases.body_text`, which
+ * stores novel prose inline. RLS cannot express "my own drafts" for `anon`,
+ * because wallets are not Supabase auth users and there is no session to key
+ * on. So the policies now expose only published rows, and the owner-scoped
+ * reads come through `list_works` / `list_releases` under a signature.
  */
 
 const cors = corsHeaders();
@@ -88,7 +87,7 @@ function contentTypeForKind(kind: string): string {
 }
 
 type Body = {
-  action?: 'create_work' | 'create_release';
+  action?: 'create_work' | 'create_release' | 'list_works' | 'list_releases';
   // create_work
   kind?: string;
   title?: string;
@@ -242,7 +241,43 @@ Deno.serve(async (req) => {
       return jsonResponse(200, { ok: true, release: data }, cors);
     }
 
-    return jsonResponse(400, { error: 'action must be create_work or create_release.' }, cors);
+    // ── read your own works, drafts included ─────────────────────────────────
+    if (body.action === 'list_works') {
+      const { data, error } = await supabase
+        .from('creator_works')
+        .select('*')
+        .eq('creator_wallet', walletAddress)
+        .order('updated_at', { ascending: false });
+      if (error) return jsonResponse(500, { error: error.message }, cors);
+      return jsonResponse(200, { ok: true, works: data ?? [] }, cors);
+    }
+
+    if (body.action === 'list_releases') {
+      if (!body.work_id) return jsonResponse(400, { error: 'work_id is required.' }, cors);
+      // Ownership is checked on the parent before any release is returned —
+      // otherwise this would be the same leak with extra steps.
+      const { data: work, error: workErr } = await supabase
+        .from('creator_works')
+        .select('id, creator_wallet')
+        .eq('id', body.work_id)
+        .maybeSingle();
+      if (workErr) return jsonResponse(500, { error: workErr.message }, cors);
+      if (!work) return jsonResponse(404, { error: 'Work not found.' }, cors);
+      if (work.creator_wallet !== walletAddress) {
+        return jsonResponse(403, { error: 'Not your work.' }, cors);
+      }
+      const { data, error } = await supabase
+        .from('work_releases')
+        .select('*')
+        .eq('work_id', body.work_id)
+        .order('sequence_number', { ascending: true });
+      if (error) return jsonResponse(500, { error: error.message }, cors);
+      return jsonResponse(200, { ok: true, releases: data ?? [] }, cors);
+    }
+
+    return jsonResponse(400, {
+      error: 'action must be create_work, create_release, list_works, or list_releases.',
+    }, cors);
   } catch (e) {
     return jsonResponse(500, { error: e instanceof Error ? e.message : 'Request failed.' }, cors);
   }
