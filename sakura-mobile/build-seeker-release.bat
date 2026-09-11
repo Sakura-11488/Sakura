@@ -25,22 +25,72 @@ echo == Building Sakura %VERSION% (Seeker / arm64-v8a) ==
 REM ── preflight ──
 where node >nul 2>nul || (echo [ERROR] node not in PATH & exit /b 1)
 
-REM ── ensure a JDK is available (Gradle needs JAVA_HOME or java on PATH) ──
+REM -- ensure a SUPPORTED JDK is available --
+REM  Order matters: Android Studio ships a JBR far ahead of what the Android
+REM  Gradle Plugin supports, and taking it unconditionally is what broke the
+REM  2.0.12 build. Its JBR 25.0.2 failed EVERY configureCMake task
+REM  (react-native-screens, expo-updates, react-native-worklets) with
+REM      "WARNING: A restricted method in java.lang.System has been called"
+REM  about 20 minutes in - JDK 24+ turned restricted native-access calls into
+REM  hard failures. Nothing in that message names Java, so it reads like a
+REM  broken native module. Temurin 17 was installed the whole time. So: prefer
+REM  a supported JDK, and refuse an unsupported one up front rather than 20
+REM  minutes into a build.
 if not defined JAVA_HOME (
-    where java >nul 2>nul || (
-        for %%J in (
-            "%ProgramFiles%\Android\Android Studio\jbr"
-            "%LOCALAPPDATA%\Programs\Android Studio\jbr"
-        ) do if exist "%%~J\bin\java.exe" set "JAVA_HOME=%%~J"
+    for %%J in (
+        "%USERPROFILE%\.jdks\temurin-17"
+        "%USERPROFILE%\.jdks\temurin-21"
+        "%ProgramFiles%\Eclipse Adoptium\jdk-17"
+        "%ProgramFiles%\Eclipse Adoptium\jdk-21"
+        "%ProgramFiles%\Android\Android Studio\jbr"
+        "%LOCALAPPDATA%\Programs\Android Studio\jbr"
+    ) do if not defined JAVA_HOME if exist "%%~J\bin\java.exe" set "JAVA_HOME=%%~J"
+)
+REM  Last resort: derive JAVA_HOME from a java.exe already on PATH, so a JDK
+REM  installed somewhere unlisted still works - and still gets version-checked.
+if not defined JAVA_HOME (
+    for /f "delims=" %%j in ('where java 2^>nul') do if not defined JAVA_HOME for %%k in ("%%~dpj..") do set "JAVA_HOME=%%~fk"
+)
+if not defined JAVA_HOME (
+    echo [ERROR] No JDK found. Install Temurin 17, or set JAVA_HOME.
+    exit /b 1
+)
+if not exist "%JAVA_HOME%\bin\java.exe" (
+    echo [ERROR] JAVA_HOME=%JAVA_HOME% has no bin\java.exe
+    exit /b 1
+)
+set "PATH=%JAVA_HOME%\bin;%PATH%"
+
+set "JV="
+set "JAVA_MAJOR="
+for /f "tokens=3" %%v in ('java -version 2^>^&1 ^| findstr /i "version"') do if not defined JV set "JV=%%~v"
+for /f "delims=.-+_ tokens=1" %%m in ("!JV!") do set "JAVA_MAJOR=%%m"
+echo == Using JAVA_HOME=%JAVA_HOME%  (Java !JV!) ==
+REM  The refusal sets a flag and exits AFTER the block, rather than `exit /b 1`
+REM  in place. Measured on this machine: an `exit /b 1` inside a nested `if`
+REM  that sits in an `else` block and is followed by a sibling `if` prints its
+REM  message and stops the script, but cmd reports ERRORLEVEL 0 to the caller.
+REM  Drop either the `else` or the second `if` and the same code returns 1. So
+REM  the guard would have refused the build while telling any wrapper or CI step
+REM  that it succeeded - the exact failure mode this guard exists to prevent.
+set "JDK_BAD="
+if "!JAVA_MAJOR!"=="" (
+    echo [WARN] Could not parse the Java version; continuing unchecked.
+) else (
+    if !JAVA_MAJOR! GEQ 22 (
+        echo [ERROR] Java !JAVA_MAJOR! is not supported by the Android Gradle Plugin.
+        echo         Every configureCMake task will fail about 20 minutes in with
+        echo         a misleading "restricted method in java.lang.System" error.
+        echo         Point JAVA_HOME at a JDK 17 or 21 and re-run, e.g.
+        echo             set "JAVA_HOME=%USERPROFILE%\.jdks\temurin-17"
+        set "JDK_BAD=1"
+    )
+    if !JAVA_MAJOR! LSS 17 (
+        echo [ERROR] Java !JAVA_MAJOR! is too old; this build needs JDK 17 or 21.
+        set "JDK_BAD=1"
     )
 )
-if defined JAVA_HOME echo == Using JAVA_HOME=%JAVA_HOME% ==
-if not defined JAVA_HOME (
-    where java >nul 2>nul || (
-        echo [ERROR] No JDK found. Set JAVA_HOME or install Android Studio.
-        exit /b 1
-    )
-)
+if defined JDK_BAD exit /b 1
 
 if not exist "..\android\sakura-release.keystore" (
     echo [ERROR] Keystore ..\android\sakura-release.keystore not found.
