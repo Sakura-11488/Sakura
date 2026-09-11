@@ -39,6 +39,7 @@ import {
   uploadWorkImage,
   checkMediaIngestReachable,
 } from '@/lib/creator-media';
+import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { showAlert } from '@/lib/confirm-alert';
 import {
   publishWorkViaApi,
@@ -183,23 +184,28 @@ export default function CreatorUploadScreen() {
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
+      // Unlock first. Creating a work is signature-gated now, and doing it in
+      // this order also means a cancelled biometric prompt leaves no rows
+      // behind — the old order created the work and release first, so a
+      // cancel stranded an unpublished draft every time.
+      const kp = await signWithBiometrics();
+      if (!kp) throw new Error('Could not unlock account.');
+      const workAuth = buildWalletAuthHeaders(kp, 'creator-manage-work');
+
       const work = await createCreatorWork({
-        walletAddress: address,
         kind: workKind,
         title: workTitle,
         description: workDescription,
+        authHeaders: workAuth,
       });
 
       const release = await createWorkRelease({
         workId: work.id,
-        kind: workKind,
         title: releaseTitle,
         summary: workDescription,
         bodyText: releaseBody,
+        authHeaders: buildWalletAuthHeaders(kp, 'creator-manage-work'),
       });
-
-      const kp = await signWithBiometrics();
-      if (!kp) throw new Error('Could not unlock account.');
 
       // Cover goes through the ownership-checked upload-work-media edge function
       // (service role), same as manga pages — a direct client storage write is

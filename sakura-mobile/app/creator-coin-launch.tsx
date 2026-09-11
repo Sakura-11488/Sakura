@@ -3,10 +3,11 @@ import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableO
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
-import { requestCreatorCoinLaunch } from '@/lib/creator-social';
+import { requestCreatorCoinLaunch, verifyCreatorCoinLaunch } from '@/lib/creator-social';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
+import { executeCreatorCoinLaunch } from '@/lib/wallet/creator-coin';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 export default function CreatorCoinLaunchScreen() {
@@ -19,6 +20,9 @@ export default function CreatorCoinLaunchScreen() {
   const [metadataUri, setMetadataUri] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Signing and confirming take real seconds against mainnet; without this the
+  // button just sits there and a creator taps again.
+  const [stage, setStage] = useState<string | null>(null);
 
   const styles = useMemo(
     () =>
@@ -61,15 +65,44 @@ export default function CreatorCoinLaunchScreen() {
         imageUrl: imageUrl.trim() || undefined,
         authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-launch'),
       });
-      showAlert('Launch requested',
-        result.unsigned_transaction
-          ? 'Unsigned launch transaction is ready for the next signing step.'
-          : 'Your launch request is queued for review/building.');
+      if (!result.unsigned_transaction || !result.mint_address) {
+        // No builder configured: the request is recorded, nothing is minted.
+        showAlert('Launch requested', 'Your launch request is queued for building.');
+        router.replace('/creator-dashboard');
+        return;
+      }
+
+      // Sign and submit. Everything below is irreversible once it confirms, so
+      // it is deliberately NOT wrapped in a retry — a second attempt after an
+      // ambiguous failure is how a creator ends up with two coins.
+      setStage('Signing…');
+      const submitted = await executeCreatorCoinLaunch({
+        unsignedTransaction: result.unsigned_transaction,
+        mintAddress: result.mint_address,
+        lastValidBlockHeight: result.last_valid_block_height ?? 0,
+        keypair,
+      });
+
+      // A confirmed signature is not success on its own. Verification is what
+      // moves the coin to `launched` and marks the vanity mint consumed, and
+      // skipping it would leave the reservation able to expire back into the
+      // pool while the coin exists on chain.
+      setStage('Confirming…');
+      await verifyCreatorCoinLaunch({
+        coinId: result.coin_id,
+        launchRequestId: result.launch_request_id,
+        signature: submitted.signature,
+        mintAddress: submitted.mintAddress,
+        authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-verify'),
+      });
+
+      showAlert('Coin launched', `${symbol.toUpperCase()} is live at ${submitted.mintAddress}`);
       router.replace('/creator-dashboard');
     } catch (error) {
       showAlert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
     } finally {
       setSubmitting(false);
+      setStage(null);
     }
   }
 
@@ -104,7 +137,7 @@ export default function CreatorCoinLaunchScreen() {
         <TextInput style={styles.input} placeholder="Metadata URI or IPFS URL" placeholderTextColor={colors.textTertiary} value={metadataUri} onChangeText={setMetadataUri} />
         <TextInput style={styles.input} placeholder="Image URL" placeholderTextColor={colors.textTertiary} value={imageUrl} onChangeText={setImageUrl} />
         <TouchableOpacity style={[styles.btn, submitting && styles.btnDisabled]} onPress={submit} disabled={submitting} activeOpacity={0.88}>
-          <Text style={styles.btnText}>{submitting ? 'Requesting...' : 'Request Launch'}</Text>
+          <Text style={styles.btnText}>{stage ?? (submitting ? 'Requesting...' : 'Request Launch')}</Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </SafeAreaView>

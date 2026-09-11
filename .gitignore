@@ -1,4 +1,8 @@
 /node_modules
+# Anchored rules only cover the root, so every nested package needs its own.
+# A junctioned node_modules under services/ made `git add -A` walk the whole
+# linked tree before this was added.
+services/*/node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -55,6 +59,10 @@ luna.md
 !PRIVACY.md
 !COPYRIGHT.md
 !supabase/README.md
+# Technical reference that has to survive: derived third-party layouts and
+# similar. The *.md rule above exists to keep scratch notes out of a public
+# repo, not to make a docs/ directory impossible.
+!sakura-mobile/docs/*.md
 supabase*.sql
 comments_schema.sql
 aniyomi-main/

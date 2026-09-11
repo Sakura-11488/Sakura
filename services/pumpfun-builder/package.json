@@ -1,0 +1,17 @@
+{
+  "name": "sakura-pumpfun-builder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Builds an unsigned pump.fun create_v2 transaction with a …sakura vanity mint",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/pumpfun.test.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4"
+  }
+}

@@ -77,16 +77,6 @@ export function validateUsername(username: string): string | null {
   return null;
 }
 
-function slugify(title: string): string {
-  const base = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 36);
-  const suffix = Math.random().toString(36).slice(2, 10);
-  return `${base || 'work'}-${suffix}`;
-}
-
 function avatarSeed(walletAddress: string): string {
   return walletAddress.slice(0, 8);
 }
@@ -151,24 +141,58 @@ export async function updateCreatorProfile(input: {
   );
 }
 
-export async function getCreatorWorks(walletAddress: string): Promise<CreatorWork[]> {
+/**
+ * A creator's works.
+ *
+ * WITH `authHeaders`, this returns everything the signer owns, drafts included,
+ * through the `manage-creator-work` edge function. WITHOUT them it returns only
+ * published rows, because that is now all the anon key can see.
+ *
+ * The SELECT policies used to be `USING (true)`, so any holder of the anon key
+ * — it ships in the web bundle — could read every creator's unpublished drafts.
+ * RLS cannot express "my own drafts" here, because wallets are not Supabase auth
+ * users and there is no session to key a policy on, so the owner-scoped read has
+ * to go through a signature.
+ *
+ * Callers that only need a public count should omit the headers rather than
+ * unlock a wallet for it.
+ */
+export async function getCreatorWorks(
+  walletAddress: string,
+  authHeaders?: WalletAuthHeaders,
+): Promise<CreatorWork[]> {
+  if (authHeaders) {
+    const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+      body: { action: 'list_works' },
+      headers: authHeaders,
+    });
+    if (error) throw new Error(await invokeMessage(error, 'Could not load your works.'));
+    return (data?.works ?? []) as CreatorWork[];
+  }
+
   const { data, error } = await supabase
     .from('creator_works')
     .select('*')
     .eq('creator_wallet', walletAddress)
+    // Published only. Drafts are not readable with the anon key any more, so
+    // asking for them here would silently return a short list rather than fail.
+    .eq('publication_status', 'published')
     .order('updated_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as CreatorWork[];
 }
 
-export async function getWorkReleases(workId: string): Promise<CreatorRelease[]> {
-  const { data, error } = await supabase
-    .from('work_releases')
-    .select('*')
-    .eq('work_id', workId)
-    .order('sequence_number', { ascending: true });
-  if (error) throw error;
-  return (data ?? []) as CreatorRelease[];
+/** Releases under a work you own, drafts included. Requires a signature. */
+export async function getWorkReleases(
+  workId: string,
+  authHeaders: WalletAuthHeaders,
+): Promise<CreatorRelease[]> {
+  const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'list_releases', work_id: workId },
+    headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not load chapters.'));
+  return (data?.releases ?? []) as CreatorRelease[];
 }
 
 /**
@@ -236,49 +260,68 @@ export async function fetchWorkForReading(workId: string): Promise<WorkReadPaylo
   return data as WorkReadPayload;
 }
 
-function contentTypeForKind(kind: CreatorWorkKind): ReleaseContentType {
-  if (kind === 'manga') return 'manga_chapter';
-  if (kind === 'anime') return 'anime_episode';
-  return 'novel_chapter';
+/**
+ * Read the server's error message out of a failed `functions.invoke`.
+ *
+ * `invoke` reports a generic FunctionsHttpError and hides the body, so a 403
+ * "Not your work." arrives at the UI as an unhelpful network error unless the
+ * response is unwrapped explicitly.
+ */
+async function invokeMessage(error: unknown, fallback: string): Promise<string> {
+  const ctx = (error as { context?: Response })?.context;
+  if (ctx && typeof ctx.json === 'function') {
+    try {
+      const body = await ctx.json();
+      if (body && typeof body.error === 'string' && body.error) return body.error;
+    } catch {
+      // Non-JSON body; fall through to the generic message.
+    }
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
+/**
+ * Create a work.
+ *
+ * Goes through `manage-creator-work` rather than inserting directly. The table's
+ * anon INSERT policy was `WITH CHECK (true)` and `creator_wallet` came from this
+ * function's own argument, so any holder of the anon key could create a work
+ * attributed to any wallet. The edge function takes the wallet from the verified
+ * signature instead, which is what makes "the publisher owns the work" true —
+ * and that ownership is what gates a creator coin.
+ */
 export async function createCreatorWork(input: {
-  walletAddress: string;
   kind: CreatorWorkKind;
   title: string;
   description: string;
   genres?: string[];
+  authHeaders: WalletAuthHeaders;
 }): Promise<CreatorWork> {
   const title = input.title.trim();
   if (!title) throw new Error('Title is required.');
 
-  const row = {
-    creator_wallet: input.walletAddress,
-    kind: input.kind,
-    title,
-    slug: slugify(title),
-    description: input.description.trim(),
-    genres: input.genres?.length ? input.genres : ['General'],
-    language: 'en',
-    series_status: 'ongoing',
-    publication_status: 'draft',
-    visibility: 'private',
-    minting_enabled: false,
-    release_metadata: {},
-  };
-
-  const { data, error } = await supabase.from('creator_works').insert(row).select('*').single();
-  if (error) throw error;
-  return data as CreatorWork;
+  const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+    body: {
+      action: 'create_work',
+      kind: input.kind,
+      title,
+      description: input.description.trim(),
+      genres: input.genres?.length ? input.genres : ['General'],
+    },
+    headers: input.authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not create the work.'));
+  if (!data?.work) throw new Error('Work creation returned no row.');
+  return data.work as CreatorWork;
 }
 
 export async function createWorkRelease(input: {
   workId: string;
-  kind: CreatorWorkKind;
   title: string;
   summary?: string;
   bodyText?: string;
   sequenceNumber?: number;
+  authHeaders: WalletAuthHeaders;
 }): Promise<CreatorRelease> {
   const title = input.title.trim();
   if (!title) throw new Error('Release title is required.');
@@ -293,21 +336,20 @@ export async function createWorkRelease(input: {
     sequence = (count ?? 0) + 1;
   }
 
-  const row = {
-    work_id: input.workId,
-    sequence_number: sequence,
-    title,
-    summary: input.summary?.trim() || '',
-    content_type: contentTypeForKind(input.kind),
-    publication_status: 'draft',
-    visibility: 'private',
-    body_text: input.bodyText?.trim() || '',
-    release_metadata: {},
-  };
-
-  const { data, error } = await supabase.from('work_releases').insert(row).select('*').single();
-  if (error) throw error;
-  return data as CreatorRelease;
+  const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+    body: {
+      action: 'create_release',
+      work_id: input.workId,
+      title,
+      summary: input.summary?.trim() || '',
+      body_text: input.bodyText?.trim() || '',
+      sequence_number: sequence,
+    },
+    headers: input.authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not create the chapter.'));
+  if (!data?.release) throw new Error('Release creation returned no row.');
+  return data.release as CreatorRelease;
 }
 
 export async function publishCreatorWork(

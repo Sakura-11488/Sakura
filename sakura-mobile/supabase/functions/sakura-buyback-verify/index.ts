@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
+import { getSolanaRpcUrl } from '../_shared/solana-rpc.ts';
 
 type BuybackBody = {
   creator_coin_id?: string;
@@ -12,8 +13,10 @@ type BuybackBody = {
 const cors = corsHeaders();
 
 async function assertConfirmed(signature: string) {
-  const rpcUrl = Deno.env.get('SOLANA_RPC_URL')?.trim() || Deno.env.get('EXPO_PUBLIC_SOLANA_RPC_URL')?.trim();
-  if (!rpcUrl) throw new Error('SOLANA_RPC_URL is not configured.');
+  // Was: SOLANA_RPC_URL || EXPO_PUBLIC_SOLANA_RPC_URL. Both are documented as
+  // legacy aliases; the canonical name is SOLANA_RPC, so under the documented
+  // configuration this threw and the surrounding catch reported it as a 401.
+  const rpcUrl = getSolanaRpcUrl();
   const response = await fetch(rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

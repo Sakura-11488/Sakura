@@ -1,26 +1,13 @@
 import { PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js';
 import { getConnection } from './connection';
 import { SAKURA_MINT, SAKURA_DECIMALS } from './config';
+import { base64ToBytes } from './base64';
 
 const JUPITER_BASE = 'https://api.jup.ag/swap/v1';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const MAX_PRIORITY_FEE_LAMPORTS = 1_000_000;
 // Free key from https://portal.jup.ag — set EXPO_PUBLIC_JUPITER_API_KEY in .env; never commit the key.
 const JUPITER_API_KEY = process.env.EXPO_PUBLIC_JUPITER_API_KEY?.trim() || '';
-
-/** React Native has no Node `Buffer`; Jupiter returns base64-encoded transactions. */
-function base64ToBytes(base64: string): Uint8Array {
-  const atobFn = globalThis.atob;
-  if (typeof atobFn !== 'function') {
-    throw new Error('Base64 decode is not available on this device');
-  }
-  const binary = atobFn(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
 
 export interface SwapQuote {
   inAmount: string;

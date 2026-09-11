@@ -9,6 +9,19 @@ type FollowBody = {
 
 const cors = corsHeaders();
 
+/**
+ * Read-only. This is the number returned to the client; it is NOT written back
+ * to user_profiles.follower_count.
+ *
+ * This function used to follow the count with its own UPDATE of that column,
+ * which made it the third writer racing two triggers on creator_follows. It was
+ * also the worst of the three: it ran after the transaction had committed, so
+ * concurrent follows could interleave and write each other's stale values, and
+ * `if (error) return 0` below meant a transient read failure wrote a hard zero
+ * over a count the in-transaction trigger had already got right. The single
+ * absolute-recount trigger installed by 20260727000000_follow_counts_single_writer.sql
+ * owns that column now.
+ */
 async function countFollowers(
   supabase: ReturnType<typeof createClient>,
   creatorWallet: string,
@@ -19,17 +32,6 @@ async function countFollowers(
     .eq('creator_wallet', creatorWallet);
   if (error) return 0;
   return count ?? 0;
-}
-
-async function syncFollowerCount(
-  supabase: ReturnType<typeof createClient>,
-  creatorWallet: string,
-  followerCount: number,
-): Promise<void> {
-  await supabase
-    .from('user_profiles')
-    .update({ follower_count: followerCount })
-    .eq('wallet_address', creatorWallet);
 }
 
 Deno.serve(async (req) => {
@@ -83,10 +85,6 @@ Deno.serve(async (req) => {
         .maybeSingle(),
       countFollowers(supabase, creatorWallet),
     ]);
-
-    if (action === 'follow' || action === 'unfollow') {
-      await syncFollowerCount(supabase, creatorWallet, followerCount);
-    }
 
     return jsonResponse(
       200,
