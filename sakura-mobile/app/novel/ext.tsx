@@ -452,7 +452,8 @@ export default function NovelExtDetail() {
   useEffect(() => {
     if (!detail) return;
     refreshOffline();
-    return subscribeOfflineNovel(refreshOffline);
+    const unsubscribe = subscribeOfflineNovel(refreshOffline);
+    return () => { unsubscribe(); };
   }, [detail, refreshOffline]);
 
   useEffect(() => {
@@ -468,7 +469,8 @@ export default function NovelExtDetail() {
       }
     };
     refreshBatch();
-    return subscribeNovelBatch(refreshBatch);
+    const unsubscribe = subscribeNovelBatch(refreshBatch);
+    return () => { unsubscribe(); };
   }, [decodedPath]);
 
   const openChapter = useCallback((ch: AllNovelChapter, resume = false) => {

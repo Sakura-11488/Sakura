@@ -20,7 +20,6 @@ import {
     getMarketOrderParams,
     PerpPosition,
 } from "@drift-labs/sdk";
-import bs58 from "bs58";
 
 let driftClient: DriftClient | null = null;
 let connection: Connection | null = null;
@@ -29,10 +28,11 @@ const SOL_PERP_MARKET_INDEX = 0;
 const SOL_SPOT_MARKET_INDEX = 1; // SOL spot market for deposits
 const USDC_SPOT_MARKET_INDEX = 0;
 
+// The legacy custodial routes are unavailable. Public market reads need an SDK
+// wallet object but must not load the former hot-wallet signing key.
+const readOnlyWallet = Keypair.generate();
 function getServerKeypair(): Keypair {
-    const key = process.env.DRIFT_WALLET_KEY;
-    if (!key) throw new Error("DRIFT_WALLET_KEY not set");
-    return Keypair.fromSecretKey(bs58.decode(key));
+    return readOnlyWallet;
 }
 
 function getConnection(): Connection {
@@ -137,7 +137,7 @@ export async function getMarketState(): Promise<DriftMarketState> {
     const openInterest = ((baseAssetAmountLong + baseAssetAmountShort) / 2) * oraclePrice;
 
     // Next funding timestamp
-    const nextFundingTs = perpMarket.amm.nextFundingRateTs?.toNumber() || 0;
+    const nextFundingTs = perpMarket.amm.lastFundingRateTs.add(perpMarket.amm.fundingPeriod).toNumber();
 
     // For 24h stats, use Drift's data API as fallback via CoinGecko
     let volume24h = 0;
@@ -149,7 +149,7 @@ export async function getMarketState(): Promise<DriftMarketState> {
             "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_vol=true&include_24hr_change=true"
         );
         if (cgRes.ok) {
-            const cgData = await cgRes.json();
+            const cgData: any = await cgRes.json();
             if (cgData.solana) {
                 volume24h = cgData.solana.usd_24h_vol || 0;
                 change24h = cgData.solana.usd_24h_change || 0;
@@ -186,7 +186,7 @@ export async function getOrderBook(): Promise<{ bids: OrderBookLevel[]; asks: Or
             `https://dlob.drift.trade/l2?marketIndex=${SOL_PERP_MARKET_INDEX}&marketType=perp&depth=12`
         );
         if (!res.ok) throw new Error("DLOB fetch failed");
-        const data = await res.json();
+        const data: any = await res.json();
 
         let bidTotal = 0;
         const bids: OrderBookLevel[] = (data.bids || []).slice(0, 12).map((b: any) => {
@@ -233,7 +233,7 @@ export async function getRecentTrades(): Promise<RecentTrade[]> {
             `https://data.api.drift.trade/trades/perpMarketTrades?marketIndex=${SOL_PERP_MARKET_INDEX}&limit=20`
         );
         if (!res.ok) throw new Error("Trades fetch failed");
-        const data = await res.json();
+        const data: any = await res.json();
 
         return (data.trades || data || []).slice(0, 20).map((t: any) => ({
             price: (parseFloat(t.quoteAssetAmountFilled || t.price) / 1e6) /
@@ -259,7 +259,7 @@ export async function getFundingRates(): Promise<{ rate: number; nextTs: number 
             `https://data.api.drift.trade/fundingRates?marketName=SOL-PERP`
         );
         if (!res.ok) throw new Error("Funding rate fetch failed");
-        const data = await res.json();
+        const data: any = await res.json();
         const rates = data.fundingRates || [];
         if (rates.length === 0) return { rate: 0, nextTs: 0 };
 

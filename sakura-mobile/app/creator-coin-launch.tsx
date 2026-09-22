@@ -8,6 +8,7 @@ import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
 import { executeCreatorCoinLaunch } from '@/lib/wallet/creator-coin';
+import { clearPendingCreatorCoinLaunch, savePendingCreatorCoinLaunch } from '@/lib/creator-coin-recovery';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 export default function CreatorCoinLaunchScreen() {
@@ -54,6 +55,7 @@ export default function CreatorCoinLaunchScreen() {
       return;
     }
     setSubmitting(true);
+    let signed = false;
     try {
       const keypair = await signWithBiometrics();
       if (!keypair) throw new Error('Wallet approval is required.');
@@ -81,6 +83,21 @@ export default function CreatorCoinLaunchScreen() {
         mintAddress: result.mint_address,
         lastValidBlockHeight: result.last_valid_block_height ?? 0,
         keypair,
+        intent: {
+          name: name.trim().slice(0, 80),
+          symbol: symbol.trim().toUpperCase(),
+          metadataUri: metadataUri.trim(),
+        },
+        onSigned: async (signature) => {
+          await savePendingCreatorCoinLaunch({
+            creatorWallet: address,
+            coinId: result.coin_id,
+            launchRequestId: result.launch_request_id,
+            mintAddress: result.mint_address!,
+            signature,
+          });
+          signed = true;
+        },
       });
 
       // A confirmed signature is not success on its own. Verification is what
@@ -95,11 +112,17 @@ export default function CreatorCoinLaunchScreen() {
         mintAddress: submitted.mintAddress,
         authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-verify'),
       });
+      await clearPendingCreatorCoinLaunch(address).catch(() => {});
 
       showAlert('Coin launched', `${symbol.toUpperCase()} is live at ${submitted.mintAddress}`);
       router.replace('/creator-dashboard');
     } catch (error) {
-      showAlert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
+      if (signed) {
+        showAlert('Check coin launch', 'Your transaction was signed, but confirmation is incomplete. Open your creator dashboard to finish verification before trying another launch.');
+        router.replace('/creator-dashboard');
+      } else {
+        showAlert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
+      }
     } finally {
       setSubmitting(false);
       setStage(null);

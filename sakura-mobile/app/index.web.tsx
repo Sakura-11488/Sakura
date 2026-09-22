@@ -47,7 +47,7 @@ export default function WebIndex() {
         if (!mounted) return;
         // A timeout resolves null and is treated exactly like a failed read:
         // the legal gate is the one thing that must not be skipped on a guess.
-        router.replace(accepted ? '/(tabs)/home' : '/welcome');
+        router.replace(accepted ? '/home' : '/welcome');
       })
       .catch(() => {
         if (mounted) router.replace('/welcome');

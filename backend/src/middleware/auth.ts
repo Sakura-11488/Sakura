@@ -67,10 +67,12 @@ export function requireWalletAuth(req: Request, res: Response, next: NextFunctio
  * For read-only endpoints where full signature verification is overkill.
  */
 export function requireWallet(req: Request, res: Response, next: NextFunction) {
+    const queryWallet = req.query.wallet;
+    const paramWallet = req.params.wallet;
     const walletAddress =
-        req.headers["x-wallet-address"] as string ||
-        req.params.wallet ||
-        req.query.wallet as string;
+        (typeof req.headers["x-wallet-address"] === "string" ? req.headers["x-wallet-address"] : undefined) ||
+        (typeof paramWallet === "string" ? paramWallet : undefined) ||
+        (typeof queryWallet === "string" ? queryWallet : undefined);
 
     if (!walletAddress) {
         res.status(400).json({ error: "Wallet address required" });

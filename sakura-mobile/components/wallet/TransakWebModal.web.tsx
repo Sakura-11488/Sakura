@@ -144,7 +144,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     borderWidth: 1,
     padding: 16,
-    maxHeight: '92vh',
+    maxHeight: '92%',
     overflow: 'hidden',
   },
   header: {

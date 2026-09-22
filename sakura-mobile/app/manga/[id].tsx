@@ -571,7 +571,8 @@ export default function MangaDetail() {
   useEffect(() => {
     if (!mangaId) return;
     refreshOffline();
-    return adapter ? subscribeScrapedOffline(refreshOffline) : subscribeOfflineManga(refreshOffline);
+    const unsubscribe = adapter ? subscribeScrapedOffline(refreshOffline) : subscribeOfflineManga(refreshOffline);
+    return () => { unsubscribe(); };
   }, [mangaId, adapter, refreshOffline]);
 
   useEffect(() => {
@@ -587,7 +588,8 @@ export default function MangaDetail() {
       }
     };
     refreshBatch();
-    return subscribeMangaBatch(refreshBatch);
+    const unsubscribe = subscribeMangaBatch(refreshBatch);
+    return () => { unsubscribe(); };
   }, [mangaId]);
 
   const loadMangaProgress = useCallback(() => {
@@ -710,7 +712,7 @@ export default function MangaDetail() {
       const { ok, failed, paused } = await downloadAllMangaChapters({
         mangaId,
         title: manga.title,
-        cover: manga.image || manga.cover || '',
+        cover: manga.cover || '',
         chapters: chapters.map((ch) => ({ id: ch.id, number: ch.number, title: ch.title })),
       });
       if (paused) {
