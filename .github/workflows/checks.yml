@@ -28,6 +28,10 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EXPO_PUBLIC_SOLANA_RPC: ${{ vars.EXPO_PUBLIC_SOLANA_RPC }}
 
   backend:
     runs-on: ubuntu-latest
