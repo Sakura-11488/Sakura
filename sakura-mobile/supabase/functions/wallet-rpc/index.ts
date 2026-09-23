@@ -2,12 +2,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { checkRateLimit } from '../_shared/rate-limit.ts';
 
 const methods = new Set([
-  'getAccountInfo', 'getBalance', 'getBlockHeight', 'getEpochInfo',
+  'getAccountInfo', 'getAddressLookupTable', 'getBalance', 'getBlockHeight', 'getEpochInfo',
   'getFeeForMessage', 'getGenesisHash', 'getLatestBlockhash',
   'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getBlockTime',
+  'getSignaturesForAddress',
   'getMinimumBalanceForRentExemption', 'getRecentPrioritizationFees',
   'getSignatureStatuses', 'getTokenAccountBalance', 'getTokenAccountsByOwner',
-  'getTokenLargestAccounts', 'getTransaction', 'getVersion',
+  'getTokenLargestAccounts', 'getTokenSupply', 'getTransaction', 'getVersion',
   'sendTransaction', 'simulateTransaction',
 ]);
 const cors = {
