@@ -8,7 +8,7 @@
     "start": "expo start --web",
     "dev": "node scripts/link-mobile-sources.mjs && npm run build && npx --yes serve dist -p 8081 --single",
     "dev:metro": "expo start --web --no-dev",
-    "build": "node scripts/check-public-env.mjs && expo export --platform web && node scripts/inject-pwa-tags.mjs",
+    "build": "node scripts/check-public-env.mjs && expo export --platform web --max-workers 1 && node scripts/inject-pwa-tags.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
