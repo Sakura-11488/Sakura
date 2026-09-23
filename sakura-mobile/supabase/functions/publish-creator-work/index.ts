@@ -64,12 +64,14 @@ Deno.serve(async (req) => {
 
       const followerWallets = [...new Set((follows ?? []).map((row) => row.follower_wallet).filter(Boolean))];
       if (followerWallets.length) {
-      const { data: firstRelease, error: releaseErr } = await supabase
-        .from('work_releases').select('id').eq('work_id', body.work_id)
-        .order('sequence_number', { ascending: true }).limit(1).maybeSingle();
-      if (releaseErr) throw releaseErr;
-      const title = 'New Sakura creator work';
-      const bodyText = `${work.title} is now live.`;
+      const isNewRelease = published?.new_release === true;
+      const releaseCount = Number(published?.releases_published) || 0;
+      const title = isNewRelease
+        ? `${releaseCount} new ${work.kind === 'anime' ? 'episode' : 'chapter'}${releaseCount === 1 ? '' : 's'}`
+        : 'New Sakura creator work';
+      const bodyText = isNewRelease
+        ? `${work.title} has new content.`
+        : `${work.title} is now live.`;
       const route = `/work/${body.work_id}`;
 
       const { error: notifyErr } = await supabase.from('creator_notifications').insert(
@@ -77,13 +79,13 @@ Deno.serve(async (req) => {
           recipient_wallet,
           actor_wallet: walletAddress,
           creator_wallet: walletAddress,
-          notification_type: firstRelease ? 'creator_new_release' : 'creator_new_work',
+          notification_type: isNewRelease ? 'creator_new_release' : 'creator_new_work',
           title,
           body: bodyText,
           route,
           work_id: body.work_id,
-          release_id: firstRelease?.id ?? null,
-          metadata: { kind: work.kind, releaseCount: published?.releases_published ?? 0 },
+          release_id: published?.first_release_id ?? null,
+          metadata: { kind: work.kind, releaseCount },
         })),
       );
       if (notifyErr) throw notifyErr;
@@ -103,7 +105,7 @@ Deno.serve(async (req) => {
           title,
           body: bodyText,
           sound: PUSH_NOTIFICATION_SOUND,
-          data: { type: 'creator_new_work', creatorWallet: walletAddress, workId: body.work_id ?? '', route },
+          data: { type: isNewRelease ? 'creator_new_release' : 'creator_new_work', creatorWallet: walletAddress, workId: body.work_id ?? '', route },
         }));
       if (messages.length) {
         await sendExpoPushBatch(messages);

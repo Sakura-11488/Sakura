@@ -76,7 +76,8 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
-    const limit = await checkRateLimit(supabase, `creator-media:${walletAddress}`, 240, 3600);
+    // A ten-chapter manga batch can contain 600 pages plus thumbnails.
+    const limit = await checkRateLimit(supabase, `creator-media:${walletAddress}`, 1000, 3600);
     if (!limit.allowed) return jsonResponse(429, { error: 'Upload limit reached. Try again later.' }, cors);
     const body = (await req.json()) as UploadBody;
 
@@ -108,11 +109,14 @@ Deno.serve(async (req) => {
     if (releaseId) {
       const { data: release } = await supabase
         .from('work_releases')
-        .select('id, work_id')
+        .select('id, work_id, publication_status')
         .eq('id', releaseId)
         .maybeSingle();
       if (!release || release.work_id !== workId) {
         return jsonResponse(403, { error: 'Release does not belong to this work.' }, cors);
+      }
+      if (release.publication_status !== 'draft') {
+        return jsonResponse(409, { error: 'Published chapters cannot be changed through upload.' }, cors);
       }
     }
 

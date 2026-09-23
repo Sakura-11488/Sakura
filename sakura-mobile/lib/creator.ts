@@ -410,6 +410,23 @@ export async function updateCreatorDraft(input: {
   if (releaseError) throw new Error(await invokeMessage(releaseError, 'Could not update chapter.'));
 }
 
+/** Edit a still-private chapter on a published series without changing the series. */
+export async function updateCreatorReleaseDraft(input: {
+  workId: string;
+  releaseId: string;
+  releaseTitle: string;
+  expectedPageCount?: number;
+  authHeaders: WalletAuthHeaders;
+}): Promise<void> {
+  const { error } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'update_release', work_id: input.workId,
+      release_id: input.releaseId, title: input.releaseTitle,
+      expected_page_count: input.expectedPageCount },
+    headers: input.authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not update chapter.'));
+}
+
 export async function discardCreatorDraft(workId: string, authHeaders: WalletAuthHeaders): Promise<void> {
   const { error } = await supabase.functions.invoke('manage-creator-work', {
     body: { action: 'discard_draft', work_id: workId }, headers: authHeaders,

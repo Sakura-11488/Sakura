@@ -36,6 +36,7 @@ import {
   getWorkReleases,
   getWorkAssets,
   updateCreatorDraft,
+  updateCreatorReleaseDraft,
   type CreatorWorkKind,
 } from '@/lib/creator';
 import {
@@ -52,6 +53,15 @@ import {
   registerWorkMintOnChain,
   verifyWorkMint,
 } from '@/lib/work-mint';
+
+type MangaChapterDraft = {
+  key: string;
+  title: string;
+  pages: string[];
+  releaseId: string | null;
+  uploadedPages: number[];
+  expectedPages: number;
+};
 
 export default function CreatorUploadScreen() {
   const { colors } = useTheme();
@@ -70,6 +80,8 @@ export default function CreatorUploadScreen() {
     uploadedAttachmentNames: Set<string>;
   } | null>(null);
   const [draftWorkId, setDraftWorkId] = useState<string | null>(null);
+  const [existingPublishedWork, setExistingPublishedWork] = useState(false);
+  const [mangaChapters, setMangaChapters] = useState<MangaChapterDraft[]>([]);
 
   const [checking, setChecking] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -111,13 +123,18 @@ export default function CreatorUploadScreen() {
           if (!keypair) throw new Error('Unlock your wallet to resume this draft.');
           const headers = buildWalletAuthHeaders(keypair, 'creator-manage-work');
           const works = await getCreatorWorks(address, headers);
-          const work = works.find((item) => item.id === requestedWorkId && item.publication_status === 'draft');
-          if (!work) throw new Error('Draft not found in this creator account.');
+          const work = works.find((item) => item.id === requestedWorkId &&
+            ['draft', 'published'].includes(item.publication_status));
+          if (!work) throw new Error('Series not found in this creator account.');
+          if (work.publication_status === 'published' && work.kind !== 'manga') {
+            throw new Error('Adding releases to this format is not available from this page yet.');
+          }
           const [releases, assets] = await Promise.all([
             getWorkReleases(work.id, buildWalletAuthHeaders(keypair, 'creator-manage-work')),
             getWorkAssets(work.id, buildWalletAuthHeaders(keypair, 'creator-manage-work')),
           ]);
-          const release = releases.find((item) => item.publication_status === 'draft') ?? null;
+          const draftReleases = releases.filter((item) => item.publication_status === 'draft');
+          const release = draftReleases[0] ?? null;
           const uploadedPages = new Set(assets.filter((item) =>
             item.release_id === release?.id && item.role === 'manga_page' &&
             item.asset_files?.status === 'ready').map((item) => item.sort_order));
@@ -137,6 +154,7 @@ export default function CreatorUploadScreen() {
           };
           setUploadedAttachmentCount(pendingRef.current.uploadedAttachmentNames.size);
           setDraftWorkId(work.id);
+          setExistingPublishedWork(work.publication_status === 'published');
           setWorkKind(work.kind);
           setWorkTitle(work.title);
           setWorkDescription(work.description);
@@ -144,6 +162,16 @@ export default function CreatorUploadScreen() {
           if (coverUrl) setCoverUri(coverUrl);
           setReleaseTitle(release?.title ?? '');
           setReleaseBody(release?.body_text ?? '');
+          setMangaChapters(draftReleases.slice(1).map((item) => {
+            const uploaded = assets.filter((asset) =>
+              asset.release_id === item.id && asset.role === 'manga_page' &&
+              asset.asset_files?.status === 'ready').map((asset) => asset.sort_order);
+            return {
+              key: item.id, title: item.title, pages: [], releaseId: item.id,
+              uploadedPages: uploaded,
+              expectedPages: Number(item.release_metadata?.expected_page_count) || uploaded.length,
+            };
+          }));
         })
         .catch((error) => showAlert('Cannot load draft', error instanceof Error ? error.message : 'Try again.'))
         .finally(() => setChecking(false));
@@ -222,6 +250,29 @@ export default function CreatorUploadScreen() {
     }
   };
 
+  const pickAdditionalMangaPages = async (key: string) => {
+    const chapter = mangaChapters.find((item) => item.key === key);
+    if (!chapter) return;
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      showAlert('Photos', 'Allow photo access to add chapter pages.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'], allowsMultipleSelection: true,
+      orderedSelection: true, selectionLimit: 60, quality: 0.8,
+    });
+    if (result.canceled || !result.assets.length) return;
+    if (chapter.expectedPages && chapter.releaseId &&
+      result.assets.length !== chapter.expectedPages) {
+      showAlert('Select the full chapter',
+        `This saved chapter expects ${chapter.expectedPages} pages. Re-select them all in their original order.`);
+      return;
+    }
+    setMangaChapters((items) => items.map((item) => item.key === key
+      ? { ...item, pages: result.assets.map((asset) => asset.uri) } : item));
+  };
+
   const pickAttachments = async () => {
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*', multiple: true, copyToCacheDirectory: true,
@@ -254,6 +305,14 @@ export default function CreatorUploadScreen() {
       (pendingRef.current?.uploadedPages.size ?? 0) < Math.max(1, pendingRef.current?.expectedPages ?? 0)) {
       showAlert('Pages required', 'Select the full chapter pages in reading order.');
       return;
+    }
+    if (workKind === 'manga') {
+      const incomplete = mangaChapters.find((chapter) => !chapter.title.trim() ||
+        (!chapter.pages.length && chapter.uploadedPages.length < Math.max(1, chapter.expectedPages)));
+      if (incomplete) {
+        showAlert('Chapter incomplete', 'Give every chapter a title and select its pages before publishing.');
+        return;
+      }
     }
     if (workKind === 'anime' && !videoUri && !pendingRef.current?.videoUploaded) {
       showAlert('Video required', 'Select an episode video.');
@@ -315,17 +374,46 @@ export default function CreatorUploadScreen() {
         pending.releaseId = release.id;
         pending.expectedPages = mangaPageUris.length;
       } else {
-        await updateCreatorDraft({
-          workId: pending.workId, releaseId: pending.releaseId,
-          title: workTitle, description: workDescription, releaseTitle,
-          bodyText: releaseBody,
-          expectedPageCount: workKind === 'manga'
-            ? mangaPageUris.length || pending.expectedPages : undefined,
-          authHeaders: buildWalletAuthHeaders(kp, 'creator-manage-work'),
-        });
+        const authHeaders = buildWalletAuthHeaders(kp, 'creator-manage-work');
+        if (existingPublishedWork) {
+          await updateCreatorReleaseDraft({
+            workId: pending.workId, releaseId: pending.releaseId,
+            releaseTitle,
+            expectedPageCount: workKind === 'manga'
+              ? mangaPageUris.length || pending.expectedPages : undefined,
+            authHeaders,
+          });
+        } else {
+          await updateCreatorDraft({
+            workId: pending.workId, releaseId: pending.releaseId,
+            title: workTitle, description: workDescription, releaseTitle,
+            bodyText: releaseBody,
+            expectedPageCount: workKind === 'manga'
+              ? mangaPageUris.length || pending.expectedPages : undefined,
+            authHeaders,
+          });
+        }
       }
       const workId = pending.workId;
       const releaseId = pending.releaseId;
+      const savedMangaChapters = [...mangaChapters];
+      if (workKind === 'manga') {
+        // Save every chapter before sending page bytes. If an upload stops, the
+        // dashboard can recover the whole batch from the server.
+        for (const [index, chapter] of savedMangaChapters.entries()) {
+          if (chapter.releaseId) continue;
+          const created = await createWorkRelease({
+            workId, title: chapter.title,
+            expectedPageCount: chapter.pages.length,
+            authHeaders: buildWalletAuthHeaders(kp, 'creator-manage-work'),
+          });
+          savedMangaChapters[index] = {
+            ...chapter, releaseId: created.id, expectedPages: chapter.pages.length,
+          };
+          setMangaChapters((items) => items.map((item) => item.key === chapter.key
+            ? { ...item, releaseId: created.id, expectedPages: chapter.pages.length } : item));
+        }
+      }
 
       // Cover goes through the ownership-checked upload-work-media edge function
       // (service role), same as manga pages — a direct client storage write is
@@ -355,6 +443,32 @@ export default function CreatorUploadScreen() {
         });
         if (pageResult.failed.length) {
           throw new Error(`Pages ${pageResult.failed.join(', ')} did not upload. Your draft is saved; retry with the same pages in order.`);
+        }
+      }
+
+      if (workKind === 'manga') {
+        for (const [index, chapter] of savedMangaChapters.entries()) {
+          const chapterReleaseId = chapter.releaseId!;
+          await updateCreatorReleaseDraft({
+            workId, releaseId: chapterReleaseId, releaseTitle: chapter.title,
+            expectedPageCount: chapter.pages.length || chapter.expectedPages,
+            authHeaders: buildWalletAuthHeaders(kp, 'creator-manage-work'),
+          });
+          if (chapter.pages.length) {
+            const pageResult = await uploadMangaPages({
+              keypair: kp, workId, releaseId: chapterReleaseId,
+              localUris: chapter.pages, paid: Number(priceText) > 0,
+              skipPageNumbers: chapter.uploadedPages,
+              onPageUploaded: (number) => setMangaChapters((items) => items.map((item) =>
+                item.key === chapter.key
+                  ? { ...item, uploadedPages: [...item.uploadedPages, number] } : item)),
+              onProgress: (done, total) => setMediaProgress(
+                `Chapter ${index + 2}/${savedMangaChapters.length + 1}: page ${done}/${total}…`),
+            });
+            if (pageResult.failed.length) {
+              throw new Error(`Chapter ${index + 2}: pages ${pageResult.failed.join(', ')} failed. Your draft is saved; retry with the same pages in order.`);
+            }
+          }
         }
       }
 
@@ -388,7 +502,7 @@ export default function CreatorUploadScreen() {
         ? ` ${result.followers_notified} subscribers notified.`
         : '';
       const warnings: string[] = [];
-      if (registerOnChain) {
+      if (registerOnChain && !existingPublishedWork) {
         try {
           const txSignature = await registerWorkMintOnChain(kp, workId, workTitle.trim());
           await verifyWorkMint(kp, {
@@ -461,6 +575,9 @@ export default function CreatorUploadScreen() {
     (workKind !== 'novel' || releaseBody.trim().length > 0) &&
     (workKind !== 'manga' || mangaPageUris.length > 0 ||
       (pendingRef.current?.uploadedPages.size ?? 0) >= Math.max(1, pendingRef.current?.expectedPages ?? 0)) &&
+    (workKind !== 'manga' || mangaChapters.every((chapter) => chapter.title.trim() &&
+      (chapter.pages.length > 0 ||
+        chapter.uploadedPages.length >= Math.max(1, chapter.expectedPages)))) &&
     (workKind !== 'anime' || !!videoUri || !!pendingRef.current?.videoUploaded);
 
   return (
@@ -490,7 +607,7 @@ export default function CreatorUploadScreen() {
                   showAlert('Format locked', 'A saved draft cannot change format. Start a new release for another format.');
                 } else setWorkKind(kind);
               }} colors={colors} />
-              <CoverPicker uri={coverUri} onPress={pickCover} colors={colors} />
+              {!existingPublishedWork && <CoverPicker uri={coverUri} onPress={pickCover} colors={colors} />}
             </FormSection>
 
             <FormSection
@@ -504,6 +621,7 @@ export default function CreatorUploadScreen() {
                 colors={colors}
                 value={workTitle}
                 onChangeText={setWorkTitle}
+                editable={!existingPublishedWork}
                 placeholder="e.g. Sakura Chronicles"
               />
               <FormField
@@ -512,13 +630,16 @@ export default function CreatorUploadScreen() {
                 colors={colors}
                 value={workDescription}
                 onChangeText={setWorkDescription}
+                editable={!existingPublishedWork}
                 multiline
                 placeholder="What is your story about?"
                 inputStyle={{ minHeight: 96, textAlignVertical: 'top', paddingTop: 12 }}
               />
               <FormField
                 label="Price in SAKURA"
-                hint={draftWorkId
+                hint={existingPublishedWork
+                  ? 'The existing series price also applies to new chapters.'
+                  : draftWorkId
                   ? 'Price is fixed for this draft. Discard it to choose a different price.'
                   : '0 makes the work free. A paid work unlocks once per reader; tokens go straight to your wallet.'}
                 colors={colors}
@@ -531,8 +652,11 @@ export default function CreatorUploadScreen() {
             </FormSection>
 
             <FormSection
-              title={workKind === 'anime' ? 'First episode' : 'First chapter'}
-              subtitle="This release goes live immediately after publishing."
+              title={workKind === 'anime' ? 'First episode'
+                : existingPublishedWork ? 'Next chapter' : 'First chapter'}
+              subtitle={workKind === 'manga'
+                ? 'Add all the chapters you want to publish together.'
+                : 'This release goes live immediately after publishing.'}
               colors={colors}
             >
               <FormField
@@ -611,6 +735,63 @@ export default function CreatorUploadScreen() {
               )}
             </FormSection>
 
+            {workKind === 'manga' && (
+              <FormSection title="More chapters" subtitle="Upload several chapters to this series in one submission." colors={colors}>
+                {mangaChapters.map((chapter, index) => (
+                  <View key={chapter.key} style={{ marginBottom: Spacing.md }}>
+                    <FormField
+                      label={`Additional chapter ${index + 1} title`}
+                      colors={colors}
+                      value={chapter.title}
+                      onChangeText={(title) => setMangaChapters((items) => items.map((item) =>
+                        item.key === chapter.key ? { ...item, title } : item))}
+                      placeholder={`Chapter title`}
+                    />
+                    <TouchableOpacity
+                      onPress={onTap(() => pickAdditionalMangaPages(chapter.key))}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      style={{ backgroundColor: colors.surfaceSecondary, borderRadius: Radius.lg,
+                        padding: 14, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.border }}
+                    >
+                      <Text style={{ color: colors.text, fontWeight: FontWeight.bold }}>
+                        {chapter.pages.length
+                          ? `${chapter.pages.length} pages selected`
+                          : chapter.uploadedPages.length
+                            ? `${chapter.uploadedPages.length} pages uploaded in saved draft`
+                            : 'Select chapter pages'}
+                      </Text>
+                      <Text style={{ color: colors.textSecondary, fontSize: FontSize.xs, marginTop: 4 }}>
+                        Select up to 60 pages in reading order.
+                      </Text>
+                    </TouchableOpacity>
+                    {!chapter.releaseId && (
+                      <TouchableOpacity
+                        onPress={() => setMangaChapters((items) => items.filter((item) => item.key !== chapter.key))}
+                        accessibilityRole="button"
+                        style={{ paddingVertical: Spacing.sm }}
+                      >
+                        <Text style={{ color: colors.textSecondary }}>Remove chapter</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+                {mangaChapters.length < 9 && (
+                  <TouchableOpacity
+                    onPress={() => setMangaChapters((items) => [...items, {
+                      key: `new-${Date.now()}-${items.length}`, title: '', pages: [],
+                      releaseId: null, uploadedPages: [], expectedPages: 0,
+                    }])}
+                    accessibilityRole="button"
+                    style={{ padding: 14, borderRadius: Radius.lg,
+                      borderWidth: 1, borderColor: colors.primary }}
+                  >
+                    <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>+ Add another chapter</Text>
+                  </TouchableOpacity>
+                )}
+              </FormSection>
+            )}
+
             <FormSection
               title="Extra files"
               subtitle="Add audio, scripts, PDFs, source files, or other downloads. Up to 10 files, 50 MB each."
@@ -640,7 +821,7 @@ export default function CreatorUploadScreen() {
               ))}
             </FormSection>
 
-            <FormSection
+            {!existingPublishedWork && <FormSection
               title="On-chain record (optional)"
               subtitle="After publishing, you can sign a Solana Memo that links this work to your wallet. This does not mint an NFT."
               colors={colors}
@@ -682,7 +863,7 @@ export default function CreatorUploadScreen() {
                   {registerOnChain ? <Text style={{ color: '#fff', fontSize: 12 }}>✓</Text> : null}
                 </View>
               </TouchableOpacity>
-            </FormSection>
+            </FormSection>}
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -692,7 +873,9 @@ export default function CreatorUploadScreen() {
           {mediaProgress
             ? mediaProgress
             : canPublish
-              ? 'Ready to publish publicly on Sakura'
+              ? workKind === 'manga'
+                ? `Ready to publish ${mangaChapters.length + 1} chapter${mangaChapters.length ? 's' : ''}`
+                : 'Ready to publish publicly on Sakura'
               : 'Add a title, release title, and chapter content to continue'}
         </Text>
         <TouchableOpacity

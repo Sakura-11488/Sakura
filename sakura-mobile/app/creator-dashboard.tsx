@@ -604,7 +604,7 @@ export default function CreatorDashboardScreen() {
               <View>
                 <Text style={[styles.actionTitle, { color: '#fff' }]}>Upload work</Text>
                 <Text style={[styles.actionSub, { color: 'rgba(255,255,255,0.85)' }]}>
-                  New chapter, episode, or series
+                  Start a new series
                 </Text>
               </View>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -773,6 +773,16 @@ export default function CreatorDashboardScreen() {
                       <View style={[styles.statusDot, { backgroundColor: live ? colors.success : colors.warning }]} />
                       <Text style={styles.workStatus}>{statusLabel(work.publication_status)}</Text>
                     </View>
+                    {live && work.kind === 'manga' ? (
+                      <TouchableOpacity
+                        onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Add chapters to ${work.title}`}
+                        style={{ paddingVertical: Spacing.sm }}
+                      >
+                        <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>+ Add chapters</Text>
+                      </TouchableOpacity>
+                    ) : null}
                     {!live && work.publication_status === 'draft' ? (
                       <View style={{ marginTop: Spacing.sm, flexDirection: 'row', gap: Spacing.md }}>
                         <TouchableOpacity

@@ -195,7 +195,7 @@ Deno.serve(async (req) => {
 
       const { data: work, error: workErr } = await supabase
         .from('creator_works')
-        .select('id, creator_wallet, kind')
+        .select('id, creator_wallet, kind, publication_status')
         .eq('id', body.work_id)
         .maybeSingle();
       if (workErr) return jsonResponse(500, { error: workErr.message }, cors);
@@ -204,6 +204,9 @@ Deno.serve(async (req) => {
       // checks it. A release cannot be attached to somebody else's work.
       if (work.creator_wallet !== walletAddress) {
         return jsonResponse(403, { error: 'Not your work.' }, cors);
+      }
+      if (!['draft', 'published'].includes(work.publication_status)) {
+        return jsonResponse(409, { error: 'This series cannot accept new chapters.' }, cors);
       }
 
       // A client-supplied sequence is accepted (the upload screen computes one)
@@ -279,8 +282,9 @@ Deno.serve(async (req) => {
       const { data: work, error: workErr } = await supabase.from('creator_works')
         .select('id, creator_wallet, kind, publication_status').eq('id', body.work_id).maybeSingle();
       if (workErr) return jsonResponse(500, { error: workErr.message }, cors);
-      if (!work || work.creator_wallet !== walletAddress || work.publication_status !== 'draft') {
-        return jsonResponse(403, { error: 'Draft work not found for this wallet.' }, cors);
+      if (!work || work.creator_wallet !== walletAddress ||
+        !['draft', 'published'].includes(work.publication_status)) {
+        return jsonResponse(403, { error: 'Work not found for this wallet.' }, cors);
       }
       const title = clean(body.title, MAX_TITLE);
       if (!title) return jsonResponse(400, { error: 'Release title is required.' }, cors);
