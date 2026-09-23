@@ -19,6 +19,8 @@ react {
     // works correctly with Expo projects.
     cliFile = new File(["node", "--print", "require.resolve('@expo/cli', { paths: [require.resolve('expo/package.json')] })"].execute(null, rootDir).text.trim())
     bundleCommand = "export:embed"
+    // Keep Metro within the memory budget of local and CI release builders.
+    extraPackagerArgs = ["--max-workers", "1"]
 
     /* Folders */
      //   The root of your project, i.e. where "package.json" lives. Default is '../..'
@@ -92,8 +94,8 @@ android {
         applicationId 'com.millw14.sakura'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 20012
-        versionName "2.0.12"
+        versionCode 20013
+        versionName "2.0.13"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

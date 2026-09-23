@@ -10,8 +10,14 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
 
+  let walletAddress: string;
   try {
-    const { walletAddress } = verifyWalletHeaders(req.headers, 'creator-publish-work');
+    ({ walletAddress } = verifyWalletHeaders(req.headers, 'creator-publish-work'));
+  } catch (error) {
+    return jsonResponse(401, { error: error instanceof Error ? error.message : 'Unauthorized.' }, cors);
+  }
+
+  try {
     const body = (await req.json()) as PublishBody;
     if (!body.work_id) return jsonResponse(400, { error: 'Missing work_id.' }, cors);
 
@@ -29,46 +35,42 @@ Deno.serve(async (req) => {
     if (!work) return jsonResponse(404, { error: 'Work not found.' }, cors);
     if (work.creator_wallet !== walletAddress) return jsonResponse(403, { error: 'Not your work.' }, cors);
 
-    const now = new Date().toISOString();
-    const { error: updateWorkErr } = await supabase
-      .from('creator_works')
-      .update({
-        publication_status: 'published',
-        visibility: 'public',
-        published_at: now,
-        updated_at: now,
-      })
-      .eq('id', body.work_id)
-      .eq('creator_wallet', walletAddress);
-    if (updateWorkErr) return jsonResponse(500, { error: updateWorkErr.message }, cors);
+    // The RPC locks the work, validates every draft release's content, and
+    // publishes work + releases atomically. A retry returns already_published
+    // and must never notify followers a second time.
+    const { data: published, error: publishErr } = await supabase.rpc(
+      'publish_creator_work_checked',
+      { p_work_id: body.work_id, p_wallet: walletAddress },
+    );
+    if (publishErr) return jsonResponse(422, { error: publishErr.message }, cors);
+    if (published?.already_published) {
+      return jsonResponse(200, {
+        ok: true, work_id: body.work_id, already_published: true,
+        releases_published: 0, followers_notified: 0, pushes_sent: 0,
+      }, cors);
+    }
 
-    const { data: releases, error: releaseErr } = await supabase
-      .from('work_releases')
-      .update({
-        publication_status: 'published',
-        visibility: 'public',
-        published_at: now,
-        updated_at: now,
-      })
-      .eq('work_id', body.work_id)
-      .eq('publication_status', 'draft')
-      .select('id, title');
-    if (releaseErr) return jsonResponse(500, { error: releaseErr.message }, cors);
-
-    const { data: follows, error: followsErr } = await supabase
+    // Notifications are secondary to publication. A push outage must not make
+    // the already-published work look like a failed upload to the creator.
+    let notified = 0;
+    let pushed = 0;
+    try {
+      const { data: follows, error: followsErr } = await supabase
       .from('creator_follows')
       .select('follower_wallet')
       .eq('creator_wallet', walletAddress)
       .eq('notify_new_works', true);
-    if (followsErr) return jsonResponse(500, { error: followsErr.message }, cors);
+      if (followsErr) throw followsErr;
 
-    const followerWallets = [...new Set((follows ?? []).map((row) => row.follower_wallet).filter(Boolean))];
-    let pushed = 0;
-    if (followerWallets.length) {
-      const firstRelease = releases?.[0];
+      const followerWallets = [...new Set((follows ?? []).map((row) => row.follower_wallet).filter(Boolean))];
+      if (followerWallets.length) {
+      const { data: firstRelease, error: releaseErr } = await supabase
+        .from('work_releases').select('id').eq('work_id', body.work_id)
+        .order('sequence_number', { ascending: true }).limit(1).maybeSingle();
+      if (releaseErr) throw releaseErr;
       const title = 'New Sakura creator work';
       const bodyText = `${work.title} is now live.`;
-      const route = `/creator/work/${body.work_id}`;
+      const route = `/work/${body.work_id}`;
 
       const { error: notifyErr } = await supabase.from('creator_notifications').insert(
         followerWallets.map((recipient_wallet) => ({
@@ -81,17 +83,18 @@ Deno.serve(async (req) => {
           route,
           work_id: body.work_id,
           release_id: firstRelease?.id ?? null,
-          metadata: { kind: work.kind, releaseCount: releases?.length ?? 0 },
+          metadata: { kind: work.kind, releaseCount: published?.releases_published ?? 0 },
         })),
       );
-      if (notifyErr) return jsonResponse(500, { error: notifyErr.message }, cors);
+      if (notifyErr) throw notifyErr;
+      notified = followerWallets.length;
 
       const { data: tokens, error: tokenErr } = await supabase
         .from('push_tokens')
         .select('expo_push_token')
         .in('wallet_address', followerWallets)
         .eq('enabled', true);
-      if (tokenErr) return jsonResponse(500, { error: tokenErr.message }, cors);
+      if (tokenErr) throw tokenErr;
 
       const messages = (tokens ?? [])
         .filter((row) => row.expo_push_token)
@@ -107,15 +110,18 @@ Deno.serve(async (req) => {
         pushed = messages.length;
       }
     }
+    } catch (notificationError) {
+      console.error('[publish-creator-work] published, notification failed:', notificationError);
+    }
 
     return jsonResponse(200, {
       ok: true,
       work_id: body.work_id,
-      releases_published: releases?.length ?? 0,
-      followers_notified: followerWallets.length,
+      releases_published: published?.releases_published ?? 0,
+      followers_notified: notified,
       pushes_sent: pushed,
     }, cors);
   } catch (error) {
-    return jsonResponse(401, { error: error instanceof Error ? error.message : 'Publish failed.' }, cors);
+    return jsonResponse(500, { error: error instanceof Error ? error.message : 'Publish failed.' }, cors);
   }
 });

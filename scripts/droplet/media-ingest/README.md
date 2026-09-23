@@ -53,9 +53,15 @@ The app picks it up within ~5 minutes (manifest TTL). No app release needed.
 
 `POST /v1/creator/videos` (multipart `file`, field `workId`) with the app's
 standard wallet-auth headers (`x-wallet-address` / `x-signature` /
-`x-message`, action `upload-work-media`). Stores under
-`/var/www/creator-media/<wallet>/<workId>/`, generates a poster frame, and
-returns `{videoUrl, posterUrl}` (path-absolute; prepend the media base). The
+`x-message`, action `upload-work-media`) and `x-work-id: <workId>`. The work
+header lets the service verify draft ownership before accepting video bytes;
+older clients without it are checked after their multipart upload. Free videos
+go under `/var/www/creator-media/<wallet>/<workId>/`. Paid videos go under
+`/var/lib/sakura/creator-paid-media/<wallet>/<workId>/`, outside nginx's web
+root. Both generate a public poster frame and return `{videoUrl, posterUrl}`.
+Private video URLs require a six-hour bearer token issued by `read-work-media`
+only to the creator or a verified buyer. The streaming route checks the token
+with `authorize-creator-video` for every request and supports HTTP ranges. The
 app then records these URLs through the `upload-work-media` edge function,
 which enforces work ownership before writing `asset_files`/`work_assets`.
 

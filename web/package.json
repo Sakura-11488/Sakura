@@ -8,7 +8,7 @@
     "start": "expo start --web",
     "dev": "node scripts/link-mobile-sources.mjs && npm run build && npx --yes serve dist -p 8081 --single",
     "dev:metro": "expo start --web --no-dev",
-    "build": "expo export --platform web && node scripts/inject-pwa-tags.mjs",
+    "build": "node scripts/check-public-env.mjs && expo export --platform web && node scripts/inject-pwa-tags.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -31,6 +31,7 @@
     "expo-blur": "~56.0.3",
     "expo-constants": "~56.0.16",
     "expo-crypto": "~56.0.4",
+    "expo-document-picker": "~56.0.4",
     "expo-file-system": "~56.0.7",
     "expo-font": "~56.0.5",
     "expo-glass-effect": "~56.0.4",
@@ -50,8 +51,8 @@
     "expo-status-bar": "~56.0.4",
     "expo-video": "~56.1.2",
     "expo-web-browser": "^56.0.5",
-    "htmlparser2": "^12.0.0",
     "hls.js": "^1.6.15",
+    "htmlparser2": "^12.0.0",
     "lottie-react": "^2.4.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",

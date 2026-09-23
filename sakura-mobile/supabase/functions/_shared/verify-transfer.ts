@@ -72,6 +72,7 @@ export async function verifyTransfer(input: {
   expectedSigner: string;
   receiver: string;
   asset: TransferAsset;
+  finalized?: boolean;
 }): Promise<{ raw: bigint; decimals: number; amount: number }> {
   /**
    * Retried, because the caller and this function do not share an RPC node.
@@ -87,7 +88,7 @@ export async function verifyTransfer(input: {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 600));
     try {
-      tx = await fetchConfirmedTransaction(input.signature);
+      tx = await fetchConfirmedTransaction(input.signature, input.finalized ? 'finalized' : 'confirmed');
       break;
     } catch (rpcError) {
       lastError = rpcError;

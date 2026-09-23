@@ -37,6 +37,7 @@ export interface CreatorProfile {
 export interface CreatorWork {
   id: string;
   creator_wallet: string;
+  price_sakura: number;
   kind: CreatorWorkKind;
   title: string;
   slug: string | null;
@@ -63,6 +64,7 @@ export interface CreatorRelease {
   publication_status: string;
   visibility: string;
   body_text: string;
+  release_metadata: Record<string, unknown>;
   published_at: string | null;
   created_at: string;
 }
@@ -195,6 +197,21 @@ export async function getWorkReleases(
   return (data?.releases ?? []) as CreatorRelease[];
 }
 
+export interface CreatorWorkAsset {
+  release_id: string | null;
+  role: string;
+  sort_order: number;
+  asset_files: { status: string; original_filename: string; size_bytes: number } | null;
+}
+
+export async function getWorkAssets(workId: string, authHeaders: WalletAuthHeaders): Promise<CreatorWorkAsset[]> {
+  const { data, error } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'list_assets', work_id: workId }, headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not load draft media.'));
+  return (data?.assets ?? []) as CreatorWorkAsset[];
+}
+
 /**
  * Public catalog: the most recent published works of a given kind, across all
  * creators. Powers the "From Sakura Creators" rows on the Novels/Manga/Anime
@@ -218,19 +235,23 @@ export async function listPublishedWorks(
 
 export interface WorkReadRelease {
   id: string;
+  locked?: boolean;
   sequence_number: number;
   title: string;
   summary: string;
   content_type: string;
   body_text: string;
   published_at: string | null;
-  media: { pages?: string[]; videoPath?: string | null; posterPath?: string | null };
+  media: { pages?: string[]; videoPath?: string | null; posterPath?: string | null;
+    attachments?: { name: string; mimeType: string; sizeBytes: number; url: string }[] };
 }
 
 export interface WorkReadPayload {
   work: {
     id: string;
     creator_wallet: string;
+    price_sakura: number;
+    unlocked: boolean;
     kind: CreatorWorkKind;
     title: string;
     slug: string | null;
@@ -258,6 +279,26 @@ export async function fetchWorkForReading(workId: string): Promise<WorkReadPaylo
     throw new Error(String((data as { error: string }).error));
   }
   return data as WorkReadPayload;
+}
+
+export async function fetchUnlockedWorkForReading(
+  workId: string, authHeaders: WalletAuthHeaders,
+): Promise<WorkReadPayload> {
+  const { data, error } = await supabase.functions.invoke('read-work-media', {
+    body: { work_id: workId }, headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not unlock this work.'));
+  return data as WorkReadPayload;
+}
+
+export async function claimCreatorWorkPayment(
+  workId: string, paymentSignature: string, authHeaders: WalletAuthHeaders,
+): Promise<void> {
+  const { data, error } = await supabase.functions.invoke('purchase-creator-work', {
+    body: { work_id: workId, payment_signature: paymentSignature }, headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Payment sent, but access is still pending.'));
+  if (!data?.ok) throw new Error(data?.error || 'Could not confirm payment.');
 }
 
 /**
@@ -294,6 +335,7 @@ export async function createCreatorWork(input: {
   kind: CreatorWorkKind;
   title: string;
   description: string;
+  priceSakura: number;
   genres?: string[];
   authHeaders: WalletAuthHeaders;
 }): Promise<CreatorWork> {
@@ -306,6 +348,7 @@ export async function createCreatorWork(input: {
       kind: input.kind,
       title,
       description: input.description.trim(),
+      price_sakura: input.priceSakura,
       genres: input.genres?.length ? input.genres : ['General'],
     },
     headers: input.authHeaders,
@@ -321,20 +364,11 @@ export async function createWorkRelease(input: {
   summary?: string;
   bodyText?: string;
   sequenceNumber?: number;
+  expectedPageCount?: number;
   authHeaders: WalletAuthHeaders;
 }): Promise<CreatorRelease> {
   const title = input.title.trim();
   if (!title) throw new Error('Release title is required.');
-
-  let sequence = input.sequenceNumber;
-  if (sequence == null) {
-    const { count, error: countErr } = await supabase
-      .from('work_releases')
-      .select('*', { count: 'exact', head: true })
-      .eq('work_id', input.workId);
-    if (countErr) throw countErr;
-    sequence = (count ?? 0) + 1;
-  }
 
   const { data, error } = await supabase.functions.invoke('manage-creator-work', {
     body: {
@@ -343,13 +377,44 @@ export async function createWorkRelease(input: {
       title,
       summary: input.summary?.trim() || '',
       body_text: input.bodyText?.trim() || '',
-      sequence_number: sequence,
+      sequence_number: input.sequenceNumber,
+      expected_page_count: input.expectedPageCount,
     },
     headers: input.authHeaders,
   });
   if (error) throw new Error(await invokeMessage(error, 'Could not create the chapter.'));
   if (!data?.release) throw new Error('Release creation returned no row.');
   return data.release as CreatorRelease;
+}
+
+export async function updateCreatorDraft(input: {
+  workId: string;
+  releaseId: string;
+  title: string;
+  description: string;
+  releaseTitle: string;
+  bodyText: string;
+  expectedPageCount?: number;
+  authHeaders: WalletAuthHeaders;
+}): Promise<void> {
+  const { error: workError } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'update_work', work_id: input.workId,
+      title: input.title, description: input.description }, headers: input.authHeaders,
+  });
+  if (workError) throw new Error(await invokeMessage(workError, 'Could not update draft.'));
+  const { error: releaseError } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'update_release', work_id: input.workId, release_id: input.releaseId,
+      title: input.releaseTitle, summary: input.description, body_text: input.bodyText,
+      expected_page_count: input.expectedPageCount }, headers: input.authHeaders,
+  });
+  if (releaseError) throw new Error(await invokeMessage(releaseError, 'Could not update chapter.'));
+}
+
+export async function discardCreatorDraft(workId: string, authHeaders: WalletAuthHeaders): Promise<void> {
+  const { error } = await supabase.functions.invoke('manage-creator-work', {
+    body: { action: 'discard_draft', work_id: workId }, headers: authHeaders,
+  });
+  if (error) throw new Error(await invokeMessage(error, 'Could not discard draft.'));
 }
 
 export async function publishCreatorWork(

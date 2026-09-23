@@ -99,12 +99,19 @@ export async function uploadMangaPages(input: {
   workId: string;
   releaseId: string;
   localUris: string[];
+  paid?: boolean;
+  skipPageNumbers?: number[];
+  onPageUploaded?: (pageNumber: number) => void;
   onProgress?: (done: number, total: number) => void;
 }): Promise<{ results: UploadedWorkImage[]; failed: number[] }> {
   const results: UploadedWorkImage[] = [];
   const failed: number[] = [];
   const total = input.localUris.length;
   for (let i = 0; i < total; i++) {
+    if (input.skipPageNumbers?.includes(i + 1)) {
+      input.onProgress?.(i + 1, total);
+      continue;
+    }
     const uri = input.localUris[i];
     try {
       const page = await uploadWorkImage({
@@ -117,6 +124,7 @@ export async function uploadMangaPages(input: {
         isPrimary: i === 0,
       });
       results.push(page);
+      input.onPageUploaded?.(i + 1);
     } catch (e) {
       // A single bad/oversized page must not abort the whole chapter publish —
       // record it and keep going so the rest of the pages still upload.
@@ -126,7 +134,7 @@ export async function uploadMangaPages(input: {
     input.onProgress?.(i + 1, total);
   }
 
-  if (input.localUris[0]) {
+  if (!input.paid && input.localUris[0] && !input.skipPageNumbers?.includes(1)) {
     // Public chapter thumbnail from page 1 (pages themselves stay private).
     await uploadWorkImage({
       keypair: input.keypair,
@@ -241,7 +249,7 @@ export async function uploadAnimeEpisodeVideo(input: {
 
   const res = await fetch(`${MEDIA_INGEST_BASE}/creator/videos`, {
     method: 'POST',
-    headers,
+    headers: { ...headers, 'x-work-id': input.workId.toLowerCase() },
     body: form,
   });
   const payload = (await res.json().catch(() => ({}))) as {
@@ -280,7 +288,7 @@ export async function uploadAnimeEpisodeVideo(input: {
 
   return {
     asset_file_id: recorded.asset_file_id,
-    videoUrl: `${MEDIA_BASE_DEFAULT}${payload.videoUrl}`,
-    posterUrl: payload.posterUrl ? `${MEDIA_BASE_DEFAULT}${payload.posterUrl}` : null,
+    videoUrl: `${new URL(MEDIA_INGEST_BASE).origin}${payload.videoUrl}`,
+    posterUrl: payload.posterUrl ? `${new URL(MEDIA_INGEST_BASE).origin}${payload.posterUrl}` : null,
   };
 }

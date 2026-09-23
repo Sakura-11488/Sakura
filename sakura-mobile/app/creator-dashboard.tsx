@@ -21,7 +21,7 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
-import { showAlert } from '@/lib/confirm-alert';
+import { confirmDestructive, showAlert } from '@/lib/confirm-alert';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import {
   getCreatorCoinStatus,
@@ -37,6 +37,7 @@ import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constant
 import {
   getCreatorProfile,
   getCreatorWorks,
+  discardCreatorDraft,
   statusLabel,
   uploadCreatorAvatar,
   workCoverUrl,
@@ -174,6 +175,24 @@ export default function CreatorDashboardScreen() {
       setVerifyingLaunch(false);
     }
   }, [address, pendingLaunch, signWithBiometrics, verifyingLaunch]);
+
+  const discardDraft = useCallback(async (work: CreatorWork) => {
+    if (!address || work.creator_wallet !== address || work.publication_status !== 'draft') return;
+    const confirmed = await confirmDestructive('Discard draft',
+      `Delete “${work.title}” and its uploaded files? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock your creator wallet to discard this draft.');
+      }
+      await discardCreatorDraft(work.id, buildWalletAuthHeaders(keypair, 'creator-manage-work'));
+      setWorks((current) => current.filter((item) => item.id !== work.id));
+      showAlert('Draft discarded', 'The draft has been removed.');
+    } catch (error) {
+      showAlert('Could not discard draft', error instanceof Error ? error.message : 'Try again.');
+    }
+  }, [address, signWithBiometrics]);
 
   useFocusEffect(
     useCallback(() => {
@@ -754,6 +773,26 @@ export default function CreatorDashboardScreen() {
                       <View style={[styles.statusDot, { backgroundColor: live ? colors.success : colors.warning }]} />
                       <Text style={styles.workStatus}>{statusLabel(work.publication_status)}</Text>
                     </View>
+                    {!live && work.publication_status === 'draft' ? (
+                      <View style={{ marginTop: Spacing.sm, flexDirection: 'row', gap: Spacing.md }}>
+                        <TouchableOpacity
+                          onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Resume ${work.title} draft`}
+                          style={{ paddingVertical: Spacing.xs }}
+                        >
+                          <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>Resume →</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={onTap(() => { void discardDraft(work); })}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Discard ${work.title} draft`}
+                          style={{ paddingVertical: Spacing.xs }}
+                        >
+                          <Text style={{ color: colors.textSecondary }}>Discard</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               );
