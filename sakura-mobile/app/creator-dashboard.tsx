@@ -30,7 +30,7 @@ import {
 } from '@/lib/creator-coin-status';
 import { solanaExplorerToken } from '@/lib/wallet/config';
 import { clearPendingCreatorCoinLaunch, getPendingCreatorCoinLaunch, type PendingCreatorCoinLaunch } from '@/lib/creator-coin-recovery';
-import { verifyCreatorCoinLaunch } from '@/lib/creator-social';
+import { creatorTokenErrorMessage, verifyCreatorCoinLaunch } from '@/lib/creator-social';
 import { onTap } from '@/lib/sound';
 import { CreatorDashboardSkeleton } from '@/components/creator/CreatorSkeletons';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
@@ -156,7 +156,7 @@ export default function CreatorDashboardScreen() {
     try {
       const keypair = await signWithBiometrics();
       if (!keypair || keypair.publicKey.toBase58() !== address) {
-        throw new Error('Unlock the creator wallet to verify this launch.');
+        throw new Error('Unlock your creator wallet to verify this token.');
       }
       await verifyCreatorCoinLaunch({
         coinId: pendingLaunch.coinId,
@@ -168,9 +168,9 @@ export default function CreatorDashboardScreen() {
       await clearPendingCreatorCoinLaunch(address).catch(() => {});
       setPendingLaunch(null);
       setCoinStatus(await getCreatorCoinStatus(address));
-      showAlert('Coin verified', 'Your creator coin is live.');
+      showAlert('Token verified', 'Your Japanese Stock token is live.');
     } catch (error) {
-      showAlert('Verification incomplete', error instanceof Error ? error.message : 'Please try again shortly.');
+      showAlert('Verification incomplete', creatorTokenErrorMessage(error));
     } finally {
       setVerifyingLaunch(false);
     }
@@ -648,21 +648,21 @@ export default function CreatorDashboardScreen() {
                     if (mint) Linking.openURL(solanaExplorerToken(mint));
                   })}
                 >
-                  <Text style={styles.coinTitle}>${coinStatus.launchedCoin.symbol} is live</Text>
+                  <Text style={styles.coinTitle}>${coinStatus.launchedCoin.symbol} is live on Japanese Stock</Text>
                   <Text style={styles.coinSub}>
-                    {coinStatus.launchedCoin.mint_address ?? 'Mint address unavailable'}
+                    {coinStatus.launchedCoin.mint_address ?? 'Token address unavailable'}
                   </Text>
-                  <Text style={styles.coinLink}>View on Solscan</Text>
+                  <Text style={styles.coinLink}>View token record</Text>
                 </TouchableOpacity>
               ) : pendingLaunch ? (
                 <TouchableOpacity
                   accessibilityRole="button"
-                  accessibilityLabel="Finish verifying creator coin launch"
+                  accessibilityLabel="Finish verifying your Japanese Stock token"
                   activeOpacity={0.85}
                   disabled={verifyingLaunch}
                   onPress={onTap(() => { void finishPendingLaunch(); })}
                 >
-                  <Text style={styles.coinTitle}>Creator coin launch pending</Text>
+                  <Text style={styles.coinTitle}>Token setup in progress</Text>
                   <Text style={styles.coinSub}>{pendingLaunch.mintAddress}</Text>
                   <Text style={styles.coinLink}>{verifyingLaunch ? 'Checking…' : 'Finish verification'}</Text>
                 </TouchableOpacity>
@@ -671,20 +671,20 @@ export default function CreatorDashboardScreen() {
                   activeOpacity={0.85}
                   onPress={onTap(() => router.push('/creator-coin-launch'))}
                 >
-                  <Text style={styles.coinTitle}>Launch your creator coin</Text>
+                  <Text style={styles.coinTitle}>Tokenise your work with Japanese Stock</Text>
                   <Text style={styles.coinSub}>
-                    One coin per creator, on pump.fun, with a contract address ending in
-                    {' '}sakura. Launching is permanent.
+                    Give your published catalog one community token readers can follow and support.
+                    Your wallet approves the setup before it goes live.
                   </Text>
-                  <Text style={styles.coinLink}>Start</Text>
+                  <Text style={styles.coinLink}>Explore Japanese Stock</Text>
                 </TouchableOpacity>
               ) : (
                 <View>
-                  <Text style={styles.coinTitle}>Creator coin</Text>
+                  <Text style={styles.coinTitle}>Japanese Stock</Text>
                   <Text style={styles.coinSub}>
                     {(coinStatus?.publishedWorks ?? 0) < 1
-                      ? 'Publish a work on Sakura to unlock this.'
-                      : `${coinStatus?.followerCount ?? 0} of ${DEFAULT_MIN_FOLLOWERS} followers.`}
+                      ? 'Publish a work on Sakura to unlock tokenisation.'
+                      : `${coinStatus?.followerCount ?? 0} of ${DEFAULT_MIN_FOLLOWERS} followers needed to unlock tokenisation.`}
                   </Text>
                 </View>
               )}
