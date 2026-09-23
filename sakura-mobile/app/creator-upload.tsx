@@ -8,10 +8,12 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Animated, { FadeInUp } from 'react-native-reanimated';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
@@ -65,6 +67,9 @@ type MangaChapterDraft = {
 
 export default function CreatorUploadScreen() {
   const { colors } = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
+  const spaciousLayout = Platform.OS === 'web' && windowWidth >= 900;
+  const compactLayout = windowWidth < 360;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { connected, address, restoring, signWithBiometrics, unlockForAppSession } = useWallet();
@@ -534,6 +539,50 @@ export default function CreatorUploadScreen() {
     () =>
       StyleSheet.create({
         safe: { flex: 1, backgroundColor: colors.background },
+        intro: {
+          marginHorizontal: Spacing.md,
+          marginBottom: Spacing.md,
+          padding: spaciousLayout ? Spacing.lg : Spacing.md,
+          borderRadius: Radius.xl,
+          borderWidth: 1,
+          borderColor: '#F7D8E4',
+          backgroundColor: '#FFF1F6',
+          flexDirection: compactLayout ? 'column-reverse' : 'row',
+          alignItems: compactLayout ? 'stretch' : 'center',
+          overflow: 'hidden',
+        },
+        introCopy: {
+          flex: compactLayout ? 0 : 1,
+          maxWidth: spaciousLayout ? 610 : undefined,
+          paddingRight: compactLayout ? 0 : Spacing.sm,
+        },
+        introEyebrow: {
+          color: '#B94E74',
+          fontSize: FontSize.xs,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.1,
+          marginBottom: 6,
+        },
+        introTitle: {
+          color: '#5A273C',
+          fontSize: spaciousLayout ? FontSize.display : FontSize.xxl,
+          fontWeight: FontWeight.heavy,
+          lineHeight: spaciousLayout ? 30 : 25,
+        },
+        introDescription: {
+          color: '#70475A',
+          fontSize: FontSize.sm,
+          lineHeight: 18,
+          marginTop: Spacing.sm,
+        },
+        introImage: {
+          width: spaciousLayout ? 185 : 108,
+          height: spaciousLayout ? 185 : 108,
+          flexShrink: 0,
+          marginLeft: spaciousLayout ? 'auto' : 0,
+          alignSelf: compactLayout ? 'center' : undefined,
+          marginBottom: compactLayout ? Spacing.sm : 0,
+        },
         footer: {
           position: 'absolute',
           left: 0,
@@ -562,7 +611,7 @@ export default function CreatorUploadScreen() {
         primaryBtnDisabled: { opacity: 0.55 },
         primaryBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: FontWeight.bold },
       }),
-    [colors],
+    [colors, spaciousLayout, compactLayout],
   );
 
   if (checking) return <CreatorUploadSkeleton />;
@@ -583,7 +632,7 @@ export default function CreatorUploadScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <CreatorScreenHeader
-        title="New release"
+        title={existingPublishedWork ? 'Add chapters' : 'New release'}
         subtitle="Publish to Sakura"
         colors={colors}
         onBack={onTap(() => router.back())}
@@ -597,6 +646,25 @@ export default function CreatorUploadScreen() {
           contentContainerStyle={{ paddingBottom: 120 + insets.bottom }}
         >
           <Animated.View entering={FadeInUp.duration(350)}>
+            <View style={styles.intro}>
+              <View style={styles.introCopy}>
+                <Text style={styles.introEyebrow}>SAKURA STUDIO</Text>
+                <Text style={styles.introTitle}>
+                  {existingPublishedWork ? 'Your next chapter starts here' : 'Let your story bloom'}
+                </Text>
+                <Text style={styles.introDescription}>
+                  {existingPublishedWork
+                    ? 'Add the next chapter to your series and bring your readers back for more.'
+                    : 'Share your novels, manga, and anime with readers. Arrange chapters, add your art, and publish your way.'}
+                </Text>
+              </View>
+              <Image
+                source={require('@/assets/images/creator-sakura.png')}
+                style={styles.introImage}
+                contentFit="contain"
+                accessibilityLabel="Smiling Sakura blossom drawing in a sketchbook"
+              />
+            </View>
             <FormSection
               title="What are you publishing?"
               subtitle="Choose a format and optional cover art."
