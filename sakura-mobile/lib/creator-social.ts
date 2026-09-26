@@ -145,6 +145,24 @@ export type CoinLaunchRefusal = Error & {
   coinStatus?: string;
 };
 
+/** Keep older API error wording aligned with the Japanese Stock experience. */
+export function creatorTokenErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || 'Please try again.');
+  if (/Coin name is required\./i.test(message)) return 'Give your token a name.';
+  if (/Creator must be verified and revenue eligible before launching a coin\./i.test(message)) {
+    return 'Your creator profile must be verified and eligible before you can set up Japanese Stock.';
+  }
+  if (/hosted metadata URI is required/i.test(message)) {
+    return 'Add a hosted metadata link before creating your token on Solana.';
+  }
+  return message
+    .replace(/creator coin/gi, 'creator token')
+    .replace(/coin launch/gi, 'token setup')
+    .replace(/\bcoin\b/gi, 'token')
+    .replace(/launching a token/gi, 'setting up Japanese Stock')
+    .replace(/launch a token/gi, 'set up Japanese Stock');
+}
+
 /**
  * supabase.functions.invoke rejects with a generic "non-2xx status code" and
  * never reads the response body, so every distinct refusal — short of the
@@ -155,12 +173,12 @@ async function coinLaunchError(error: {
   message?: string;
   context?: Response;
 }): Promise<CoinLaunchRefusal> {
-  const refusal = new Error(error.message || 'Coin launch request failed.') as CoinLaunchRefusal;
+  const refusal = new Error(creatorTokenErrorMessage(error.message || 'Token setup could not be completed.')) as CoinLaunchRefusal;
   refusal.status = error.context?.status;
   if (error.context) {
     try {
       const body = await error.context.json();
-      if (body?.error) refusal.message = String(body.error);
+      if (body?.error) refusal.message = creatorTokenErrorMessage(String(body.error));
       if (typeof body?.follower_count === 'number') refusal.followerCount = body.follower_count;
       if (typeof body?.required === 'number') refusal.required = body.required;
       if (body?.coin_id) refusal.coinId = String(body.coin_id);

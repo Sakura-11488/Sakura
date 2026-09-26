@@ -41,10 +41,12 @@ export async function solanaRpc<T>(method: string, params: unknown[]): Promise<T
   return json.result;
 }
 
-export async function fetchConfirmedTransaction(signature: string): Promise<Record<string, unknown>> {
+export async function fetchConfirmedTransaction(
+  signature: string, commitment: 'confirmed' | 'finalized' = 'confirmed',
+): Promise<Record<string, unknown>> {
   const result = await solanaRpc<Record<string, unknown> | null>('getTransaction', [
     signature,
-    { commitment: 'confirmed', maxSupportedTransactionVersion: 0, encoding: 'jsonParsed' },
+    { commitment, maxSupportedTransactionVersion: 0, encoding: 'jsonParsed' },
   ]);
   if (!result) throw new Error('Payment transaction not found or not confirmed yet.');
   const meta = result.meta as { err?: unknown } | undefined;

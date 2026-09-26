@@ -1,0 +1,50 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sakura-mobile/package-lock.json
+      - run: npm ci
+        working-directory: sakura-mobile
+      - run: npm install --no-package-lock
+        working-directory: services/pumpfun-builder
+      - run: npm run typecheck
+        working-directory: sakura-mobile
+      - run: npm run test:wallet
+        working-directory: sakura-mobile
+      - run: npm test
+        working-directory: services/pumpfun-builder
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EXPO_PUBLIC_SOLANA_RPC: ${{ vars.EXPO_PUBLIC_SOLANA_RPC }}
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npm run build
+        working-directory: backend
+      - run: npm test
+        working-directory: backend

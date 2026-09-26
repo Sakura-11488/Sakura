@@ -70,6 +70,20 @@ const TAGS = `
     <meta name="theme-color" content="#0F0F13" />
     <meta name="application-name" content="Sakura" />
     <meta name="description" content="Watch anime and read manga, comics and novels — with offline downloads and rewards." />
+    <link rel="canonical" href="https://sakuraonseeker.com/app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Sakura" />
+    <meta property="og:title" content="Sakura | Stories in bloom" />
+    <meta property="og:description" content="Watch anime and read manga, comics and novels on Sakura. Discover stories and the creators behind them." />
+    <meta property="og:url" content="https://sakuraonseeker.com/app/" />
+    <meta property="og:image" content="https://sakuraonseeker.com/app/share/creator-preview.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Sakura | Stories in bloom" />
+    <meta name="twitter:description" content="Watch anime and read manga, comics and novels on Sakura. Discover stories and the creators behind them." />
+    <meta name="twitter:image" content="https://sakuraonseeker.com/app/share/creator-preview.jpg" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black" />

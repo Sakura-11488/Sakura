@@ -218,7 +218,7 @@ export function CoverPicker({
       activeOpacity={0.9}
     >
       {uri ? (
-        <Image source={{ uri }} style={StyleSheet.absoluteFillObject} contentFit="cover" />
+        <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" />
       ) : (
         <>
           <View style={[cover.iconCircle, { backgroundColor: `${colors.primary}14` }]}>
@@ -325,7 +325,7 @@ const cover = StyleSheet.create({
     marginTop: Spacing.lg,
     marginBottom: Spacing.sm,
   },
-  filled: { ...StyleSheet.absoluteFillObject },
+  filled: { ...StyleSheet.absoluteFill },
   iconCircle: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
   title: { fontSize: FontSize.md, fontWeight: FontWeight.semibold },
   sub: { fontSize: FontSize.xs, marginTop: 4 },

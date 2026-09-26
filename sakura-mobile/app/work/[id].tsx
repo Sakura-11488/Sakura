@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   useWindowDimensions,
   Platform,
+  Linking,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,10 +16,18 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import Svg, { Path } from 'react-native-svg';
 import { onTap } from '@/lib/sound';
+import { useWallet } from '@/lib/wallet/context';
+import { sendSakura, SubmittedTransactionError } from '@/lib/wallet/connection';
+import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
+import { pendingCreatorPayment, saveCreatorPayment, clearCreatorPayment } from '@/lib/creator-payments';
+import { solanaExplorerTx } from '@/lib/wallet/config';
+import { confirmAction, showAlert } from '@/lib/confirm-alert';
 import { formatReleaseDate } from '@/lib/format-release-date';
 import { useTheme } from '@/lib/theme';
 import {
   fetchWorkForReading,
+  fetchUnlockedWorkForReading,
+  claimCreatorWorkPayment,
   type WorkReadPayload,
   type WorkReadRelease,
 } from '@/lib/creator';
@@ -58,12 +67,18 @@ export default function WorkScreen() {
   const W = useContentW();
   const { colors } = useTheme();
   const router = useRouter();
+  const { connected, address, signWithBiometrics, unlockForAppSession, refreshBalances } = useWallet();
   const { id } = useLocalSearchParams<{ id?: string }>();
 
   const [payload, setPayload] = useState<WorkReadPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<WorkReadRelease | null>(null);
+  const [tipping, setTipping] = useState(false);
+  const [tipSignature, setTipSignature] = useState<string | null>(null);
+  const [purchaseBusy, setPurchaseBusy] = useState(false);
+  const [paymentSignature, setPaymentSignature] = useState<string | null>(null);
+  const [purchaseError, setPurchaseError] = useState<string | null>(null);
 
   const player = useVideoPlayer('', (p) => {
     p.loop = false;
@@ -96,6 +111,16 @@ export default function WorkScreen() {
       alive = false;
     };
   }, [id]);
+
+  useEffect(() => {
+    const workId = payload?.work.id;
+    if (!workId || !address) { setPaymentSignature(null); return; }
+    let active = true;
+    void pendingCreatorPayment(workId, address).then((signature) => {
+      if (active) setPaymentSignature(signature);
+    });
+    return () => { active = false; };
+  }, [payload?.work.id, address]);
 
   // Load the selected anime episode into the player.
   useEffect(() => {
@@ -180,8 +205,197 @@ export default function WorkScreen() {
 
   const { work, releases } = payload;
 
+  const tipCreator = async (amount: number) => {
+    if (tipping) return;
+    if (!connected || !address) {
+      showAlert('Connect wallet', 'Connect your Sakura wallet before sending a tip.');
+      return;
+    }
+    if (address === work.creator_wallet) return;
+    const approved = await confirmAction('Send creator tip',
+      `Send ${amount.toLocaleString()} SAKURA directly to ${work.creator_wallet.slice(0, 8)}…${work.creator_wallet.slice(-4)}? Network fees may apply.`,
+      'Send tip');
+    if (!approved) return;
+    setTipping(true);
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock the connected wallet to send your tip.');
+      }
+      const signature = await sendSakura(keypair, work.creator_wallet, amount);
+      setTipSignature(signature);
+      void refreshBalances();
+      showAlert('Tip sent', `${amount.toLocaleString()} SAKURA was sent to the creator. Transaction: ${signature}`);
+    } catch (tipError) {
+      showAlert('Tip not confirmed', tipError instanceof Error ? tipError.message : 'Check your wallet before retrying.');
+    } finally {
+      setTipping(false);
+    }
+  };
+
+  const openUnlockedWork = async (keypair: Awaited<ReturnType<typeof signWithBiometrics>>) => {
+    if (!keypair) throw new Error('Unlock your wallet to read this work.');
+    const refreshed = await fetchUnlockedWorkForReading(work.id,
+      buildWalletAuthHeaders(keypair, 'read-work-media'));
+    if (!refreshed.work.unlocked) throw new Error('This wallet has not unlocked the work yet.');
+    setPayload(refreshed);
+    if (selected) setSelected(refreshed.releases.find((r) => r.id === selected.id) ?? null);
+    setPurchaseError(null);
+  };
+
+  const checkAccess = async () => {
+    if (!connected || !address) {
+      showAlert('Connect wallet', 'Connect the wallet that purchased this work.');
+      return;
+    }
+    setPurchaseBusy(true);
+    try {
+      await openUnlockedWork(await unlockForAppSession());
+    } catch (e) {
+      setPurchaseError(e instanceof Error ? e.message : 'Could not check access.');
+    } finally {
+      setPurchaseBusy(false);
+    }
+  };
+
+  const claimPayment = async (signature: string, keypair: Awaited<ReturnType<typeof signWithBiometrics>>) => {
+    if (!keypair) throw new Error('Unlock the paying wallet to finish access.');
+    await claimCreatorWorkPayment(work.id, signature,
+      buildWalletAuthHeaders(keypair, 'purchase-creator-work'));
+    await openUnlockedWork(keypair);
+    await clearCreatorPayment(work.id, keypair.publicKey.toBase58());
+    setPaymentSignature(null);
+    void refreshBalances();
+  };
+
+  const finishPayment = async () => {
+    if (!paymentSignature) return;
+    setPurchaseBusy(true);
+    try {
+      const keypair = await unlockForAppSession();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock the wallet that made the payment.');
+      }
+      await claimPayment(paymentSignature, keypair);
+    } catch (e) {
+      setPurchaseError(e instanceof Error ? e.message : 'Could not confirm payment.');
+    } finally {
+      setPurchaseBusy(false);
+    }
+  };
+
+  const buyWork = async () => {
+    if (!connected || !address) {
+      showAlert('Connect wallet', 'Connect your Sakura wallet to purchase this work.');
+      return;
+    }
+    if (paymentSignature) return;
+    const price = Number(work.price_sakura);
+    const approved = await confirmAction('Unlock this work',
+      `Send ${price.toLocaleString()} SAKURA directly to the creator wallet ${work.creator_wallet.slice(0, 8)}…${work.creator_wallet.slice(-4)}? This unlocks the complete work for this wallet. Network fees may apply.`,
+      `Pay ${price.toLocaleString()} SKR`);
+    if (!approved) return;
+    setPurchaseBusy(true);
+    setPurchaseError(null);
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock the connected wallet to pay.');
+      }
+      const saved = await pendingCreatorPayment(work.id, address);
+      if (saved) {
+        setPaymentSignature(saved);
+        throw new Error('This wallet already submitted a payment. Finish access with the saved transaction; do not pay again.');
+      }
+      const current = await fetchUnlockedWorkForReading(work.id,
+        buildWalletAuthHeaders(keypair, 'read-work-media'));
+      if (current.work.unlocked) {
+        setPayload(current);
+        if (selected) setSelected(current.releases.find((r) => r.id === selected.id) ?? null);
+        return;
+      }
+      let signature: string;
+      try {
+        signature = await sendSakura(keypair, work.creator_wallet, price);
+      } catch (error) {
+        if (!(error instanceof SubmittedTransactionError)) throw error;
+        signature = error.signature;
+        setPaymentSignature(signature);
+        await saveCreatorPayment(work.id, address, signature);
+        throw new Error(`Payment was submitted. Use “Finish access” with transaction ${signature}; do not pay again.`);
+      }
+      setPaymentSignature(signature);
+      await saveCreatorPayment(work.id, address, signature);
+      await claimPayment(signature, keypair);
+    } catch (e) {
+      setPurchaseError(e instanceof Error ? e.message : 'Payment could not be completed.');
+    } finally {
+      setPurchaseBusy(false);
+    }
+  };
+
+  const accessPanel = (
+    <View style={{ padding: Spacing.md, gap: Spacing.sm }}>
+      <Text style={s.title}>{Number(work.price_sakura).toLocaleString()} SAKURA to unlock</Text>
+      <Text style={s.desc}>One payment unlocks the complete work for this wallet. SAKURA goes directly to the creator.</Text>
+      {purchaseError ? <Text style={{ color: colors.red, fontSize: FontSize.sm }}>{purchaseError}</Text> : null}
+      <TouchableOpacity disabled={purchaseBusy} onPress={onTap(() => { void checkAccess(); })}
+        accessibilityRole="button" style={{ padding: 12, borderRadius: Radius.md,
+          backgroundColor: colors.surfaceSecondary, opacity: purchaseBusy ? 0.5 : 1 }}>
+        <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>Already purchased? Check access</Text>
+      </TouchableOpacity>
+      <TouchableOpacity disabled={purchaseBusy}
+        onPress={onTap(() => { void (paymentSignature ? finishPayment() : buyWork()); })}
+        accessibilityRole="button" style={{ padding: 14, borderRadius: Radius.md,
+          backgroundColor: colors.primary, opacity: purchaseBusy ? 0.5 : 1 }}>
+        <Text style={{ color: '#fff', fontWeight: FontWeight.bold, textAlign: 'center' }}>
+          {purchaseBusy ? 'Checking…' : paymentSignature ? 'Finish access with the same payment' : 'Pay creator and unlock'}
+        </Text>
+      </TouchableOpacity>
+      {paymentSignature ? <TouchableOpacity accessibilityRole="link"
+        onPress={onTap(() => { void Linking.openURL(solanaExplorerTx(paymentSignature)); })}>
+        <Text style={{ color: colors.primary }}>View submitted payment ↗</Text>
+      </TouchableOpacity> : null}
+    </View>
+  );
+
   // ── Reading a single release ──
   if (selected) {
+    if (selected.locked) {
+      return <View style={s.root}><SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        <View style={s.header}>
+          <TouchableOpacity style={s.iconBtn} onPress={onTap(() => setSelected(null))} hitSlop={10}>
+            <BackIcon color={colors.text} />
+          </TouchableOpacity>
+          <Text style={s.headerTitle} numberOfLines={1}>{selected.title}</Text>
+        </View>
+        <ScrollView contentContainerStyle={{ paddingBottom: 60 }}>
+          {!!selected.summary && <Text style={s.desc}>{selected.summary}</Text>}
+          {accessPanel}
+        </ScrollView>
+      </SafeAreaView></View>;
+    }
+    const attachments = selected.media?.attachments ?? [];
+    const downloads = attachments.length ? (
+      <View style={{ padding: Spacing.md, gap: Spacing.sm }}>
+        <Text style={s.sectionTitle}>Downloads</Text>
+        {attachments.map((file, index) => (
+          <TouchableOpacity key={`${file.url}-${index}`}
+            accessibilityRole="link"
+            accessibilityLabel={`Download ${file.name}`}
+            onPress={onTap(() => { void Linking.openURL(file.url); })}
+            style={{ padding: Spacing.sm, borderRadius: Radius.md,
+              backgroundColor: colors.surfaceSecondary }}>
+            <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }} numberOfLines={2}>
+              {file.name} ↓
+            </Text>
+            <Text style={{ color: colors.textSecondary, fontSize: FontSize.xs }}>
+              {(file.sizeBytes / 1024 / 1024).toFixed(1)} MB
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    ) : null;
     return (
       <View style={s.root}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
@@ -195,6 +409,7 @@ export default function WorkScreen() {
           {work.kind === 'novel' && (
             <ScrollView contentContainerStyle={{ paddingBottom: 60 }}>
               <Text style={s.readerText}>{selected.body_text || 'This chapter has no text yet.'}</Text>
+              {downloads}
             </ScrollView>
           )}
 
@@ -207,6 +422,7 @@ export default function WorkScreen() {
                   <Image key={`${uri}-${i}`} source={{ uri }} style={s.page} contentFit="contain" transition={200} />
                 ))
               )}
+              {downloads}
             </ScrollView>
           )}
 
@@ -218,6 +434,7 @@ export default function WorkScreen() {
                 <View style={s.center}><Text style={s.muted}>This episode has no video yet.</Text></View>
               )}
               {!!selected.summary && <Text style={[s.desc, { paddingHorizontal: Spacing.md }]}>{selected.summary}</Text>}
+              {downloads}
             </View>
           )}
         </SafeAreaView>
@@ -246,11 +463,46 @@ export default function WorkScreen() {
             <View style={{ flex: 1 }}>
               <Text style={s.title} numberOfLines={3}>{work.title}</Text>
               <Text style={s.kind}>{work.kind}</Text>
+              {Number(work.price_sakura) > 0 && (
+                <Text style={[s.desc, { color: colors.primary }]}>
+                  {Number(work.price_sakura).toLocaleString()} SAKURA · complete work
+                </Text>
+              )}
               {!!work.description && <Text style={s.desc} numberOfLines={6}>{work.description}</Text>}
             </View>
           </View>
 
+          {address !== work.creator_wallet ? (
+            <View style={{ paddingHorizontal: Spacing.md, paddingBottom: Spacing.md }}>
+              <Text style={[s.sectionTitle, { paddingHorizontal: 0 }]}>Support this creator</Text>
+              <Text style={s.desc}>Tips go directly to the creator wallet in SAKURA.</Text>
+              <View style={{ flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm }}>
+                {[10, 100, 1000].map((amount) => (
+                  <TouchableOpacity key={amount} disabled={tipping}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Tip ${amount} SAKURA`}
+                    onPress={onTap(() => { void tipCreator(amount); })}
+                    style={{ flex: 1, paddingVertical: 10, borderRadius: Radius.md,
+                      alignItems: 'center', backgroundColor: colors.surfaceSecondary,
+                      opacity: tipping ? 0.5 : 1 }}>
+                    <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>
+                      {amount.toLocaleString()} SKR
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {tipSignature ? (
+                <TouchableOpacity accessibilityRole="link"
+                  onPress={onTap(() => { void Linking.openURL(solanaExplorerTx(tipSignature)); })}
+                  style={{ marginTop: Spacing.sm }}>
+                  <Text style={{ color: colors.primary }}>View confirmed tip transaction ↗</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ) : null}
+
           <Text style={s.sectionTitle}>{listLabel}</Text>
+          {Number(work.price_sakura) > 0 && !work.unlocked ? accessPanel : null}
           {releases.length === 0 ? (
             <View style={s.center}><Text style={s.muted}>No {listLabel.toLowerCase()} published yet.</Text></View>
           ) : (
@@ -261,6 +513,7 @@ export default function WorkScreen() {
                     horizontal flex. Unpublished releases have no date. */}
                 <View style={s.rowText}>
                   <Text style={s.rowTitle} numberOfLines={1}>{r.title}</Text>
+                  {r.locked ? <Text style={s.rowDate}>Locked · one payment unlocks all {listLabel.toLowerCase()}</Text> : null}
                   {!!formatReleaseDate(r.published_at) && (
                     <Text style={s.rowDate}>{formatReleaseDate(r.published_at)}</Text>
                   )}

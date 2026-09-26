@@ -23,7 +23,7 @@ export default function Index() {
     ])
       .then((accepted) => {
         if (!mounted) return;
-        router.replace(accepted ? '/(tabs)/home' : '/welcome');
+        router.replace(accepted ? '/home' : '/welcome');
       })
       .catch(() => {
         if (mounted) router.replace('/welcome');
