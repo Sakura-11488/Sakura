@@ -3,26 +3,25 @@ import { supabase } from '@/lib/supabase';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 
 /**
- * Swapping reading XP for SAKURA.
+ * Swapping reading XP for native SOL.
  *
  * Queue-and-settle rather than instant: redeem-xp only records the request and
- * debits the XP, and a separate operator-run processor moves the tokens. Two
+ * debits the XP, and a separate operator-run processor transfers SOL. Two
  * reasons — the payout key is never reachable from a user-facing endpoint, and
  * a swap can be offered without waiting on chain confirmation in the UI.
  *
- * The rate is authoritative server-side. RATE here is only used to preview the
- * amount before submitting; the value that gets paid is whatever the server
- * stamps onto the row.
+ * A signed server quote confirms the rate before submitting. Redemption sends
+ * the displayed rate and asset, so the server rejects stale quotes before
+ * spending XP.
  */
 
-export const XP_SAKURA_RATE = 3.19;
-export const XP_REDEEM_MIN = 100;
+export { XP_SOL_RATE, XP_REDEEM_MIN, previewSol, formatSol, formatRedemptionAmount } from './xp-reward-amounts';
 
 /**
  * Whether to surface the swap in the UI.
  *
  * On. Swaps are queued, not settled inline: the XP is spent when the request is
- * recorded and the SAKURA is sent by process-xp-redemptions afterwards. Until a
+ * recorded and the SOL is sent by process-xp-redemptions afterwards. Until a
  * funded payout wallet exists the queue simply doesn't drain, so every surface
  * says "queued" rather than promising a timeframe the server can't hold to.
  */
@@ -33,7 +32,9 @@ export type RedemptionStatus = 'pending' | 'processing' | 'sent' | 'failed';
 export interface XpRedemption {
   id: string;
   xp_spent: number;
-  sakura_amount: number;
+  sakura_amount: number | null;
+  sol_lamports: number | null;
+  payout_asset: 'SAKURA' | 'SOL';
   rate: number;
   status: RedemptionStatus;
   tx_signature: string | null;
@@ -44,20 +45,25 @@ export interface RedeemResult {
   ok: true;
   id: string;
   xp_spent: number;
-  sakura: number;
+  sol: number;
+  sol_lamports: number;
+  payout_asset: 'SOL';
   rate: number;
+  status: 'pending';
   remaining_xp: number;
+  queued_at: string;
 }
 
-/** Preview only — the server recomputes this at its own rate. */
-export function previewSakura(xp: number): number {
-  if (!Number.isFinite(xp) || xp <= 0) return 0;
-  return Number((Math.floor(xp) * XP_SAKURA_RATE).toFixed(2));
+export interface XpRedemptionQuote {
+  ok: true;
+  payout_asset: 'SOL';
+  rate: number;
+  min_xp: number;
 }
 
-export async function redeemXp(keypair: Keypair, xp: number): Promise<RedeemResult> {
+async function invokeRedemption(keypair: Keypair, body: Record<string, unknown>) {
   const { data, error } = await supabase.functions.invoke('redeem-xp', {
-    body: { xp: Math.floor(xp) },
+    body,
     headers: buildWalletAuthHeaders(keypair, 'redeem-xp'),
   });
 
@@ -73,7 +79,25 @@ export async function redeemXp(keypair: Keypair, xp: number): Promise<RedeemResu
     throw new Error(message);
   }
   if (data?.error) throw new Error(String(data.error));
-  return data as RedeemResult;
+  return data;
+}
+
+export async function fetchRedemptionQuote(keypair: Keypair): Promise<XpRedemptionQuote> {
+  const data = await invokeRedemption(keypair, { quote: true });
+  if (data?.ok !== true || data.payout_asset !== 'SOL' ||
+      !Number.isFinite(data.rate) || data.rate <= 0 ||
+      !Number.isSafeInteger(data.min_xp) || data.min_xp <= 0) {
+    throw new Error('SOL rewards are unavailable right now. Try again later.');
+  }
+  return data as XpRedemptionQuote;
+}
+
+export async function redeemXp(keypair: Keypair, xp: number, rate: number): Promise<RedeemResult> {
+  return await invokeRedemption(keypair, {
+    xp: Math.floor(xp),
+    payout_asset: 'SOL',
+    rate,
+  }) as RedeemResult;
 }
 
 /**

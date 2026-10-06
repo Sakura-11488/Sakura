@@ -10,7 +10,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import Svg, { Path, Polygon } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { onTap, playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
@@ -21,8 +21,11 @@ import { fetchGamificationState, type GamificationState } from '@/lib/gamificati
 import {
   redeemXp,
   fetchRedemptions,
-  previewSakura,
-  XP_SAKURA_RATE,
+  fetchRedemptionQuote,
+  previewSol,
+  formatSol,
+  formatRedemptionAmount,
+  XP_SOL_RATE,
   XP_REDEEM_MIN,
   type XpRedemption,
 } from '@/lib/xp-redeem';
@@ -38,16 +41,15 @@ function BackIcon({ color }: { color: string }) {
   );
 }
 
-/** The same diamond that marks SKR in the wallet pill. */
-function SakuraMark({ size = 16, color = '#F5A623' }: { size?: number; color?: string }) {
+function SolMark({ size = 16, color = '#80EDC3' }: { size?: number; color?: string }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
-      <Polygon points="12 2 20 12 12 22 4 12" fill={color} />
+      <Path d="M6 4h16l-4 4H2l4-4Zm-4 6h16l4 4H6l-4-4Zm4 6h16l-4 4H2l4-4Z" fill={color} />
     </Svg>
   );
 }
 
-/** XP is marked with a four-point spark, distinct from the SKR diamond. */
+/** XP is marked with a four-point spark. */
 function SparkMark({ size = 16, color = '#fff' }: { size?: number; color?: string }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
@@ -83,7 +85,9 @@ export default function SwapXpScreen() {
   const [amount, setAmount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ xp: number; sakura: number } | null>(null);
+  const [done, setDone] = useState<{ xp: number; sol: number } | null>(null);
+  const [rate, setRate] = useState(XP_SOL_RATE);
+  const [minXp, setMinXp] = useState(XP_REDEEM_MIN);
 
   const totalEarned = state?.xp ?? 0;
   /**
@@ -91,7 +95,7 @@ export default function SwapXpScreen() {
    * xp_spent. read-gamification shipped without that field, so `?? 0` made
    * spendable equal lifetime XP: the hero read "Swappable 18,550" for a reader
    * with 2,000 actually left, Max filled the full amount, and the swap was
-   * refused server-side after promising ~59k SAKURA. Deploying the function
+   * refused server-side after promising more rewards. Deploying the function
    * fixes the source; this keeps older/stale deployments honest too.
    */
   const swappedFromHistory = useMemo(
@@ -103,8 +107,8 @@ export default function SwapXpScreen() {
   );
   const alreadySwapped = Math.max(state?.xp_spent ?? 0, swappedFromHistory);
   const spendable = Math.max(0, totalEarned - alreadySwapped);
-  const preview = previewSakura(amount);
-  const canSwap = connected && amount >= XP_REDEEM_MIN && amount <= spendable && !busy;
+  const preview = previewSol(amount, rate);
+  const canSwap = connected && amount >= minXp && amount <= spendable && !busy;
 
   const refresh = useCallback(() => {
     if (!address) return;
@@ -116,16 +120,22 @@ export default function SwapXpScreen() {
     });
   }, [address]);
 
-  // Passive on purpose: history is a nicety, and prompting for the wallet just
-  // to draw a list would be the same mistake the launch prompt was. It fills in
-  // once any real wallet action has warmed the session.
+  // History and quotes load passively once a real wallet action has warmed the
+  // session. The swap action always verifies the quote after wallet unlock.
   //
   // Declared above the focus effect that lists it as a dependency — dependency
   // arrays are evaluated during render, so a later const would be in its TDZ.
-  const loadHistory = useCallback(async () => {
+  const loadSwapDetails = useCallback(async () => {
     try {
       const keypair = await getPassiveSessionKeypair();
-      if (keypair) setHistory(await fetchRedemptions(keypair));
+      if (!keypair) return;
+      await Promise.allSettled([
+        fetchRedemptions(keypair).then(setHistory),
+        fetchRedemptionQuote(keypair).then((quote) => {
+          setRate(quote.rate);
+          setMinXp(quote.min_xp);
+        }),
+      ]);
     } catch {
       // never block the screen on it
     }
@@ -134,8 +144,8 @@ export default function SwapXpScreen() {
   useFocusEffect(
     useCallback(() => {
       refresh();
-      void loadHistory();
-    }, [refresh, loadHistory]),
+      void loadSwapDetails();
+    }, [refresh, loadSwapDetails]),
   );
 
   const setFraction = (f: number) => {
@@ -152,12 +162,30 @@ export default function SwapXpScreen() {
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) throw new Error('Could not unlock your wallet.');
-      const result = await redeemXp(keypair, amount);
-      setDone({ xp: result.xp_spent, sakura: result.sakura });
+      const quote = await fetchRedemptionQuote(keypair);
+      setRate(quote.rate);
+      setMinXp(quote.min_xp);
+      if (quote.rate !== rate || quote.min_xp !== minXp) {
+        setError('The reward rate or minimum changed. Review the updated amount, then queue your swap.');
+        return;
+      }
+      const result = await redeemXp(keypair, amount, rate).catch(async (err: unknown) => {
+        // A deployment may change the rate between quote and submission. Never
+        // retry spending XP automatically; update the preview for a new tap.
+        try {
+          const latestQuote = await fetchRedemptionQuote(keypair);
+          setRate(latestQuote.rate);
+          setMinXp(latestQuote.min_xp);
+        } catch {
+          // Preserve the redemption error if the quote refresh also fails.
+        }
+        throw err;
+      });
+      setDone({ xp: result.xp_spent, sol: result.sol });
       setAmount(0);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       refresh();
-      void loadHistory();
+      void loadSwapDetails();
       void refreshBalances?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Swap failed.');
@@ -202,10 +230,10 @@ export default function SwapXpScreen() {
               </Text>
             )}
             <View style={s.rateRow}>
-              <Text style={s.rateText}>1 XP</Text>
+              <Text style={s.rateText}>1,000 XP</Text>
               <View style={s.rateDot} />
-              <SakuraMark size={13} />
-              <Text style={s.rateText}>{XP_SAKURA_RATE} SAKURA</Text>
+              <SolMark size={13} />
+              <Text style={s.rateText}>{formatSol(previewSol(1_000, rate))} SOL</Text>
             </View>
           </LinearGradient>
 
@@ -224,7 +252,7 @@ export default function SwapXpScreen() {
                 { label: '50%', f: 0.5 },
                 { label: 'Max', f: 1 },
               ].map((c) => (
-                <TouchableOpacity key={c.label} style={s.chip} activeOpacity={0.8} onPress={() => setFraction(c.f)}>
+                <TouchableOpacity key={c.label} style={s.chip} activeOpacity={0.8} disabled={busy} onPress={() => setFraction(c.f)}>
                   <Text style={s.chipText}>{c.label}</Text>
                 </TouchableOpacity>
               ))}
@@ -240,11 +268,11 @@ export default function SwapXpScreen() {
 
             <Text style={s.cardLabel}>You receive</Text>
             <View style={s.amountRow}>
-              <SakuraMark size={20} />
-              <Text style={[s.amountValue, { color: '#F5A623' }]}>
-                {preview.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              <SolMark size={20} />
+              <Text style={[s.amountValue, { color: '#80EDC3' }]}>
+                {formatSol(preview)}
               </Text>
-              <Text style={s.amountUnit}>SAKURA</Text>
+              <Text style={s.amountUnit}>SOL</Text>
             </View>
           </View>
 
@@ -254,9 +282,9 @@ export default function SwapXpScreen() {
           <View style={s.notice}>
             <Text style={s.noticeTitle}>Swaps are queued</Text>
             <Text style={s.noticeBody}>
-              Your XP is spent as soon as you confirm, and the SAKURA is sent to this wallet once
+              Your XP is spent as soon as you confirm, and native SOL is sent to this wallet once
               the swap is processed — not instantly. Track it under Recent swaps below. Minimum{' '}
-              {XP_REDEEM_MIN} XP.
+              {minXp} XP.
             </Text>
           </View>
 
@@ -264,7 +292,7 @@ export default function SwapXpScreen() {
           {done ? (
             <Text style={s.success}>
               Queued — {done.xp.toLocaleString()} XP for{' '}
-              {done.sakura.toLocaleString(undefined, { maximumFractionDigits: 2 })} SAKURA. It will
+              {formatSol(done.sol)} SOL. It will
               arrive in this wallet once processed.
             </Text>
           ) : null}
@@ -281,11 +309,11 @@ export default function SwapXpScreen() {
               <Text style={s.ctaText}>
                 {!connected
                   ? 'Connect your wallet'
-                  : spendable < XP_REDEEM_MIN
-                    ? `Earn ${XP_REDEEM_MIN} XP to swap`
-                    : amount < XP_REDEEM_MIN
-                      ? `Minimum ${XP_REDEEM_MIN} XP`
-                      : 'Queue swap'}
+                  : spendable < minXp
+                    ? `Earn ${minXp} XP to swap`
+                    : amount < minXp
+                      ? `Minimum ${minXp} XP`
+                      : 'Queue SOL swap'}
               </Text>
             )}
           </TouchableOpacity>
@@ -298,7 +326,7 @@ export default function SwapXpScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={s.historyAmount}>
                       {Number(h.xp_spent).toLocaleString()} XP →{' '}
-                      {Number(h.sakura_amount).toLocaleString(undefined, { maximumFractionDigits: 2 })} SAKURA
+                      {formatRedemptionAmount(h)}
                     </Text>
                     <Text style={s.historyDate}>
                       {new Date(h.created_at).toLocaleDateString(undefined, {

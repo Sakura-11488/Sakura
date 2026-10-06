@@ -2,7 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 
 /**
- * Queue a swap of reading XP for SAKURA.
+ * Queue a swap of reading XP for native SOL.
  *
  * This function only ever *records* the request — it holds no key and moves no
  * tokens. Settlement is done separately by process-xp-redemptions. Splitting it
@@ -22,9 +22,15 @@ import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/walle
 
 const cors = corsHeaders('POST, OPTIONS');
 
-function payoutRate(): number {
-  const raw = Number(Deno.env.get('XP_SAKURA_RATE') || '3.19');
-  return Number.isFinite(raw) && raw > 0 ? raw : 3.19;
+function payoutLamportsPerXp(): number {
+  // 1,000 XP = 0.00312 SOL. Never inherit the former SAKURA rate.
+  const rate = Number(Deno.env.get('XP_SOL_RATE') ?? '0.00000312');
+  const lamports = Math.round(rate * 1_000_000_000);
+  if (!Number.isSafeInteger(lamports) || lamports <= 0 ||
+      Math.abs(rate * 1_000_000_000 - lamports) > 0.000001) {
+    throw new Error('SOL rewards are temporarily unavailable.');
+  }
+  return lamports;
 }
 
 function minRedeemXp(): number {
@@ -51,39 +57,71 @@ Deno.serve(async (req) => {
     return jsonResponse(401, { error: err instanceof Error ? err.message : 'Unauthorized.' }, cors);
   }
 
-  const body = (await req.json().catch(() => ({}))) as { xp?: number; history?: boolean };
+  const body = (await req.json().catch(() => ({}))) as {
+    xp?: number; history?: boolean; quote?: boolean; payout_asset?: string; rate?: number;
+  };
+  if (!body || typeof body !== 'object') {
+    return jsonResponse(400, { error: 'Invalid request.' }, cors);
+  }
 
   // Swap history is served here rather than read directly from the client,
   // because a wallet address isn't a Supabase auth identity — there is no RLS
   // policy that could distinguish "my rows" from "anyone's rows", so the table
   // stays deny-all and this signed call is the only way in.
   if (body.history) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('xp_redemptions')
-      .select('id, xp_spent, sakura_amount, rate, status, tx_signature, created_at')
+      .select('id, xp_spent, payout_asset, sol_lamports, sakura_amount, rate, status, tx_signature, created_at')
       .eq('wallet_address', walletAddress)
       .order('created_at', { ascending: false })
       .limit(10);
+    if (error) return jsonResponse(503, { error: 'Could not load your swaps.' }, cors);
     return jsonResponse(200, { ok: true, redemptions: data ?? [] }, cors);
   }
 
-  const xp = Math.floor(Number(body.xp) || 0);
+  let lamportsPerXp: number;
+  try {
+    lamportsPerXp = payoutLamportsPerXp();
+  } catch (err) {
+    return jsonResponse(503, { error: (err as Error).message }, cors);
+  }
+  const rate = lamportsPerXp / 1_000_000_000;
   const min = minRedeemXp();
+  if (body.quote) {
+    return jsonResponse(200, { ok: true, payout_asset: 'SOL', rate, min_xp: min }, cors);
+  }
+  // An old app still promises SAKURA. Require explicit agreement to SOL and
+  // the displayed rate before spending any XP, including after rate changes.
+  if (body.payout_asset !== 'SOL') {
+    return jsonResponse(409, { error: 'Rewards now pay SOL. Update Sakura to swap your XP.' }, cors);
+  }
+  if (body.rate !== rate) {
+    return jsonResponse(409, { error: 'The SOL reward rate changed. Refresh your quote and try again.' }, cors);
+  }
 
-  if (!Number.isFinite(xp) || xp <= 0) {
+  const xp = Math.floor(Number(body.xp) || 0);
+
+  if (!Number.isSafeInteger(xp) || xp <= 0) {
     return jsonResponse(400, { error: 'Enter how much XP to convert.' }, cors);
   }
   if (xp < min) {
     return jsonResponse(400, { error: `Minimum ${min} XP per swap.` }, cors);
   }
+  const solLamports = xp * lamportsPerXp;
+  if (!Number.isSafeInteger(solLamports)) {
+    return jsonResponse(400, { error: 'That XP amount is too large.' }, cors);
+  }
 
   // Stops a queue of unsettled swaps building up while the first is still
   // being processed, which would be confusing to the user and awkward to pay.
-  const { count: pendingCount } = await supabase
+  const { count: pendingCount, error: pendingError } = await supabase
     .from('xp_redemptions')
     .select('*', { count: 'exact', head: true })
     .eq('wallet_address', walletAddress)
-    .eq('status', 'pending');
+    .in('status', ['pending', 'processing']);
+  if (pendingError) {
+    return jsonResponse(503, { error: 'Could not check your pending swaps. Try again.' }, cors);
+  }
   if ((pendingCount ?? 0) >= MAX_PENDING_PER_WALLET) {
     return jsonResponse(
       429,
@@ -91,9 +129,6 @@ Deno.serve(async (req) => {
       cors,
     );
   }
-
-  const rate = payoutRate();
-  const sakuraAmount = Number((xp * rate).toFixed(6));
 
   // Debit first. The balance check and the increment are one statement, so two
   // requests racing cannot both observe the same balance and both succeed. A
@@ -115,7 +150,9 @@ Deno.serve(async (req) => {
     .insert({
       wallet_address: walletAddress,
       xp_spent: xp,
-      sakura_amount: sakuraAmount,
+      payout_asset: 'SOL',
+      sol_lamports: solLamports,
+      sakura_amount: null,
       rate,
       status: 'pending',
     })
@@ -134,7 +171,9 @@ Deno.serve(async (req) => {
       ok: true,
       id: redemption.id,
       xp_spent: xp,
-      sakura: sakuraAmount,
+      payout_asset: 'SOL',
+      sol: solLamports / 1_000_000_000,
+      sol_lamports: solLamports,
       rate,
       status: 'pending',
       remaining_xp: remainingXp,

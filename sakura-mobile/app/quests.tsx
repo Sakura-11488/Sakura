@@ -158,8 +158,8 @@ export default function QuestsScreen() {
               onPress={onTap(() => router.push('/swap-xp' as any))}
             >
               <View style={{ flex: 1 }}>
-                <Text style={s.swapTitle}>Swap XP for SAKURA</Text>
-                <Text style={s.swapSub}>1 XP = 3.19 SAKURA</Text>
+                <Text style={s.swapTitle}>Swap XP for SOL</Text>
+                <Text style={s.swapSub}>See your SOL rewards and current rate</Text>
               </View>
               <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
                 <Path

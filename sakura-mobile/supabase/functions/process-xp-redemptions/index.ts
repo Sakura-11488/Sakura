@@ -3,6 +3,7 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
   Transaction,
   TransactionInstruction,
 } from 'https://esm.sh/@solana/web3.js@1.98.4';
@@ -19,12 +20,12 @@ import { getSolanaRpcUrl } from '../_shared/solana-rpc.ts';
  * or be triggered by an operator, guarded by a shared secret.
  *
  * The XP was already debited when the swap was queued, so this function only
- * moves tokens. Refunds are issued ONLY for failures that provably happened
+ * moves SOL or legacy SAKURA rewards. Refunds are issued ONLY for failures that provably happened
  * before a transaction was broadcast (or that landed on-chain and failed).
  * Anything ambiguous — a send or confirm that errored after broadcast — is left
  * as `processing` with its signature recorded, and the next run reconciles it
  * against the chain. Refunding on ambiguity is how a user ends up holding both
- * the SAKURA and the returned XP.
+ * the payout and the returned XP.
  *
  * Rows are claimed with a compare-and-swap on status before any transfer, so
  * two concurrent invocations cannot pay the same row twice.
@@ -47,17 +48,26 @@ function sakuraMint(): string {
   return Deno.env.get('SAKURA_MINT')?.trim() || DEFAULT_SAKURA_MINT;
 }
 
-function loadPayoutAuthority(): Keypair {
-  const raw = Deno.env.get('SAKURA_PAYOUT_SECRET')?.trim();
-  if (!raw) throw new Error('SAKURA_PAYOUT_SECRET is not set.');
+type PayoutAsset = 'SOL' | 'SAKURA';
+
+function loadPayoutAuthority(asset: PayoutAsset): Keypair {
+  // Never reuse the token treasury key for native SOL implicitly.
+  const secretName = asset === 'SOL' ? 'SOL_PAYOUT_SECRET' : 'SAKURA_PAYOUT_SECRET';
+  const raw = Deno.env.get(secretName)?.trim();
+  if (!raw) throw new Error(`${secretName} is not set.`);
   try {
     return Keypair.fromSecretKey(bs58.decode(raw));
   } catch {
-    const parsed = JSON.parse(raw) as number[];
-    if (!Array.isArray(parsed) || parsed.length < 64) {
-      throw new Error('SAKURA_PAYOUT_SECRET is invalid.');
+    try {
+      const parsed = JSON.parse(raw) as number[];
+      if (!Array.isArray(parsed) || parsed.length !== 64 ||
+          parsed.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+        throw new Error('Invalid key bytes.');
+      }
+      return Keypair.fromSecretKey(Uint8Array.from(parsed));
+    } catch {
+      throw new Error(`${secretName} is invalid.`);
     }
-    return Keypair.fromSecretKey(Uint8Array.from(parsed));
   }
 }
 
@@ -84,7 +94,9 @@ type RedemptionRow = {
   id: string;
   wallet_address: string;
   xp_spent: number;
-  sakura_amount: number;
+  payout_asset: PayoutAsset;
+  sol_lamports: number | null;
+  sakura_amount: number | null;
   tx_signature?: string | null;
   updated_at?: string;
 };
@@ -199,52 +211,54 @@ Deno.serve(async (req) => {
     return jsonResponse(401, { error: 'Unauthorized.' }, cors);
   }
 
-  let authority: Keypair;
-  try {
-    authority = loadPayoutAuthority();
-  } catch (err) {
-    return jsonResponse(503, { error: err instanceof Error ? err.message : 'Unavailable.' }, cors);
-  }
-
   const connection = new Connection(getSolanaRpcUrl(), 'confirmed');
-  const mint = new PublicKey(sakuraMint());
 
-  // Detect which token program owns the mint (SAKURA is Token-2022) rather
-  // than assume — a wrong assumption here silently derives empty accounts.
-  const mintAcct = await connection.getAccountInfo(mint).catch(() => null);
-  if (!mintAcct) {
-    return jsonResponse(503, { error: 'Could not read the SAKURA mint account.' }, cors);
-  }
-  const tokenProgramId = mintAcct.owner;
-  if (!tokenProgramId.equals(TOKEN_PROGRAM_ID) && !tokenProgramId.equals(TOKEN_2022_PROGRAM_ID)) {
-    return jsonResponse(503, { error: 'Mint is not owned by a known token program.' }, cors);
-  }
-  const fromAta = ataFor(authority.publicKey, mint, tokenProgramId);
+  // Resolve the mint only for a legacy payout/probe. Native SOL payments and
+  // reconciliation must not depend on the token mint, its RPC reads, or its key.
+  let legacyMint: { mint: PublicKey; tokenProgramId: PublicKey } | undefined;
+  const getLegacyMint = async () => {
+    if (legacyMint) return legacyMint;
+    const mint = new PublicKey(sakuraMint());
+    const mintAcct = await connection.getAccountInfo(mint);
+    if (!mintAcct) throw new Error('Could not read the SAKURA mint account.');
+    const tokenProgramId = mintAcct.owner;
+    if (!tokenProgramId.equals(TOKEN_PROGRAM_ID) && !tokenProgramId.equals(TOKEN_2022_PROGRAM_ID)) {
+      throw new Error('Mint is not owned by a known token program.');
+    }
+    legacyMint = { mint, tokenProgramId };
+    return legacyMint;
+  };
 
-  // Auth-gated, read-only treasury probe: reports which address the configured
-  // key controls and what it holds, touching no rows. Exists because "payout
-  // wallet holds no SAKURA account" is undiagnosable from outside — the
-  // operator funds an address, the function derives one from its secret, and
-  // only this can say whether they are the same wallet.
-  const reqBody = (await req.json().catch(() => ({}))) as { probe?: boolean };
-  if (reqBody.probe) {
-    const sol = await connection.getBalance(authority.publicKey).catch(() => null);
-    const sakura = await connection
-      .getTokenAccountBalance(fromAta)
-      .then((r) => r.value.uiAmountString)
-      .catch(() => null);
-    return jsonResponse(
-      200,
-      {
+  // Auth-gated treasury probe. Defaults to SOL and never claims a queue row.
+  const reqBody = (await req.json().catch(() => ({}))) as { probe?: boolean; payout_asset?: string } | null;
+  if (reqBody?.probe) {
+    const asset = reqBody.payout_asset ?? 'SOL';
+    if (asset !== 'SOL' && asset !== 'SAKURA') {
+      return jsonResponse(400, { error: 'Unknown payout asset.' }, cors);
+    }
+    try {
+      const authority = loadPayoutAuthority(asset);
+      const sol = await connection.getBalance(authority.publicKey);
+      const details: { payout_token_account?: string; sakura_balance?: string | null } = {};
+      if (asset === 'SAKURA') {
+        const { mint, tokenProgramId } = await getLegacyMint();
+        const fromAta = ataFor(authority.publicKey, mint, tokenProgramId);
+        details.payout_token_account = fromAta.toBase58();
+        details.sakura_balance = await connection.getTokenAccountBalance(fromAta)
+          .then((r) => r.value.uiAmountString ?? null)
+          .catch(() => null);
+      }
+      return jsonResponse(200, {
         ok: true,
         probe: true,
+        payout_asset: asset,
         authority: authority.publicKey.toBase58(),
-        payout_token_account: fromAta.toBase58(),
-        sol_balance: sol === null ? null : sol / 1e9,
-        sakura_balance: sakura,
-      },
-      cors,
-    );
+        sol_balance: sol / 1e9,
+        ...details,
+      }, cors);
+    } catch (err) {
+      return jsonResponse(503, { error: err instanceof Error ? err.message : 'Unavailable.' }, cors);
+    }
   }
 
   const results: { id: string; status: string; signature?: string; error?: string }[] = [];
@@ -262,12 +276,15 @@ Deno.serve(async (req) => {
    * and correctable, never a double-pay.
    */
   const refundAndFail = async (row: RedemptionRow, reason: string) => {
-    const { data: marked, error: markErr } = await supabase
+    let mark = supabase
       .from('xp_redemptions')
       .update({ status: 'failed', error: reason.slice(0, 300), updated_at: now() })
       .eq('id', row.id)
-      .eq('status', 'processing')
-      .select('id');
+      .eq('status', 'processing');
+    mark = row.tx_signature
+      ? mark.eq('tx_signature', row.tx_signature)
+      : mark.is('tx_signature', null);
+    const { data: marked, error: markErr } = await mark.select('id');
     if (markErr || !marked?.length) {
       // Another invocation owns this row now (or the write failed) — refunding
       // here is exactly the double-refund the CAS exists to prevent.
@@ -293,7 +310,7 @@ Deno.serve(async (req) => {
   // database, knows what actually happened.
   const { data: inflight } = await supabase
     .from('xp_redemptions')
-    .select('id, wallet_address, xp_spent, sakura_amount, tx_signature, updated_at')
+    .select('id, wallet_address, xp_spent, payout_asset, sol_lamports, sakura_amount, tx_signature, updated_at')
     .eq('status', 'processing')
     .limit(50);
 
@@ -355,14 +372,46 @@ Deno.serve(async (req) => {
   }
 
   // ── Phase 1: pay newly pending rows ─────────────────────────────────────────
-  const { data: pending } = await supabase
+  // Missing funding keys cannot prevent reconciliation or block the other
+  // currency behind old queued rows. Configuration failures keep XP committed
+  // and rows pending until the operator configures the matching treasury.
+  const authorities: Partial<Record<PayoutAsset, Keypair>> = {};
+  const assetErrors: Partial<Record<PayoutAsset, string>> = {};
+  for (const asset of ['SOL', 'SAKURA'] as const) {
+    try {
+      authorities[asset] = loadPayoutAuthority(asset);
+    } catch (err) {
+      assetErrors[asset] = err instanceof Error ? err.message : 'Payout key unavailable.';
+    }
+  }
+  const availableAssets = Object.keys(authorities) as PayoutAsset[];
+  // Reserve part of the bounded batch for each configured currency. A backlog
+  // whose mint or treasury is unavailable must not starve the other currency.
+  const perAssetLimit = Math.floor(MAX_PER_RUN / Math.max(1, availableAssets.length));
+  const batches = await Promise.all(availableAssets.map((asset) => supabase
     .from('xp_redemptions')
-    .select('id, wallet_address, xp_spent, sakura_amount')
+    .select('id, wallet_address, xp_spent, payout_asset, sol_lamports, sakura_amount, tx_signature')
     .eq('status', 'pending')
+    .eq('payout_asset', asset)
     .order('created_at', { ascending: true })
-    .limit(MAX_PER_RUN);
+    .limit(perAssetLimit)));
+  if (batches.some((batch) => batch.error)) {
+    return jsonResponse(500, { error: 'Could not read queued swaps.', results }, cors);
+  }
+  const pending = batches.flatMap((batch) => batch.data ?? []) as RedemptionRow[];
 
-  for (const row of (pending ?? []) as RedemptionRow[]) {
+  for (const row of pending) {
+    const authority = authorities[row.payout_asset];
+    if (!authority || assetErrors[row.payout_asset]) continue;
+    let tokenContext: { mint: PublicKey; tokenProgramId: PublicKey } | undefined;
+    if (row.payout_asset === 'SAKURA') {
+      try {
+        tokenContext = await getLegacyMint();
+      } catch (err) {
+        assetErrors.SAKURA = err instanceof Error ? err.message : 'SAKURA mint unavailable.';
+        continue;
+      }
+    }
     // Claim the row before touching funds. The status guard makes this a
     // compare-and-swap: of N concurrent invocations, exactly one proceeds.
     const { data: claimed } = await supabase
@@ -373,51 +422,68 @@ Deno.serve(async (req) => {
       .select('id');
     if (!claimed?.length) continue;
 
-    const rawAmount = BigInt(Math.round(Number(row.sakura_amount) * 10 ** SAKURA_DECIMALS));
     let broadcast = false;
 
     try {
-      const fromBalance = await connection
-        .getTokenAccountBalance(fromAta)
-        .then((r) => BigInt(r.value.amount))
-        .catch(() => null);
-      if (fromBalance === null) {
-        await refundAndFail(row, 'Payout wallet holds no SAKURA account.');
-        break; // pool is unusable; leave the rest queued rather than failing them all
-      }
-      if (fromBalance < rawAmount) {
-        await refundAndFail(row, 'Payout wallet balance too low.');
-        break;
-      }
-
       const recipient = new PublicKey(row.wallet_address);
-      const toAta = ataFor(recipient, mint, tokenProgramId);
-
       const tx = new Transaction();
-      // First-time recipients have no SAKURA account yet; the payer creates it.
-      // Idempotent variant: several pending rows share a recipient, and if an
-      // earlier transfer's ATA creation is in flight but unconfirmed when this
-      // row builds, the existence check still reports null — a plain create
-      // would then fail the whole transfer on-chain.
-      const toInfo = await connection.getAccountInfo(toAta).catch(() => null);
-      if (!toInfo) {
-        tx.add(createAtaIdempotentIx(authority.publicKey, toAta, recipient, mint, tokenProgramId));
+      if (row.payout_asset === 'SOL') {
+        if (!Number.isSafeInteger(row.sol_lamports) || row.sol_lamports! <= 0) {
+          throw new Error('Invalid SOL payout amount.');
+        }
+        tx.add(SystemProgram.transfer({
+          fromPubkey: authority.publicKey,
+          toPubkey: recipient,
+          lamports: BigInt(row.sol_lamports!),
+        }));
+      } else {
+        const { mint, tokenProgramId } = tokenContext!;
+        const rawAmountNumber = Math.round(Number(row.sakura_amount) * 10 ** SAKURA_DECIMALS);
+        if (!Number.isSafeInteger(rawAmountNumber) || rawAmountNumber <= 0) {
+          throw new Error('Invalid SAKURA payout amount.');
+        }
+        const rawAmount = BigInt(rawAmountNumber);
+        const fromAta = ataFor(authority.publicKey, mint, tokenProgramId);
+        const fromBalance = await connection.getTokenAccountBalance(fromAta)
+          .then((r) => BigInt(r.value.amount))
+          .catch(() => null);
+        if (fromBalance === null || fromBalance < rawAmount) {
+          const reason = fromBalance === null
+            ? 'Payout wallet holds no SAKURA account.' : 'Payout wallet balance too low.';
+          await refundAndFail(row, reason);
+          assetErrors.SAKURA = reason;
+          continue;
+        }
+        const toAta = ataFor(recipient, mint, tokenProgramId);
+        // Idempotent creation handles concurrent payouts to a new recipient.
+        const toInfo = await connection.getAccountInfo(toAta).catch(() => null);
+        if (!toInfo) {
+          tx.add(createAtaIdempotentIx(authority.publicKey, toAta, recipient, mint, tokenProgramId));
+        }
+        tx.add(transferCheckedIx(
+          fromAta, mint, toAta, authority.publicKey, rawAmount, SAKURA_DECIMALS, tokenProgramId,
+        ));
       }
-      tx.add(
-        transferCheckedIx(
-          fromAta,
-          mint,
-          toAta,
-          authority.publicKey,
-          rawAmount,
-          SAKURA_DECIMALS,
-          tokenProgramId,
-        ),
-      );
 
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
       tx.feePayer = authority.publicKey;
+      if (row.payout_asset === 'SOL') {
+        const [balance, fee] = await Promise.all([
+          connection.getBalance(authority.publicKey, 'confirmed'),
+          connection.getFeeForMessage(tx.compileMessage(), 'confirmed'),
+        ]);
+        if (!Number.isSafeInteger(balance) || balance < 0 ||
+            fee.value === null || !Number.isSafeInteger(fee.value) || fee.value < 0) {
+          throw new Error('Could not estimate the SOL payout fee.');
+        }
+        if (BigInt(balance) < BigInt(row.sol_lamports!) + BigInt(fee.value)) {
+          const reason = 'SOL payout wallet balance too low for the reward and transaction fee.';
+          await refundAndFail(row, reason);
+          assetErrors.SOL = reason;
+          continue;
+        }
+      }
       tx.sign(authority);
 
       // Record the signature BEFORE broadcasting. If we crash between send and
@@ -443,6 +509,8 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      row.tx_signature = signature;
+
       // Serialize BEFORE flipping the flag: a serialization throw is provably
       // pre-broadcast and may refund. From the send call onward the outcome is
       // ambiguous — a transport error (timeout, reset, gateway 5xx) can throw on
@@ -466,7 +534,8 @@ Deno.serve(async (req) => {
         .from('xp_redemptions')
         .update({ status: 'sent', updated_at: now() })
         .eq('id', row.id)
-        .eq('status', 'processing');
+        .eq('status', 'processing')
+        .eq('tx_signature', signature);
       results.push({ id: row.id, status: 'sent', signature });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transfer failed.';
@@ -491,7 +560,7 @@ Deno.serve(async (req) => {
 
   return jsonResponse(
     200,
-    { ok: true, processed: results.length, remaining_pending: remaining ?? 0, results },
+    { ok: true, processed: results.length, remaining_pending: remaining ?? 0, asset_errors: assetErrors, results },
     cors,
   );
 });
