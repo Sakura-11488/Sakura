@@ -1,3 +1,4 @@
+import { createReadOnlyRpcFetch } from './read-only-rpc';
 import { Connection, PublicKey } from '@solana/web3.js';
 import {
   getAssociatedTokenAddressSync,
@@ -24,6 +25,34 @@ function getRpcConnection(): Connection {
     _connectionRpc = SOLANA_RPC;
   }
   return _connection;
+}
+
+// This connection is only for display reads. Transaction preparation and
+// submission keep their existing configured connection and never use failover.
+// The edge proxy may spend five seconds on each of its two read endpoints.
+const rpcReadTimeoutMs = /\/functions\/v1\/wallet-rpc(?:[?#]|$)/.test(SOLANA_RPC) ? 11_000 : 5000;
+const balanceFetch = createReadOnlyRpcFetch(SOLANA_RPC, fetch, rpcReadTimeoutMs);
+async function withBalanceRead<T>(read: (connection: Connection) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const connection = new Connection(SOLANA_RPC, {
+    commitment: 'confirmed',
+    disableRetryOnRateLimit: true,
+    fetch: (input, init) => balanceFetch(input, { ...init, signal: controller.signal }),
+  });
+  try {
+    return await Promise.race([
+      read(connection),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('Could not refresh the wallet balance. Please try again.'));
+        }, 12_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export type SakuraBalanceResult = {
@@ -142,7 +171,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 }
 
 export async function fetchSolBalance(publicKey: PublicKey): Promise<number> {
-  const lamports = await withRetry(() => getRpcConnection().getBalance(publicKey, 'confirmed'));
+  const lamports = await withBalanceRead((conn) => conn.getBalance(publicKey, 'confirmed'));
   return lamportsToSol(lamports);
 }
 
@@ -152,7 +181,10 @@ export async function fetchSakuraBalance(publicKey: PublicKey): Promise<number> 
 }
 
 export async function fetchSakuraBalanceWithMeta(publicKey: PublicKey): Promise<SakuraBalanceResult> {
-  const conn = getRpcConnection();
+  return withBalanceRead((conn) => readSakuraBalanceWithMeta(conn, publicKey));
+}
+
+async function readSakuraBalanceWithMeta(conn: Connection, publicKey: PublicKey): Promise<SakuraBalanceResult> {
   const ata = getSakuraAta(publicKey);
 
   try {

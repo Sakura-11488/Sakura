@@ -1,3 +1,4 @@
+import { withAnimeTimeout } from './anime-network';
 import { invokeContentProxy } from '@/lib/content-proxy-client';
 
 const HIANIME_UA =
@@ -10,7 +11,7 @@ export function getAnimeUpstreamUserAgent(): string {
 }
 
 export async function fetchUpstreamText(url: string, referer?: string): Promise<string> {
-  const data = await invokeContentProxy<{ html: string }>({
+  const data = await withAnimeTimeout(() => invokeContentProxy<{ html: string }>({
     source: 'upstream',
     url,
     responseFormat: 'html',
@@ -18,7 +19,7 @@ export async function fetchUpstreamText(url: string, referer?: string): Promise<
       Referer: referer || HIANIME_BASE + '/',
       'User-Agent': HIANIME_UA,
     },
-  });
+  }));
   if (!data?.html) throw new Error('Upstream proxy returned empty HTML.');
   return data.html;
 }
@@ -28,7 +29,7 @@ export async function fetchUpstreamJson(
   referer?: string,
   origin?: string,
 ): Promise<Record<string, unknown>> {
-  return invokeContentProxy<Record<string, unknown>>({
+  return withAnimeTimeout(() => invokeContentProxy<Record<string, unknown>>({
     source: 'upstream',
     url,
     responseFormat: 'json',
@@ -38,5 +39,5 @@ export async function fetchUpstreamJson(
       'X-Requested-With': 'XMLHttpRequest',
       'User-Agent': HIANIME_UA,
     },
-  });
+  }));
 }

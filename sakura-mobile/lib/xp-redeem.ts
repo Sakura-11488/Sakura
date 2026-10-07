@@ -21,9 +21,8 @@ export { XP_SOL_RATE, XP_REDEEM_MIN, previewSol, formatSol, formatRedemptionAmou
  * Whether to surface the swap in the UI.
  *
  * On. Swaps are queued, not settled inline: the XP is spent when the request is
- * recorded and the SOL is sent by process-xp-redemptions afterwards. Until a
- * funded payout wallet exists the queue simply doesn't drain, so every surface
- * says "queued" rather than promising a timeframe the server can't hold to.
+ * recorded and the SOL is sent by process-xp-redemptions afterwards. The server
+ * pauses new requests until the operator has verified payout readiness.
  */
 export const XP_SWAP_ENABLED = true;
 
@@ -59,6 +58,7 @@ export interface XpRedemptionQuote {
   payout_asset: 'SOL';
   rate: number;
   min_xp: number;
+  available: boolean;
 }
 
 async function invokeRedemption(keypair: Keypair, body: Record<string, unknown>) {
@@ -82,11 +82,21 @@ async function invokeRedemption(keypair: Keypair, body: Record<string, unknown>)
   return data;
 }
 
-export async function fetchRedemptionQuote(keypair: Keypair): Promise<XpRedemptionQuote> {
+export async function fetchRedemptionQuote(
+  keypair: Keypair,
+  options: { includePaused?: boolean } = {},
+): Promise<XpRedemptionQuote> {
   const data = await invokeRedemption(keypair, { quote: true });
   if (data?.ok !== true || data.payout_asset !== 'SOL' ||
       !Number.isFinite(data.rate) || data.rate <= 0 ||
       !Number.isSafeInteger(data.min_xp) || data.min_xp <= 0) {
+    throw new Error('SOL rewards are unavailable right now. Try again later.');
+  }
+  if (data.available !== true && !options.includePaused) {
+    throw new Error('SOL rewards are temporarily paused. Your XP has not been spent.');
+  }
+  // Older deployments omit this field; their availability is never assumed.
+  if (typeof data.available !== 'boolean') {
     throw new Error('SOL rewards are unavailable right now. Try again later.');
   }
   return data as XpRedemptionQuote;

@@ -40,11 +40,14 @@ if (!fs.existsSync(indexPath)) {
 const USED_WEIGHTS = ['400Regular', '600SemiBold', '700Bold', '800ExtraBold'];
 
 function preloadLinks() {
-  const base = path.join(root, 'dist', 'assets', '_sakura-mobile', 'node_modules', '@expo-google-fonts', 'nunito');
-  if (!fs.existsSync(base)) {
+  const relativeBase = ['assets/vendor/@expo-google-fonts/nunito', 'assets/node_modules/@expo-google-fonts/nunito',
+    'assets/_sakura-mobile/node_modules/@expo-google-fonts/nunito']
+    .find((candidate) => fs.existsSync(path.join(root, 'dist', candidate)));
+  if (!relativeBase) {
     console.warn('[inject-pwa-tags] Nunito assets not found — skipping font preload.');
     return '';
   }
+  const base = path.join(root, 'dist', relativeBase);
   const links = [];
   for (const weight of USED_WEIGHTS) {
     const dir = path.join(base, weight);
@@ -57,7 +60,7 @@ function preloadLinks() {
     if (!ttf) continue;
     links.push(
       '    <link rel="preload" as="font" type="font/ttf" crossorigin="anonymous" ' +
-        'href="/app/assets/_sakura-mobile/node_modules/@expo-google-fonts/nunito/' +
+        'href="/app/' + relativeBase + '/' +
         weight + '/' + ttf + '" />',
     );
   }

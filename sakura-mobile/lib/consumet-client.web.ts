@@ -1,3 +1,4 @@
+import { withAnimeTimeout } from './anime-network';
 import { invokeContentProxy } from '@/lib/content-proxy-client';
 // NOT from '@/lib/consumet-client'. On web that specifier resolves to this very
 // file — Metro picks the `.web` variant regardless of who is asking — so the
@@ -13,7 +14,7 @@ export { consumetCandidates, getActiveConsumetUrl, setActiveConsumetUrl };
 
 export async function consuGet(
   path: string,
-  _timeoutMs = 15000,
+  timeoutMs = 15000,
   retries = 2,
 ): Promise<Record<string, unknown>> {
   const bases = consumetCandidates();
@@ -23,10 +24,10 @@ export async function consuGet(
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1200 * attempt));
     try {
-      const data = await invokeContentProxy<Record<string, unknown>>({
+      const data = await withAnimeTimeout(() => invokeContentProxy<Record<string, unknown>>({
         source: 'consumet',
         path,
-      });
+      }), timeoutMs);
       if (data?.code === 20) {
         lastErr = new Error('Consumet server aborted');
         continue;

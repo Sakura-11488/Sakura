@@ -2,8 +2,8 @@
 
 This is the Node.js + Express + Cheerio service that powers the **Comics** tab
 in the Sakura app. It runs on the DigitalOcean droplet (`165.232.83.159`)
-behind nginx at `/comics/v1/*` and scrapes XOXO Comics on demand, caching
-everything in an in-memory LRU for 15 minutes so repeat requests are instant.
+behind nginx at `/comics/v1/*`. The default is a curated Internet Archive
+public-domain catalogue; legacy source IDs remain supported where available.
 
 The Capacitor app talks to this service via `NEXT_PUBLIC_COMICS_PROXY`
 (defaults to `http://165.232.83.159/comics/v1`).
@@ -23,17 +23,40 @@ All responses are JSON and CORS-open.
 
 Every `<id>` comes from a previous response — do not hand-construct them.
 
-## Two sources
+## Sources
 
-| Source | `source=` | Id shape      | State                                            |
-| ------ | --------- | ------------- | ------------------------------------------------ |
-| Comic Book Plus | `cbp` (default) | `cbp-1325` | Working. Public-domain catalogue     |
-| XOXO Comics     | `xoxo`          | `invincible` | Browses, but its reader is dead    |
+| Source | `source=` | ID shape | Current state |
+| --- | --- | --- | --- |
+| Internet Archive | `archive` (default) | `ia-LittleNemo1905-1914ByWinsorMccay` | Three curated original-era comic collections; public IIIF reader |
+| Comic Book Plus | `cbp` | `cbp-1325` | Upstream challenges HTML requests; previously cached titles may remain available |
+| XOXO Comics | `xoxo` | `invincible` | Legacy catalogue; its reader remains unavailable |
 
-Ids are namespaced, so `/details`, `/chapters` and `/pages` route by id alone
-and ignore `source=` — an id a client stored before the switch keeps resolving
-to the source that issued it. `source=` only decides where a sourceless
-`/popular` or `/search` goes, and `COMICS_DEFAULT_SOURCE` sets that default.
+The default changed to Internet Archive on 2026-10-07. This is a smaller,
+explicitly curated catalogue of classic comic strips, not a replacement for
+individual CBP titles. Stored IDs continue to use their original source.
+Archive metadata uses the public IIIF API; images are sampled for real JPEG
+bytes. No login, lending restriction, or bot challenge is bypassed.
+
+The website also serves the same adapter through `/api/public-domain-comics`
+in the separate `sakura-web` repository. This route provides the default
+catalogue and `ia-*` IDs without the droplet; old CBP IDs retain their existing
+proxy route. Archive HTTPS images load directly in the app. Keep that site's
+`lib/public-domain-comics.mjs` identical to this directory's
+`internet-archive.js` when updating the curated catalogue or parser.
+
+Successful API responses persist in `response-cache/` for up to 30 days,
+bounded to 1,000 entries of at most 1 MiB each. On upstream errors the service
+can recover known details, chapter lists and verified page lists after a
+restart. Empty parses and broken-reader verdicts are not persisted. Both deploy
+and rollback preserve this directory alongside `img-cache/`. Caching cannot
+recover a title that was never successfully loaded, or guarantee uncached
+images during an outage; those failures remain explicit and retryable.
+
+**Validation (2026-10-07):** catalogue, chapters, verified pages and actual JPEG
+responses passed locally for Little Nemo (421 scans), Buster Brown, His Dog
+Tige and Their Troubles (72 scans), and My Resolutions, Buster Brown (104
+scans). `/readyz` passed its live image check. The website API handler passed
+its own network and failure-path tests. Remote deployment is a separate step.
 
 **Why the default moved (2026-08-24).** xoxocomic answers every page image
 (`/comic/<slug>/<issue>/<id>/N.jpg`) with HTTP 200 and its own homepage — 106 KB,
@@ -187,10 +210,11 @@ new source ships without an app release.
 
 ## Tests
 
-Both suites are plain `node`, no framework, and neither touches the network or
+The suites use plain `node` and `node:test`, and none touches the network or
 spends a proxy credit:
 
 ```bash
+node --test archive.spec.mjs # Public API adapter + persistent response cache
 node cbp.spec.mjs      # Comic Book Plus parsers (46 assertions)
 node ladder.spec.mjs   # direct-first fetch ladder (46 assertions)
 ```

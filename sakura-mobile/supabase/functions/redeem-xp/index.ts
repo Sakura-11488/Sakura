@@ -5,10 +5,9 @@ import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/walle
  * Queue a swap of reading XP for native SOL.
  *
  * This function only ever *records* the request — it holds no key and moves no
- * tokens. Settlement is done separately by process-xp-redemptions. Splitting it
- * this way means the swap can be offered before a payout wallet exists, and
- * more importantly that a hot key is never reachable from a user-facing
- * endpoint: the worst a caller can do here is spend their own XP.
+ * tokens. Settlement is done separately by process-xp-redemptions. The operator enables
+ * new requests only after verifying the treasury and settlement schedule. The
+ * user-facing endpoint never needs to read or use the treasury key.
  *
  * The XP is debited immediately even though the tokens arrive later. That is
  * deliberate — the balance must reflect what has been committed, or a user
@@ -37,9 +36,6 @@ function minRedeemXp(): number {
   const raw = Number(Deno.env.get('XP_REDEEM_MIN') || '100');
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 100;
 }
-
-/** Cap on how many swaps can be in flight at once, per wallet. */
-const MAX_PENDING_PER_WALLET = 3;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -88,7 +84,7 @@ Deno.serve(async (req) => {
   const rate = lamportsPerXp / 1_000_000_000;
   const min = minRedeemXp();
   if (body.quote) {
-    return jsonResponse(200, { ok: true, payout_asset: 'SOL', rate, min_xp: min }, cors);
+    return jsonResponse(200, { ok: true, payout_asset: 'SOL', rate, min_xp: min, available: Deno.env.get('XP_SOL_REDEMPTIONS_ENABLED') === 'true' }, cors);
   }
   // An old app still promises SAKURA. Require explicit agreement to SOL and
   // the displayed rate before spending any XP, including after rate changes.
@@ -112,17 +108,22 @@ Deno.serve(async (req) => {
     return jsonResponse(400, { error: 'That XP amount is too large.' }, cors);
   }
 
-  // Stops a queue of unsettled swaps building up while the first is still
-  // being processed, which would be confusing to the user and awkward to pay.
-  const { count: pendingCount, error: pendingError } = await supabase
-    .from('xp_redemptions')
-    .select('*', { count: 'exact', head: true })
-    .eq('wallet_address', walletAddress)
-    .in('status', ['pending', 'processing']);
-  if (pendingError) {
-    return jsonResponse(503, { error: 'Could not check your pending swaps. Try again.' }, cors);
+  // Fail closed until the operator verifies funding and settlement readiness.
+  // History and rate quotes remain available while requests are paused.
+  if (Deno.env.get('XP_SOL_REDEMPTIONS_ENABLED') !== 'true') {
+    return jsonResponse(503, { error: 'SOL rewards are temporarily paused. Your XP has not been spent.' }, cors);
   }
-  if ((pendingCount ?? 0) >= MAX_PENDING_PER_WALLET) {
+
+  // The wallet row lock, queue cap, XP reservation and payout promise belong
+  // to one database transaction. Never refund on an HTTP error: the RPC may
+  // have committed even if its response was lost. History resolves that case.
+  const { data: queued, error: queueError } = await supabase.rpc('queue_sol_xp_redemption', {
+    p_wallet: walletAddress,
+    p_xp: xp,
+    p_sol_lamports: solLamports,
+    p_rate: rate,
+  });
+  if (queueError?.code === 'P0001' && queueError.message === 'XP_QUEUE_FULL') {
     return jsonResponse(
       429,
       { error: 'You already have swaps on the way. Hold on until those land.' },
@@ -130,39 +131,13 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Debit first. The balance check and the increment are one statement, so two
-  // requests racing cannot both observe the same balance and both succeed. A
-  // null result means there wasn't enough, and nothing has been charged.
-  const { data: debited, error: debitErr } = await supabase.rpc('debit_xp_for_redemption', {
-    p_wallet: walletAddress,
-    p_xp: xp,
-  });
-  if (debitErr) {
-    return jsonResponse(500, { error: 'Could not read your XP balance.' }, cors);
-  }
-  const remainingXp = Array.isArray(debited) ? debited[0]?.remaining_xp : undefined;
-  if (remainingXp == null) {
+  if (queueError?.code === 'P0001' && queueError.message === 'XP_INSUFFICIENT') {
     return jsonResponse(400, { error: 'Not enough XP for that swap.' }, cors);
   }
 
-  const { data: redemption, error: insErr } = await supabase
-    .from('xp_redemptions')
-    .insert({
-      wallet_address: walletAddress,
-      xp_spent: xp,
-      payout_asset: 'SOL',
-      sol_lamports: solLamports,
-      sakura_amount: null,
-      rate,
-      status: 'pending',
-    })
-    .select('id, created_at')
-    .single();
-
-  if (insErr || !redemption) {
-    // Give the XP back rather than charging for a swap that was never recorded.
-    await supabase.rpc('debit_xp_for_redemption', { p_wallet: walletAddress, p_xp: -xp });
-    return jsonResponse(500, { error: 'Could not queue that swap. Try again.' }, cors);
+  const redemption = Array.isArray(queued) ? queued[0] : undefined;
+  if (queueError || !redemption?.id || redemption.remaining_xp == null || !redemption.queued_at) {
+    return jsonResponse(503, { error: 'Could not confirm your swap. Check your swap history before trying again.' }, cors);
   }
 
   return jsonResponse(
@@ -176,8 +151,8 @@ Deno.serve(async (req) => {
       sol_lamports: solLamports,
       rate,
       status: 'pending',
-      remaining_xp: remainingXp,
-      queued_at: redemption.created_at,
+      remaining_xp: redemption.remaining_xp,
+      queued_at: redemption.queued_at,
     },
     cors,
   );

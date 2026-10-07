@@ -21,7 +21,7 @@ async function fetchText(url, opts = {}) {
       redirect: "follow",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    return res.text();
+    return await res.text();
   } finally {
     clearTimeout(timeout);
   }
@@ -58,7 +58,7 @@ async function fetchBuffer(url, opts = {}) {
       redirect: "follow",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    return res.arrayBuffer();
+    return await res.arrayBuffer();
   } finally {
     clearTimeout(timeout);
   }

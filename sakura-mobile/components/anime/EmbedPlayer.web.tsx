@@ -27,7 +27,7 @@ import { View, type StyleProp, type ViewStyle } from 'react-native';
  * `onShouldStartLoadWithRequest` does natively.
  */
 export type EmbedPlayerProps = {
-  source: { uri: string };
+  source: { uri: string; headers?: Record<string, string> };
   style?: StyleProp<ViewStyle>;
   /** Called once the iframe reports it has loaded. */
   onReady?: () => void;

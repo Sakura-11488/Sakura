@@ -18,7 +18,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { Fonts, FontSize, Radius } from '@/constants/theme';
 import {
-  buildStreamEmbedUrl,
   fetchAnimeInfo,
   fetchEpisodeSources,
   getAnimeStreamUserAgent,
@@ -382,19 +381,6 @@ export default function AnimeWatch() {
           id,
           { force: !!playbackHint?.forceFreshSource },
         ).catch(() => null);
-      }
-      if (!src?.embedUrl && !src?.url) {
-        const directMal = ep.match(/^mal-(\d+)-(\d+)$/);
-        if (directMal) {
-          const [, malId, directEpNum] = directMal;
-          src = {
-            url: '',
-            isM3U8: false,
-            embedUrl: buildStreamEmbedUrl(malId, directEpNum, category),
-            category,
-            availableCategories: ['sub', 'dub'],
-          };
-        }
       }
       if (cancelled) return;
 
@@ -760,6 +746,7 @@ export default function AnimeWatch() {
     }
   };
 
+  const embedSource = { uri: embedUrl || '', headers: playbackHeadersRef.current };
   const showWebEmbedPlayer = !!embedUrl && !nativeSource && !error;
   const showWebDirectPlayer = isWeb && !!nativeSource && !error;
   const showNativePlayer = !!nativeSource && !error && !isWeb;
@@ -866,7 +853,7 @@ export default function AnimeWatch() {
       {showWebEmbedPlayer && (
         <EmbedPlayer
           key={`${embedUrl}-${category}`}
-          source={{ uri: embedUrl }}
+          source={embedSource}
           style={s.player}
           userAgent={streamUA}
           allowsInlineMediaPlayback
@@ -896,6 +883,10 @@ export default function AnimeWatch() {
             ${seekScript}
             ${progressPollScript}
           `}
+          onFailed={() => {
+            setError('Video player failed to load.\nCheck your connection and try again.');
+            setEmbedUrl(null);
+          }}
           onError={() => {
             setError('Video player failed to load.\nCheck your connection and try again.');
             setEmbedUrl(null);

@@ -584,7 +584,7 @@ async function getEmbedFromServer(linkId) {
   return null;
 }
 
-async function resolveEmbedForEpisode(slug, epNum, category) {
+async function resolveEmbedForEpisode(slug, epNum, category, resolvePlayback) {
   category = category || "sub";
 
   var info = await getInfo(slug);
@@ -689,7 +689,11 @@ async function resolveEmbedForEpisode(slug, epNum, category) {
         ? { url: server.linkId, skipData: null }
         : await getEmbedFromServer(server.linkId);
       if (embed && embed.url) {
+        // A resolved URL can still be a removed episode or dead host. When
+        // requested by playback, validate it before stopping the server loop.
+        var playback = resolvePlayback ? await resolvePlayback(embed.url) : null;
         return {
+          playback: playback,
           embedUrl: embed.url,
           serverName: server.name,
           type: server.type,

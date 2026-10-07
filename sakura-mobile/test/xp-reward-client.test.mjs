@@ -85,7 +85,7 @@ test('mixed history formats SOL from lamports and preserves legacy SAKURA units'
 });
 
 test('server quote is authenticated and exposes the authoritative rate/minimum', async () => {
-  const quote = { ok: true, payout_asset: 'SOL', rate: 0.000004, min_xp: 200 };
+  const quote = { ok: true, payout_asset: 'SOL', rate: 0.000004, min_xp: 200, available: true };
   const h = harness({ data: quote, error: null });
   assert.equal(await h.client.fetchRedemptionQuote(h.keypair), quote);
   assert.equal(h.requests[0].endpoint, 'redeem-xp');
@@ -132,4 +132,23 @@ test('history request retains amounts and asset tags supplied by the server', as
   assert.equal(await h.client.fetchRedemptions(h.keypair), redemptions);
   assert.equal(h.requests[0].body.history, true);
   assert.equal(h.requests[0].headers['x-signature'], 'signed-wallet-request');
+});
+
+test('paused quotes stop the client before it submits a swap', async () => {
+  const h = harness({ data: { ok: true, payout_asset: 'SOL', rate: 0.00000312, min_xp: 100, available: false }, error: null });
+  await assert.rejects(h.client.fetchRedemptionQuote(h.keypair), /temporarily paused/);
+  assert.equal(h.requests.length, 1);
+});
+
+test('passive quotes expose paused availability so the screen can disable swaps', async () => {
+  const quote = { ok: true, payout_asset: 'SOL', rate: 0.00000312, min_xp: 100, available: false };
+  const h = harness({ data: quote, error: null });
+  assert.deepEqual(await h.client.fetchRedemptionQuote(h.keypair, { includePaused: true }), quote);
+  assert.equal(h.requests.length, 1);
+  assert.equal(JSON.stringify(h.requests[0].body), JSON.stringify({ quote: true }));
+});
+
+test('older quotes without availability never make rewards appear available', async () => {
+  const h = harness({ data: { ok: true, payout_asset: 'SOL', rate: 0.00000312, min_xp: 100 }, error: null });
+  await assert.rejects(h.client.fetchRedemptionQuote(h.keypair, { includePaused: true }), /unavailable/);
 });

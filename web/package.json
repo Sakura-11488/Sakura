@@ -8,7 +8,7 @@
     "start": "expo start --web",
     "dev": "node scripts/link-mobile-sources.mjs && npm run build && npx --yes serve dist -p 8081 --single",
     "dev:metro": "expo start --web --no-dev",
-    "build": "node scripts/check-public-env.mjs && expo export --platform web --max-workers 1 && node scripts/inject-pwa-tags.mjs",
+    "build": "node scripts/check-public-env.mjs && expo export --platform web --max-workers 1 && node scripts/normalize-export-assets.mjs && node scripts/inject-pwa-tags.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -18,6 +18,7 @@
     "@expo/log-box": "^56.0.12",
     "@expo/vector-icons": "^15.1.1",
     "@gorhom/bottom-sheet": "^5.2.14",
+    "@noble/hashes": "1.8.0",
     "@shopify/flash-list": "2.0.2",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
@@ -37,6 +38,7 @@
     "expo-glass-effect": "~56.0.4",
     "expo-haptics": "^56.0.3",
     "expo-image": "~56.0.9",
+    "expo-image-manipulator": "56.0.23",
     "expo-image-picker": "~56.0.15",
     "expo-linear-gradient": "~56.0.4",
     "expo-linking": "~56.0.12",

@@ -37,10 +37,9 @@ const SAKURA_DECIMALS = 6;
 /** Bounded so one invocation can't run past the function timeout mid-transfer. */
 const MAX_PER_RUN = 10;
 /**
- * How long a `processing` row must sit unresolved before it is recycled to
- * `pending`. A transaction is only valid while its blockhash is (~60-90s), so
- * after this window a not-found signature can no longer land and re-paying is
- * safe. Far above the blockhash lifetime on purpose.
+ * Reclaim abandoned unsigned claims after this delay. A recorded signature
+ * may already have landed even when the current RPC cannot find it, so signed
+ * rows are never paid again based only on elapsed time.
  */
 const RECYCLE_AFTER_MS = 10 * 60 * 1000;
 
@@ -268,38 +267,25 @@ Deno.serve(async (req) => {
    * Refund the XP and mark the row failed. Pre-broadcast (or confirmed
    * on-chain-failed) rows only.
    *
-   * Order matters: the status flip is a compare-and-swap that GATES the refund.
-   * Refund-first had two loss modes — overlapping runs refunding the same row
-   * twice, and a crash between refund and update leaving a refunded row
-   * `processing` that later recycled into a full payout. With claim-first, the
-   * worst crash outcome is a `failed` row missing its refund: operator-visible
-   * and correctable, never a double-pay.
+   * The database locks the matching status/signature and commits the failure
+   * marker with its XP refund. Neither half can be lost to an interruption,
+   * and overlapping runs or ambiguous-response retries can refund only once.
    */
   const refundAndFail = async (row: RedemptionRow, reason: string) => {
-    let mark = supabase
-      .from('xp_redemptions')
-      .update({ status: 'failed', error: reason.slice(0, 300), updated_at: now() })
-      .eq('id', row.id)
-      .eq('status', 'processing');
-    mark = row.tx_signature
-      ? mark.eq('tx_signature', row.tx_signature)
-      : mark.is('tx_signature', null);
-    const { data: marked, error: markErr } = await mark.select('id');
-    if (markErr || !marked?.length) {
-      // Another invocation owns this row now (or the write failed) — refunding
-      // here is exactly the double-refund the CAS exists to prevent.
-      results.push({ id: row.id, status: 'refund-skipped', error: reason });
-      return;
-    }
-    const { error: rpcErr } = await supabase.rpc('debit_xp_for_redemption', {
-      p_wallet: row.wallet_address,
-      p_xp: -row.xp_spent,
+    const { data: refunded, error: rpcErr } = await supabase.rpc('fail_xp_redemption', {
+      p_id: row.id,
+      p_expected_signature: row.tx_signature ?? null,
+      p_reason: reason.slice(0, 300),
     });
     if (rpcErr) {
-      await supabase
-        .from('xp_redemptions')
-        .update({ error: `${reason} (XP refund failed: ${rpcErr.message})`.slice(0, 300) })
-        .eq('id', row.id);
+      // Leave the transaction's outcome to the database. A lost response may
+      // already have committed; a failed transaction leaves processing intact.
+      results.push({ id: row.id, status: 'refund-pending', error: `${reason} (XP refund not confirmed: ${rpcErr.message})`.slice(0, 300) });
+      return;
+    }
+    if (refunded !== true) {
+      results.push({ id: row.id, status: 'refund-skipped', error: reason });
+      return;
     }
     results.push({ id: row.id, status: 'failed', error: reason });
   };
@@ -333,15 +319,24 @@ Deno.serve(async (req) => {
           results.push({ id: row.id, status: 'sent', signature: row.tx_signature });
           continue;
         }
-        if (st.value?.err) {
+        if ((conf === 'confirmed' || conf === 'finalized') && st.value?.err) {
           // Landed and failed on-chain: no tokens moved, refunding is safe.
           await refundAndFail(row, `On-chain failure: ${JSON.stringify(st.value.err).slice(0, 120)}`);
           continue;
         }
+        // Neither a missing history entry nor a merely processed transaction
+        // proves non-delivery. Keep the recorded signature for reconciliation;
+        // recycling it could pay a second time after an RPC lag/outage/fork.
+        results.push({
+          id: row.id,
+          status: 'inflight',
+          signature: row.tx_signature,
+          error: 'Transaction outcome is not confirmed; awaiting reconciliation.',
+        });
+        continue;
       }
-      // Signature unknown to the chain (or none was recorded). Only recycle
-      // once the blockhash lifetime is safely over — recycling early could
-      // double-pay if the original transaction lands late.
+      // No signature was persisted, so this processor could not have sent a
+      // transaction. The signature stamp is mandatory before every broadcast.
       const ageMs = Date.now() - new Date(row.updated_at ?? 0).getTime();
       if (ageMs > RECYCLE_AFTER_MS) {
         // Fenced on the exact signature (or its absence) we observed, so a
@@ -369,6 +364,17 @@ Deno.serve(async (req) => {
         error: err instanceof Error ? err.message.slice(0, 120) : 'reconcile failed',
       });
     }
+  }
+
+  // Insufficient treasury funding is an operational pause, not a failed reward.
+  // No transaction has been signed or broadcast when this helper is called.
+  async function deferUnfunded(row: RedemptionRow, reason: string) {
+    const { data, error } = await supabase.from('xp_redemptions')
+      .update({ status: 'pending', error: reason, updated_at: now() })
+      .eq('id', row.id).eq('status', 'processing').is('tx_signature', null)
+      .select('id');
+    if (error) throw new Error('Could not pause the unfunded payout.');
+    if (data?.length) results.push({ id: row.id, status: 'pending', error: reason });
   }
 
   // ── Phase 1: pay newly pending rows ─────────────────────────────────────────
@@ -450,7 +456,7 @@ Deno.serve(async (req) => {
         if (fromBalance === null || fromBalance < rawAmount) {
           const reason = fromBalance === null
             ? 'Payout wallet holds no SAKURA account.' : 'Payout wallet balance too low.';
-          await refundAndFail(row, reason);
+          await deferUnfunded(row, reason);
           assetErrors.SAKURA = reason;
           continue;
         }
@@ -479,7 +485,7 @@ Deno.serve(async (req) => {
         }
         if (BigInt(balance) < BigInt(row.sol_lamports!) + BigInt(fee.value)) {
           const reason = 'SOL payout wallet balance too low for the reward and transaction fee.';
-          await refundAndFail(row, reason);
+          await deferUnfunded(row, reason);
           assetErrors.SOL = reason;
           continue;
         }

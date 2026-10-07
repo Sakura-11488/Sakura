@@ -1,8 +1,9 @@
+import { createReadOnlyRpcFetch, FALLBACK_READ_METHODS } from '../../../lib/wallet/read-only-rpc.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
 import { checkRateLimit } from '../_shared/rate-limit.ts';
 
 const methods = new Set([
-  'getAccountInfo', 'getAddressLookupTable', 'getBalance', 'getBlockHeight', 'getEpochInfo',
+  'getAccountInfo', 'getAddressLookupTable', 'getBalance', 'getBlockHeight', 'getEpochInfo', 'getHealth',
   'getFeeForMessage', 'getGenesisHash', 'getLatestBlockhash',
   'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getBlockTime',
   'getSignaturesForAddress',
@@ -16,6 +17,9 @@ const cors = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+let readFetch: typeof fetch | undefined;
+let readFetchUrl = '';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -38,7 +42,13 @@ Deno.serve(async (req) => {
     const upstream = Deno.env.get('SOLANA_RPC_URL')?.trim() || Deno.env.get('SOLANA_RPC')?.trim() ||
       (heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${heliusKey}` : '') ||
       'https://api.mainnet-beta.solana.com';
-    const response = await fetch(upstream, {
+    if (!readFetch || readFetchUrl !== upstream) {
+      readFetch = createReadOnlyRpcFetch(upstream);
+      readFetchUrl = upstream;
+    }
+    // Keep submission/simulation on their original single provider and deadline.
+    const rpcFetch = FALLBACK_READ_METHODS.has(body.method) ? readFetch : fetch;
+    const response = await rpcFetch(upstream, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1,
         method: body.method, params: body.params }),

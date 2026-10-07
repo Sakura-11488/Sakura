@@ -14,6 +14,18 @@ function splitPathAndQuery(path: string): { pathname: string; query?: Record<str
 
 export async function comicsProxyFetch<T>(path: string): Promise<T> {
   const { pathname, query } = splitPathAndQuery(path);
+  const id = query?.id || '';
+  if (((pathname === '/popular' || pathname === '/search') && (!query?.source || query.source === 'archive')) || id.startsWith('ia-')) {
+    const params = new URLSearchParams({ path: pathname, ...query });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 28_000);
+    try {
+      const response = await fetch(`/api/public-domain-comics?${params.toString()}`, { signal: controller.signal });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Comics are temporarily unavailable. Please try again.');
+      return data as T;
+    } finally { clearTimeout(timeout); }
+  }
   return invokeContentProxy<T>({
     source: 'comics',
     path: pathname,

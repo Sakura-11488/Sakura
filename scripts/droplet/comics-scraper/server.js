@@ -41,6 +41,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createUpstream, UpstreamError } from "./upstream.js";
 import { createComicBookPlus, isCbpId, CBP_REFERER } from "./comicbookplus.js";
+import { createInternetArchive, isArchiveId, fetchArchiveJson, ArchiveError } from "./internet-archive.js";
+import { createResponseCache } from "./response-cache.js";
 
 const PORT = Number(process.env.COMICS_SCRAPER_PORT || 3100);
 const UPSTREAM_BASE = process.env.COMICS_UPSTREAM_BASE || "https://xoxocomic.com";
@@ -73,7 +75,7 @@ const IMG_HOST_ALLOW = String(
     process.env.COMICS_IMG_HOSTS
     // comicbookplus.com covers box01.comicbookplus.com by suffix — both host
     // reader images, and which one an issue uses is not predictable.
-    || "xoxocomic.com,comicbookplus.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
+    || "xoxocomic.com,comicbookplus.com,archive.org,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
 )
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -111,6 +113,18 @@ const upstream = createUpstream({
     escalationBudget: Number(process.env.COMICS_ESCALATION_BUDGET || 8),
     escalationWindowMs: Number(process.env.COMICS_ESCALATION_WINDOW_MS || 10 * 60 * 1000),
     deadImageTtlMs: Number(process.env.COMICS_DEAD_IMAGE_TTL_MS || 30 * 60 * 1000),
+});
+
+// Independent circuit state: a blocked legacy source must not stop Archive
+// images. Public Archive traffic never uses a paid or challenge-solving proxy.
+const archiveImages = createUpstream({
+    upstreamBase: 'https://archive.org', directTimeoutMs: 12_000,
+    totalBudgetMs: 20_000, maxImageBytes: 8 * 1024 * 1024,
+});
+const archive = createInternetArchive({ fetchJson: fetchArchiveJson });
+const responseCache = createResponseCache({
+    directory: process.env.COMICS_RESPONSE_CACHE_DIR || path.join(process.cwd(), 'response-cache'),
+    maxEntries: CACHE_MAX,
 });
 
 // Persistent on-disk cache for image bytes. Bounds proxy credit usage to
@@ -248,29 +262,30 @@ const htmlCache = new LRUCache({
 // client that stored an id before this change keeps resolving to XOXO.
 //
 // The default only decides where a SOURCELESS request (/popular, /search) goes.
-// It is `cbp` because XOXO's reader is dead: browse still works there, so
-// defaulting to it would hand users a catalogue they cannot read. Flip
-// COMICS_DEFAULT_SOURCE back to `xoxo` the day their images return.
+// Archive's public IIIF reader is available while CBP challenges HTML requests.
+// Existing CBP and XOXO IDs still resolve to the source that issued them.
 // ---------------------------------------------------------------------------
-const DEFAULT_SOURCE = String(process.env.COMICS_DEFAULT_SOURCE || "cbp").toLowerCase();
+const DEFAULT_SOURCE = String(process.env.COMICS_DEFAULT_SOURCE || "archive").toLowerCase();
 
 const cbp = createComicBookPlus({
     upstream,
     htmlCache,
-    minGapMs: Number(process.env.COMICS_CBP_MIN_GAP_MS || 1000),
+    minGapMs: Math.max(5000, Number(process.env.COMICS_CBP_MIN_GAP_MS || 5000)),
 });
 
 /** Which source owns this id? `null` means the legacy XOXO path. */
 function sourceForId(id) {
+    if (isArchiveId(id)) return archive;
     return isCbpId(id) ? cbp : null;
 }
 
 /** Which source should a sourceless list request use? */
 function sourceForRequest(req) {
     const q = String(req.query.source || "").trim().toLowerCase();
+    if (q === 'archive') return archive;
     if (q === "cbp" || q === "comicbookplus") return cbp;
     if (q === "xoxo" || q === "xoxocomic") return null;
-    return DEFAULT_SOURCE === "cbp" ? cbp : null;
+    return DEFAULT_SOURCE === 'archive' ? archive : DEFAULT_SOURCE === "cbp" ? cbp : null;
 }
 
 /**
@@ -306,15 +321,17 @@ async function cacheWrap(key, producer, { shouldCache = () => true, ttlFor = () 
         if (shouldCache(value)) {
             const ttl = ttlFor(value);
             cache.set(key, value, ttl ? { ttl } : undefined);
+            if (!value?.readerBroken) await responseCache.set(key, value);
         }
         return value;
     } catch (err) {
         // Serving a stale entry beats erroring — especially on BUSY, which is
         // our own load shedding, and especially on /popular, whose failure the
         // client amplifies into four more searches.
-        const stale = cache.get(key, { allowStale: true });
+        const stale = cache.get(key, { allowStale: true }) ?? await responseCache.get(key);
         if (stale !== undefined) {
             console.warn(`[cache] serving stale ${key} after ${err?.code || "error"}`);
+            cache.set(key, stale, { ttl: 60_000 });
             return stale;
         }
         throw err;
@@ -706,9 +723,10 @@ async function loadImage(url, { allowProxy = true, probe = false, minBytes = 0, 
         // cache miss — fall through to the network
     }
 
-    const { buf, via, finalUrl } = await upstream.fetchImage(url, {
+    const archiveImage = new URL(url).hostname.endsWith('.archive.org') || new URL(url).hostname === 'archive.org';
+    const { buf, via, finalUrl } = await (archiveImage ? archiveImages : upstream).fetchImage(url, {
         isImage: isImageBuf,
-        allowProxy,
+        allowProxy: archiveImage ? false : allowProxy,
         probe,
         referer: refererForImage(url),
     });
@@ -770,7 +788,7 @@ function clampInt(value, { min, max, def }) {
 // user's screen. Log the detail, return a short stable message plus a
 // machine-readable code.
 const ERROR_TEXT = {
-    BLOCKED: "upstream is bot-challenging this server; backing off",
+    BLOCKED: "This comic source is temporarily unavailable. Try again later or choose a comic from Browse.",
     QUOTA: "upstream fallback is unavailable (proxy quota exhausted)",
     BUSY: "too many upstream requests in flight; retry shortly",
     TIMEOUT: "upstream timed out",
@@ -783,7 +801,7 @@ const ERROR_STATUS = {
 };
 
 function clientError(res, err, where) {
-    const code = err instanceof UpstreamError ? err.code : "INTERNAL";
+    const code = (err instanceof UpstreamError || err instanceof ArchiveError) ? err.code : "INTERNAL";
     console.error(`[${where}] ${code}: ${String(err?.message || err).slice(0, 300)}`);
     const body = { error: ERROR_TEXT[code] || "upstream unavailable", code };
     if (code === "BUSY") res.set("Retry-After", "2");
@@ -819,17 +837,19 @@ app.use((req, res, next) => {
  * template is never serialised — only booleans and counters.
  */
 app.get("/healthz", (_req, res) => {
-    const fetchStats = upstream.stats();
+    const fetchStats = DEFAULT_SOURCE === 'archive' ? archiveImages.stats() : upstream.stats();
     const pathUsable = fetchStats.mode === "direct"
         || (fetchStats.proxyConfigured && !fetchStats.proxyQuotaExhausted);
-    const healthy = pathUsable && fetchStats.consecutiveFailures < 3;
+    const healthy = pathUsable && fetchStats.consecutiveFailures < 3
+        && (DEFAULT_SOURCE !== 'archive' || archive.stats().consecutiveFailures < 3);
     res.status(healthy ? 200 : 503).json({
         ok: healthy,
-        upstream: UPSTREAM_BASE,
+        upstream: DEFAULT_SOURCE === 'archive' ? archive.base : UPSTREAM_BASE,
         defaultSource: DEFAULT_SOURCE,
         // Zero after a restart and until the first list request — the catalogue
         // is built lazily, so this is "has it been built", not "is it healthy".
         cbpCatalogSize: cbp.catalogSize(),
+        archive: archive.stats(),
         mode: fetchStats.mode,
         observedTraffic: fetchStats.requests > 0,
         cacheEntries: cache.size,
@@ -912,39 +932,40 @@ async function proveSamplePage(pages, checks) {
  * decides the verdict.
  */
 async function runReadinessCbp() {
+    const source = DEFAULT_SOURCE === 'archive' ? archive : cbp;
     const checks = {
-        source: "cbp",
+        source: source.id,
         listItems: 0, slug: null, title: null,
         chapters: 0, chapterId: null, pageUrls: 0, samplePage: null,
         pageImageOk: false, pageImageVia: null, pageImageReason: null,
     };
 
-    const list = await cbp.popular(24);
+    const list = await source.popular(24);
     checks.listItems = list.length;
     if (!list.length) return { ok: false, reason: "comicbookplus catalogue parsed 0 titles", checks };
 
     // Pinned, for the same reason COMICS_READY_SLUG is: a gate that follows
     // whatever leads the list today fails for reasons unrelated to the deploy.
     // Default is a 22-issue run whose reader was verified by hand on 2026-08-24.
-    const id = String(process.env.COMICS_READY_CBP_ID || "").trim() || list[0].id;
+    const id = source.id === 'archive' ? list[0].id : String(process.env.COMICS_READY_CBP_ID || "").trim() || list[0].id;
     checks.slug = id;
 
-    const detail = await cbp.details(id);
+    const detail = await source.details(id);
     if (!detail || !detail.title) return { ok: false, reason: "detail parse produced no title", checks };
     checks.title = detail.title;
 
-    const chapters = await cbp.chapters(id);
+    const chapters = await source.chapters(id);
     checks.chapters = chapters.length;
     if (!chapters.length) return { ok: false, reason: "0 issues parsed", checks };
 
     checks.chapterId = chapters[0].id;
-    const pages = await cbp.pages(id, chapters[0].id);
+    const pages = await source.pages(id, chapters[0].id);
     checks.pageUrls = pages.length;
     if (!pages.length) return { ok: false, reason: "0 page URLs parsed", checks };
 
     await proveSamplePage(pages, checks);
     if (!checks.pageImageOk) {
-        if (String(process.env.COMICS_READY_REQUIRE_IMAGE_CBP || "1") === "1") {
+        if (source.id === 'archive' || String(process.env.COMICS_READY_REQUIRE_IMAGE_CBP || "1") === "1") {
             return { ok: false, reason: `sampled page did not return live image bytes (${checks.pageImageReason})`, checks };
         }
         return { ok: true, degraded: true, mode: upstream.mode(), reason: "reader degraded", checks };
@@ -955,7 +976,7 @@ async function runReadinessCbp() {
 async function runReadiness() {
     // Gate on the source that actually answers users. Readiness that walks a
     // path the default no longer uses is a green light for the wrong thing.
-    if (DEFAULT_SOURCE === "cbp") return runReadinessCbp();
+    if (DEFAULT_SOURCE === "cbp" || DEFAULT_SOURCE === 'archive') return runReadinessCbp();
     const checks = {
         listItems: 0, slug: null, title: null,
         chapters: 0, chapterId: null, pageUrls: 0, samplePage: null,
@@ -1244,19 +1265,17 @@ app.get("/pages", async (req, res) => {
                 // broke: sampling only page 1 would certify a chapter where the
                 // other 188 pages are dead.
                 const candidates = [pages[0]];
-                if (pages.length > 2) candidates.push(pages[Math.floor(pages.length / 2)]);
-                let liveHits = 0;
+                if (pages.length > 1) candidates.push(pages[Math.floor(pages.length / 2)]);
                 let invalid = 0;
-                for (const candidate of candidates) {
+                await Promise.all(candidates.map(async (candidate) => {
                     try {
                         await loadImage(candidate, { allowProxy: false, minBytes: MIN_PAGE_IMAGE_BYTES });
-                        liveHits += 1;
                     } catch (err) {
                         if (err instanceof UpstreamError && err.code === "INVALID") invalid += 1;
-                        else return { pages, droppedCount: 0, totalDiscovered: pages.length, verified: false, soft: true };
+                        else throw err;
                     }
-                }
-                if (liveHits === 0 && invalid > 0) {
+                }));
+                if (invalid > 0) {
                     return {
                         pages: [], droppedCount: pages.length, totalDiscovered: pages.length,
                         verified: true, readerBroken: true,
@@ -1325,7 +1344,7 @@ app.get("/img", async (req, res) => {
         res.set("Access-Control-Allow-Origin", "*");
         res.status(200).end(buf);
     } catch (err) {
-        const code = err instanceof UpstreamError ? err.code : "INTERNAL";
+        const code = (err instanceof UpstreamError || err instanceof ArchiveError) ? err.code : "INTERNAL";
         // INVALID means "upstream gave us something that isn't an image" — a
         // genuinely dead image, so 404 keeps the client's <img> fallback simple.
         // Everything else is OUR side being unable to fetch, which must not be

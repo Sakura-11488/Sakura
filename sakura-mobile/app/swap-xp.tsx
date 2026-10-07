@@ -69,9 +69,8 @@ function ArrowDown({ color }: { color: string }) {
 
 function statusLabel(status: XpRedemption['status']): string {
   if (status === 'sent') return 'Delivered';
-  // 'failed' returns the XP, so say what the user got back rather than that
-  // something broke — from their side nothing was lost.
-  if (status === 'failed') return 'XP refunded';
+  // Historical failed rows can predate atomic refunds; do not imply delivery.
+  if (status === 'failed') return 'Swap failed';
   return 'Queued';
 }
 
@@ -88,6 +87,7 @@ export default function SwapXpScreen() {
   const [done, setDone] = useState<{ xp: number; sol: number } | null>(null);
   const [rate, setRate] = useState(XP_SOL_RATE);
   const [minXp, setMinXp] = useState(XP_REDEEM_MIN);
+  const [rewardsAvailable, setRewardsAvailable] = useState<boolean | null>(null);
 
   const totalEarned = state?.xp ?? 0;
   /**
@@ -108,7 +108,7 @@ export default function SwapXpScreen() {
   const alreadySwapped = Math.max(state?.xp_spent ?? 0, swappedFromHistory);
   const spendable = Math.max(0, totalEarned - alreadySwapped);
   const preview = previewSol(amount, rate);
-  const canSwap = connected && amount >= minXp && amount <= spendable && !busy;
+  const canSwap = connected && rewardsAvailable !== false && amount >= minXp && amount <= spendable && !busy;
 
   const refresh = useCallback(() => {
     if (!address) return;
@@ -131,9 +131,10 @@ export default function SwapXpScreen() {
       if (!keypair) return;
       await Promise.allSettled([
         fetchRedemptions(keypair).then(setHistory),
-        fetchRedemptionQuote(keypair).then((quote) => {
+        fetchRedemptionQuote(keypair, { includePaused: true }).then((quote) => {
           setRate(quote.rate);
           setMinXp(quote.min_xp);
+          setRewardsAvailable(quote.available);
         }),
       ]);
     } catch {
@@ -162,9 +163,11 @@ export default function SwapXpScreen() {
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) throw new Error('Could not unlock your wallet.');
-      const quote = await fetchRedemptionQuote(keypair);
+      const quote = await fetchRedemptionQuote(keypair, { includePaused: true });
       setRate(quote.rate);
       setMinXp(quote.min_xp);
+      setRewardsAvailable(quote.available);
+      if (!quote.available) throw new Error('SOL rewards are temporarily paused. Your XP has not been spent.');
       if (quote.rate !== rate || quote.min_xp !== minXp) {
         setError('The reward rate or minimum changed. Review the updated amount, then queue your swap.');
         return;
@@ -173,12 +176,17 @@ export default function SwapXpScreen() {
         // A deployment may change the rate between quote and submission. Never
         // retry spending XP automatically; update the preview for a new tap.
         try {
-          const latestQuote = await fetchRedemptionQuote(keypair);
+          const latestQuote = await fetchRedemptionQuote(keypair, { includePaused: true });
           setRate(latestQuote.rate);
           setMinXp(latestQuote.min_xp);
+          setRewardsAvailable(latestQuote.available);
         } catch {
           // Preserve the redemption error if the quote refresh also fails.
         }
+        // An interrupted response may still have committed the queue entry.
+        // Reload its balance/history before the reader chooses to try again.
+        refresh();
+        void loadSwapDetails();
         throw err;
       });
       setDone({ xp: result.xp_spent, sol: result.sol });
@@ -280,11 +288,13 @@ export default function SwapXpScreen() {
               promises no timeframe: swaps are settled by a separate process, so
               any "in N minutes" here would be a claim this screen cannot keep. */}
           <View style={s.notice}>
-            <Text style={s.noticeTitle}>Swaps are queued</Text>
+            <Text style={s.noticeTitle}>{rewardsAvailable === false ? 'SOL swaps are paused' : 'Swaps are queued'}</Text>
             <Text style={s.noticeBody}>
+              {rewardsAvailable === false ? 'Your XP stays available while SOL swaps are paused. Check back later.' : <>
               Your XP is spent as soon as you confirm, and native SOL is sent to this wallet once
               the swap is processed — not instantly. Track it under Recent swaps below. Minimum{' '}
               {minXp} XP.
+              </>}
             </Text>
           </View>
 
@@ -309,6 +319,8 @@ export default function SwapXpScreen() {
               <Text style={s.ctaText}>
                 {!connected
                   ? 'Connect your wallet'
+                  : rewardsAvailable === false
+                    ? 'SOL swaps paused'
                   : spendable < minXp
                     ? `Earn ${minXp} XP to swap`
                     : amount < minXp

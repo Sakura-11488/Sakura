@@ -514,6 +514,9 @@ export default function MangaDetail() {
   const [manga, setManga] = useState<MangaData | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [chaptersError, setChaptersError] = useState('');
+  const [reloadAttempt, setReloadAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState('');
@@ -532,32 +535,34 @@ export default function MangaDetail() {
   const scrollY = useSharedValue(0);
 
   useEffect(() => {
-    if (!mangaId) return;
+    if (!mangaId) { setLoading(false); return; }
+    let active = true;
+    setLoading(true);
+    setLoadError('');
+    setChaptersError('');
+    setManga(null);
+    setChapters([]);
     const detailFetch = adapter ? adapter.detail(mangaId) : fetchMangaDetail(mangaId);
     const chaptersFetch = adapter ? adapter.chapters(mangaId) : fetchMangaChapters(mangaId);
-    Promise.all([
+    Promise.allSettled([
       detailFetch,
       chaptersFetch,
-      // Adult titles are never saved to the library (shared 'manga' namespace +
-      // no source-aware library rows), so don't bother checking saved state.
       isAdult ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga'),
-    ]).then(([detail, chs, isSaved]) => {
-      setManga(detail);
-      setChapters(chs.sort((a, b) => a.number - b.number));
-      setSaved(isSaved);
-      // // Look up creator wallet by matching title in creator_works
-      // if (detail?.title) {
-      //   supabase
-      //     .from('creator_works')
-      //     .select('creator_wallet')
-      //     .eq('kind', 'manga')
-      //     .ilike('title', detail.title)
-      //     .eq('publication_status', 'published')
-      //     .maybeSingle()
-      //     .then(({ data }) => { if (data?.creator_wallet) setCreatorWallet(data.creator_wallet); });
-      // }
-    }).finally(() => setLoading(false));
-  }, [mangaId]);
+    ]).then(([detail, chapterResult, savedResult]) => {
+      if (!active) return;
+      if (detail.status === 'fulfilled') setManga(detail.value);
+      else setLoadError(adapter?.key === 'comics'
+        ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+        : 'Could not load this title. Please try again.');
+      if (chapterResult.status === 'fulfilled') setChapters([...chapterResult.value].sort((a, b) => a.number - b.number));
+      else setChaptersError(adapter?.key === 'comics'
+        ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+        : 'Could not load chapters. Please try again.');
+      setSaved(savedResult.status === 'fulfilled' && savedResult.value);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [mangaId, adapter, isAdult, reloadAttempt]);
 
   const refreshOffline = useCallback(() => {
     if (!mangaId) return;
@@ -1082,11 +1087,16 @@ export default function MangaDetail() {
         onDownload={handleDownloadChapter}
         onOpen={openMangaChapter}
         isResume={canContinueManga && ch.id === resumeChapterId}
-        // Only scraped sources can be exported on web. cdn.atsu.moe sends no
-        // Access-Control-Allow-Origin and 403s the preflight, so reading works
-        // (an <img> needs no CORS) but fetching the bytes never can. Showing a
-        // button that can only ever produce "Failed to fetch" is worse than
-        // showing none.
+        // Only scraped sources can be exported on web. cdn.atsu.moe sends no
+
+        // Access-Control-Allow-Origin and 403s the preflight, so reading works
+
+        // (an <img> needs no CORS) but fetching the bytes never can. Showing a
+
+        // button that can only ever produce "Failed to fetch" is worse than
+
+        // showing none.
+
         hideDownload={Platform.OS === 'web' && !adapter}
         disableThumbFetch={isExternal}
         locked={gatedChapterIds.has(ch.id)}
@@ -1139,7 +1149,17 @@ export default function MangaDetail() {
         >
           <BackIcon />
         </TouchableOpacity>
-        <Text style={{ color: colors.textSecondary, fontSize: FontSize.md }}>Could not load manga</Text>
+        <Text style={{ color: colors.textSecondary, fontSize: FontSize.md, textAlign: 'center', paddingHorizontal: 24 }}>
+          {loadError || 'Could not load this title. Please try again.'}
+        </Text>
+        <TouchableOpacity accessibilityRole="button" onPress={() => setReloadAttempt((value) => value + 1)} style={{ padding: 16 }}>
+          <Text style={{ color: colors.primary, fontWeight: '700' }}>Try again</Text>
+        </TouchableOpacity>
+        {adapter?.key === 'comics' && (
+          <TouchableOpacity accessibilityRole="button" onPress={() => router.push('/browse')} style={{ padding: 12 }}>
+            <Text style={{ color: colors.primary }}>Browse comics</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
@@ -1317,6 +1337,19 @@ export default function MangaDetail() {
           )} */}
 
           {/* Chapter list */}
+          {chaptersError ? (
+            <View style={{ paddingVertical: 18, gap: 12 }}>
+              <Text accessibilityRole="alert" style={{ color: colors.textSecondary }}>{chaptersError}</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={() => setReloadAttempt((value) => value + 1)} style={{ paddingVertical: 8 }}>
+                <Text style={{ color: colors.primary, fontWeight: '700' }}>Retry chapters</Text>
+              </TouchableOpacity>
+              {adapter?.key === 'comics' && (
+                <TouchableOpacity accessibilityRole="button" onPress={() => router.push('/browse')} style={{ paddingVertical: 8 }}>
+                  <Text style={{ color: colors.primary }}>Browse comics</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : null}
           {chapters.length > 0 && (
             <View style={s.chaptersSection}>
               <View style={s.secHeader}>
@@ -1412,7 +1445,8 @@ export default function MangaDetail() {
       <Toast
         message={toast}
         visible={!!toast}
-        onHide={() => { setToast(''); setToastDuration(undefined); }}
+        onHide={() => { setToast(''); setToastDuration(undefined); }}
+
         durationMs={toastDuration}
         bottomOffset={insets.bottom + (playChapter ? 88 : 20)}
       />

@@ -39,6 +39,7 @@ import {
   fetchPopularNovels,
   searchNovels,
   enhanceCovers,
+  mergeNovelCovers,
   ALLNOVEL_GENRES,
   type AllNovelItem,
 } from '@/lib/allnovel';
@@ -614,6 +615,13 @@ export default function NovelScreen() {
   const [activeGenre, setActiveGenre] = useState('');
   const [genreResults, setGenreResults] = useState<AllNovelItem[]>([]);
   const [genreLoading, setGenreLoading] = useState(false);
+  const catalogueRequest = useRef(0);
+  const genreRequest = useRef(0);
+
+  useEffect(() => () => {
+    catalogueRequest.current++;
+    genreRequest.current++;
+  }, []);
 
   // Recent searches
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
@@ -642,16 +650,26 @@ export default function NovelScreen() {
   );
 
   const loadNovels = useCallback(async (showRefresh = false) => {
+    const request = ++catalogueRequest.current;
+    setLoadingMore(false);
     if (!showRefresh) setLoading(true);
     try {
       const items = await fetchPopularNovels(1);
+      if (request !== catalogueRequest.current) return;
       setNovels(items);
       setPage(1);
-      const enhanced = await enhanceCovers(items);
-      setNovels(enhanced);
-    } catch {}
-    setLoading(false);
-    setRefreshing(false);
+      // Readers can open the list immediately, using its original covers.
+      void enhanceCovers(items).then((enhanced) => {
+        if (request === catalogueRequest.current) setNovels((current) => mergeNovelCovers(current, enhanced));
+      }).catch(() => undefined);
+    } catch {
+      // Keep the existing list if a refresh fails.
+    } finally {
+      if (request === catalogueRequest.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
   }, []);
 
   const onRefresh = useCallback(() => {
@@ -664,33 +682,42 @@ export default function NovelScreen() {
 
   // Debounced search
   useEffect(() => {
-    if (!debouncedSearch.trim()) { setSearchResults([]); return; }
+    let active = true;
+    if (!debouncedSearch.trim()) { setSearchResults([]); setSearchLoading(false); return; }
     setSearchLoading(true);
     searchNovels(debouncedSearch, 1)
-      .then(async (items) => {
+      .then((items) => {
+        if (!active) return;
         setSearchResults(items);
         setSearchLoading(false);
         if (debouncedSearch.trim().length >= 2) saveRecentSearch(debouncedSearch);
-        const enhanced = await enhanceCovers(items);
-        setSearchResults(enhanced);
+        void enhanceCovers(items).then((enhanced) => {
+          if (active) setSearchResults((current) => mergeNovelCovers(current, enhanced));
+        }).catch(() => undefined);
       })
-      .catch(() => setSearchLoading(false));
+      .catch(() => { if (active) setSearchLoading(false); });
+    return () => { active = false; };
   }, [debouncedSearch]);
 
   // Genre filter
   const handleGenreSelect = useCallback(async (genreValue: string) => {
+    const request = ++genreRequest.current;
     setActiveGenre(genreValue);
     setSearch('');
-    if (!genreValue) { setGenreResults([]); return; }
+    setPage(1);
+    setLoadingMore(false);
+    if (!genreValue) { setGenreResults([]); setGenreLoading(false); return; }
     setGenreLoading(true);
     fetchPopularNovels(1, { genre: genreValue })
-      .then(async (items) => {
+      .then((items) => {
+        if (request !== genreRequest.current) return;
         setGenreResults(items);
         setGenreLoading(false);
-        const enhanced = await enhanceCovers(items);
-        setGenreResults(enhanced);
+        void enhanceCovers(items).then((enhanced) => {
+          if (request === genreRequest.current) setGenreResults((current) => mergeNovelCovers(current, enhanced));
+        }).catch(() => undefined);
       })
-      .catch(() => setGenreLoading(false));
+      .catch(() => { if (request === genreRequest.current) setGenreLoading(false); });
   }, []);
 
   // Load more
@@ -698,19 +725,21 @@ export default function NovelScreen() {
     if (loadingMore) return;
     setLoadingMore(true);
     const next = page + 1;
+    const genreVersion = genreRequest.current;
+    const catalogueVersion = catalogueRequest.current;
+    const currentRequest = () => genreVersion === genreRequest.current && catalogueVersion === catalogueRequest.current;
     fetchPopularNovels(next, activeGenre ? { genre: activeGenre } : undefined)
-      .then(async (more) => {
+      .then((more) => {
+        if (!currentRequest()) return;
         const target = activeGenre ? setGenreResults : setNovels;
         target((prev) => [...prev, ...more]);
         setPage(next);
         setLoadingMore(false);
-        const enhanced = await enhanceCovers(more);
-        target((prev) => {
-          const base = prev.slice(0, prev.length - more.length);
-          return [...base, ...enhanced];
-        });
+        void enhanceCovers(more).then((enhanced) => {
+          if (currentRequest()) target((prev) => mergeNovelCovers(prev, enhanced));
+        }).catch(() => undefined);
       })
-      .catch(() => setLoadingMore(false));
+      .catch(() => { if (currentRequest()) setLoadingMore(false); });
   }, [page, loadingMore, activeGenre]);
 
   // Recent search helpers

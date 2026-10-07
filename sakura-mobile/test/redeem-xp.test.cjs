@@ -51,32 +51,27 @@ function signedHeaders(action = 'redeem-xp', timestamp = Math.floor(Date.now() /
 
 function endpoint(options = {}) {
   const calls = { queries: [], rpcs: [] };
-  const env = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'test-only', ...options.env };
+  const env = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'test-only', XP_SOL_REDEMPTIONS_ENABLED: 'true', ...options.env };
   const supabase = {
     from(table) {
       assert.equal(table, 'xp_redemptions');
       const query = { filters: [] };
       calls.queries.push(query);
       const result = () => {
-        if (query.insert) return options.insertResult ?? { data: { id: 'new-redemption', created_at: '2026-09-27T12:00:00Z' }, error: null };
-        if (query.selectionOptions?.head) return options.pendingResult ?? { count: 0, error: null };
         return options.historyResult ?? { data: [], error: null };
       };
       const builder = {
         select(columns, selectionOptions) { query.columns = columns; query.selectionOptions = selectionOptions; return builder; },
         eq(column, value) { query.filters.push([column, value]); return builder; },
-        in(column, values) { query.filters.push([column, Array.from(values)]); return builder; },
         order(column, orderOptions) { query.order = [column, orderOptions.ascending]; return builder; },
         limit(limit) { query.limit = limit; return builder; },
-        insert(row) { query.insert = JSON.parse(JSON.stringify(row)); return builder; },
-        single() { return Promise.resolve(result()); },
         then(resolve, reject) { return Promise.resolve(result()).then(resolve, reject); },
       };
       return builder;
     },
     async rpc(name, args) {
       calls.rpcs.push({ name, args: JSON.parse(JSON.stringify(args)) });
-      return options.debitResult ?? { data: [{ remaining_xp: 4000 }], error: null };
+      return options.queueResult ?? { data: [{ id: 'new-redemption', remaining_xp: 4000, queued_at: '2026-09-27T12:00:00Z' }], error: null };
     },
   };
   let handler;
@@ -104,18 +99,16 @@ test('a signed 1,000 XP swap queues exactly 0.00312 native SOL', async () => {
     ok: true, id: 'new-redemption', xp_spent: 1000, payout_asset: 'SOL', sol: 0.00312,
     sol_lamports: 3120000, rate, status: 'pending', remaining_xp: 4000, queued_at: '2026-09-27T12:00:00Z',
   });
-  assert.deepEqual(app.calls.rpcs, [{ name: 'debit_xp_for_redemption', args: { p_wallet: wallet, p_xp: 1000 } }]);
-  assert.deepEqual(app.calls.queries[1].insert, {
-    wallet_address: wallet, xp_spent: 1000, payout_asset: 'SOL', sol_lamports: 3120000,
-    sakura_amount: null, rate, status: 'pending',
-  });
-  assert.deepEqual(app.calls.queries[0].filters, [['wallet_address', wallet], ['status', ['pending', 'processing']]]);
+  assert.deepEqual(app.calls.rpcs, [{ name: 'queue_sol_xp_redemption', args: {
+    p_wallet: wallet, p_xp: 1000, p_sol_lamports: 3120000, p_rate: rate,
+  } }]);
+  assert.deepEqual(app.calls.queries, []);
 });
 
 test('signed quotes expose the SOL rate and minimum without spending XP', async () => {
   const app = endpoint({ env: { XP_SAKURA_RATE: '3.19' } });
   assert.deepEqual(await app.request({ quote: true }), {
-    status: 200, body: { ok: true, payout_asset: 'SOL', rate, min_xp: 100 },
+    status: 200, body: { ok: true, payout_asset: 'SOL', rate, min_xp: 100, available: true },
   });
   assert.deepEqual(app.calls, { queries: [], rpcs: [] });
 });
@@ -169,32 +162,34 @@ test('invalid configured SOL rates fail closed before debit', async (t) => {
   }
 });
 
-test('pending lookup failures and full queues do not spend XP', async (t) => {
-  for (const [pendingResult, status] of [[{ count: null, error: { message: 'database unavailable' } }, 503], [{ count: 3, error: null }, 429]]) {
+test('atomic queue business errors return the appropriate user response', async (t) => {
+  for (const [message, status] of [['XP_QUEUE_FULL', 429], ['XP_INSUFFICIENT', 400]]) {
     await t.test(String(status), async () => {
-      const app = endpoint({ pendingResult });
+      const app = endpoint({ queueResult: { data: null, error: { code: 'P0001', message } } });
       assert.equal((await app.request()).status, status);
-      assert.equal(app.calls.rpcs.length, 0);
-      assert.equal(app.calls.queries.length, 1);
-    });
-  }
-});
-
-test('insufficient XP and debit failures never insert a redemption', async (t) => {
-  for (const [debitResult, status] of [[{ data: [], error: null }, 400], [{ data: null, error: { message: 'unavailable' } }, 500]]) {
-    await t.test(String(status), async () => {
-      const app = endpoint({ debitResult });
-      assert.equal((await app.request()).status, status);
-      assert.equal(app.calls.queries.length, 1);
       assert.equal(app.calls.rpcs.length, 1);
+      assert.equal(app.calls.queries.length, 0);
     });
   }
 });
 
-test('a failed queue insert requests an XP refund', async () => {
-  const app = endpoint({ insertResult: { data: null, error: { message: 'insert failed' } } });
-  assert.equal((await app.request()).status, 500);
-  assert.deepEqual(app.calls.rpcs.map((call) => call.args.p_xp), [1000, -1000]);
+test('ambiguous or failed queue responses never compensate with an unsafe XP refund', async (t) => {
+  for (const queueResult of [
+    { data: [], error: null },
+    { data: null, error: { message: 'response lost after commit' } },
+    { data: [{ id: 'partial-response' }], error: null },
+  ]) {
+    await t.test(JSON.stringify(queueResult), async () => {
+      const app = endpoint({ queueResult });
+      const response = await app.request();
+      assert.equal(response.status, 503);
+      assert.match(response.body.error, /Check your swap history/);
+      assert.equal(app.calls.queries.length, 0);
+      assert.equal(app.calls.rpcs.length, 1);
+      assert.equal(app.calls.rpcs[0].name, 'queue_sol_xp_redemption');
+      assert.equal(app.calls.rpcs[0].args.p_xp, 1000);
+    });
+  }
 });
 
 test('history retains original SAKURA amounts alongside native SOL amounts', async () => {
@@ -223,3 +218,14 @@ test('invalid request bodies and unsupported methods do not debit XP', async () 
   assert.equal((await app.request(undefined, {}, 'OPTIONS')).status, 200);
   assert.deepEqual(app.calls, { queries: [], rpcs: [] });
 });
+
+for (const enabled of [undefined, 'false', 'TRUE']) {
+  test(`paused or unset redemption flag (${enabled}) never spends XP`, async () => {
+    const app = endpoint({ env: { XP_SOL_REDEMPTIONS_ENABLED: enabled } });
+    const quote = await app.request({ quote: true });
+    assert.equal(quote.body.available, false);
+    assert.equal((await app.request()).status, 503);
+    assert.deepEqual(app.calls, { queries: [], rpcs: [] });
+    assert.equal((await app.request({ history: true })).status, 200);
+  });
+}

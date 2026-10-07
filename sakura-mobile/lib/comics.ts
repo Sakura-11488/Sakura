@@ -7,7 +7,7 @@ import { getWebMediaProxyUrl } from '@/lib/content-proxy-client';
 import { COMICS_PROXY_DEFAULT } from '@/lib/content-hosts';
 
 /**
- * Sakura Comics source (XOXO Comics-backed) for the Expo app.
+ * Sakura Comics sources for the Expo app.
  *
  * Mirrors the data shapes returned by `lib/manga.ts` (atsu.moe) so the shared
  * manga detail screen and chapter reader can render comics by passing
@@ -67,6 +67,15 @@ export function proxyComicImage(url?: string | null): string {
   // Normalize protocol-relative (//host/…) URLs to https before wrapping.
   const abs = url.startsWith('//') ? `https:${url}` : url;
   if (!/^https?:\/\//i.test(abs)) return url;
+  // Internet Archive exposes public HTTPS images; using them directly keeps
+  // the web reader independent of the legacy droplet's host allowlist.
+  try {
+    const target = new URL(abs);
+    if (target.protocol === 'https:' && (
+      (target.hostname === 'archive.org' && target.pathname.startsWith('/services/img/')) ||
+      (target.hostname === 'iiif.archive.org' && target.pathname.startsWith('/image/iiif/'))
+    )) return abs;
+  } catch { /* Continue through the existing comic image proxy. */ }
   const proxied = abs.startsWith(`${COMICS_PROXY_BASE}/img?`)
     ? abs
     : `${COMICS_PROXY_BASE}/img?u=${encodeURIComponent(abs)}`;
@@ -90,33 +99,10 @@ export async function fetchTrendingComics(limit = 24): Promise<ContentItem[]> {
     `comics:trending:${limit}`,
     5 * 60 * 1000,
     async () => {
-      try {
-        const data = await requestProxy<ProxyListResponse>(`/popular?limit=${limit}`);
-        const items = data.items || data.results || [];
-        if (items.length > 0) return items.map(mapListItem);
-      } catch {
-        // fall through to keyword fallback below
-      }
-      const fallbackQueries = ['batman', 'spider-man', 'superman', 'x-men'];
-      const collected: ContentItem[] = [];
-      const seen = new Set<string>();
-      for (const q of fallbackQueries) {
-        try {
-          const data = await requestProxy<ProxyListResponse>(
-            `/search?q=${encodeURIComponent(q)}&limit=${Math.ceil(limit / 2)}&offset=0`,
-          );
-          const items = (data.items || data.results || []).map(mapListItem);
-          for (const item of items) {
-            if (seen.has(item.id)) continue;
-            seen.add(item.id);
-            collected.push(item);
-            if (collected.length >= limit) return collected;
-          }
-        } catch {
-          // ignore individual fallback failures
-        }
-      }
-      return collected;
+      const data = await requestProxy<ProxyListResponse>(`/popular?limit=${limit}`);
+      const items = data.items || data.results || [];
+      if (!items.length) throw new Error('Comics are temporarily unavailable. Please try again.');
+      return items.map(mapListItem);
     },
     { staleIfError: true },
   );
@@ -142,30 +128,26 @@ export async function fetchComicDetail(id: string): Promise<MangaDetail | null> 
     `comics:detail:${id}`,
     30 * 60 * 1000,
     async () => {
-      try {
-        const params = new URLSearchParams({ id });
-        const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
-        const detail =
-          (data as { comic?: ProxyDetail }).comic ||
-          (data as { manga?: ProxyDetail }).manga ||
-          (data as ProxyDetail);
-        if (!detail || !detail.id) return null;
-        const authors =
-          Array.isArray(detail.authors) && detail.authors.length
-            ? detail.authors.join(', ')
-            : detail.author || '';
-        return {
-          id: detail.id,
-          title: detail.title || detail.id,
-          cover: proxyComicImage(detail.cover),
-          description: detail.description || '',
-          genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
-          status: detail.status || '',
-          type: authors ? `Comic · ${authors}` : 'Comic',
-        };
-      } catch {
-        return null;
-      }
+      const params = new URLSearchParams({ id });
+      const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
+      const detail =
+        (data as { comic?: ProxyDetail }).comic ||
+        (data as { manga?: ProxyDetail }).manga ||
+        (data as ProxyDetail);
+      if (!detail || !detail.id) return null;
+      const authors =
+        Array.isArray(detail.authors) && detail.authors.length
+          ? detail.authors.join(', ')
+          : detail.author || '';
+      return {
+        id: detail.id,
+        title: detail.title || detail.id,
+        cover: proxyComicImage(detail.cover),
+        description: detail.description || '',
+        genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
+        status: detail.status || '',
+        type: authors ? `Comic · ${authors}` : 'Comic',
+      };
     },
     { staleIfError: true },
   );
@@ -176,23 +158,19 @@ export async function fetchComicChapters(id: string): Promise<MangaChapter[]> {
     `comics:chapters:${id}`,
     15 * 60 * 1000,
     async () => {
-      try {
-        const params = new URLSearchParams({ id, limit: '500', offset: '0' });
-        const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
-        const chapters = data.issues || data.chapters || [];
-        return chapters.map((c, idx) => {
-          const num = c.number != null ? Number(c.number) : chapters.length - idx;
-          return {
-            id: c.id,
-            number: Number.isFinite(num) ? num : chapters.length - idx,
-            title: c.title || (c.number != null ? `Issue ${c.number}` : c.id),
-            pageCount: c.pages || 0,
-            createdAt: c.publishAt || '',
-          } as MangaChapter;
-        });
-      } catch {
-        return [];
-      }
+      const params = new URLSearchParams({ id, limit: '500', offset: '0' });
+      const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
+      const chapters = data.issues || data.chapters || [];
+      return chapters.map((c, idx) => {
+        const num = c.number != null ? Number(c.number) : chapters.length - idx;
+        return {
+          id: c.id,
+          number: Number.isFinite(num) ? num : chapters.length - idx,
+          title: c.title || (c.number != null ? `Issue ${c.number}` : c.id),
+          pageCount: c.pages || 0,
+          createdAt: c.publishAt || '',
+        } as MangaChapter;
+      });
     },
     { staleIfError: true },
   );

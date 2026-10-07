@@ -26,7 +26,7 @@ async function extract(embedUrl, referer) {
     try {
       console.log("[extract] Trying MegaCloud extractor for: " + embedUrl);
       var result = await megacloud.extractM3u8(embedUrl);
-      if (result && result.sources && result.sources.length > 0) return result;
+      if (result && ((result.sources && result.sources.length > 0) || result.embedUrl)) return result;
       errors.push("MegaCloud: empty sources");
     } catch (error) {
       console.warn("[extract] MegaCloud failed: " + error.message);
@@ -38,7 +38,7 @@ async function extract(embedUrl, referer) {
     try {
       console.log("[extract] Trying Megaplay extractor for: " + embedUrl);
       var result = await megaplay.extractM3u8(embedUrl);
-      if (result && result.sources && result.sources.length > 0) return result;
+      if (result && ((result.sources && result.sources.length > 0) || result.embedUrl)) return result;
       errors.push("Megaplay: empty sources");
     } catch (error) {
       console.warn("[extract] Megaplay failed: " + error.message);
@@ -50,7 +50,7 @@ async function extract(embedUrl, referer) {
     try {
       console.log("[extract] Trying Kwik extractor for: " + embedUrl);
       var result = await kwik.extractM3u8(embedUrl, referer);
-      if (result && result.sources && result.sources.length > 0) return result;
+      if (result && ((result.sources && result.sources.length > 0) || result.embedUrl)) return result;
       errors.push("Kwik: empty sources");
     } catch (error) {
       console.warn("[extract] Kwik failed: " + error.message);

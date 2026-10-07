@@ -106,3 +106,4 @@ scripts/droplet/*/image-proxy-template*.txt
 scripts/droplet/*/proxy-url*.txt
 scripts/droplet/*/debug-token.txt
 scripts/droplet/*/img-cache/
+scripts/droplet/*/response-cache/

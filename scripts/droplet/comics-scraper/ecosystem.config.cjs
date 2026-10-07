@@ -49,21 +49,15 @@ module.exports = {
                 COMICS_SCRAPER_PORT: "3100",
                 COMICS_UPSTREAM_BASE: "https://xoxocomic.com",
 
-                // Which source answers a SOURCELESS /popular and /search.
-                // `cbp` (Comic Book Plus) because xoxocomic's reader died in
-                // 2026-08: it still browses, so defaulting there would hand
-                // users a catalogue they cannot open. Ids are namespaced
-                // (`cbp-1325` vs the XOXO slug `invincible`), so /details,
-                // /chapters and /pages route by id and ignore this — an id
-                // stored by a client before the switch still resolves to XOXO.
-                // Set to "xoxo" the day their page images come back.
-                COMICS_DEFAULT_SOURCE: "cbp",
+                // Public Archive IIIF now serves the default classic-comics
+                // catalogue. Existing cbp-* IDs stay on their original source.
+                COMICS_DEFAULT_SOURCE: "archive",
                 // comicbookplus.com/robots.txt asks every unnamed agent for
                 // Crawl-delay: 5. Page fetches are the crawl-shaped ones and are
                 // serialised behind this floor; reader images are ordinary
                 // traffic and go through the normal concurrency, once each,
                 // straight into the disk cache.
-                COMICS_CBP_MIN_GAP_MS: "1000",
+                COMICS_CBP_MIN_GAP_MS: "5000",
 
                 // Entry ceiling AND a byte bound. A 36-item list entry is ~13.7 KB
                 // and a /pages entry ~17.7 KB, so 1000 entries alone is 14-18 MB
@@ -152,7 +146,7 @@ module.exports = {
                 // comicbookplus.com covers box01.comicbookplus.com by suffix.
                 // Both serve reader images and which host an issue uses is not
                 // predictable from its id, so neither can be dropped.
-                COMICS_IMG_HOSTS: "xoxocomic.com,comicbookplus.com,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
+                COMICS_IMG_HOSTS: "xoxocomic.com,comicbookplus.com,archive.org,bp.blogspot.com,blogspot.com,blogger.googleusercontent.com",
 
                 COMICS_READY_TTL_MS: "60000",
                 COMICS_READY_FAIL_TTL_MS: "10000",

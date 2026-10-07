@@ -20,7 +20,9 @@ row's recorded currency. No historical rewards are repriced.
 1. Pause the payout schedule and let any running old processor finish. Check
    in-flight transactions before replacing the processor.
 2. Apply `20260927122023_xp_sol_rewards.sql` to the database that already has
-   `xp_redemptions`. This is an additive migration; it is not a database reset.
+   `xp_redemptions`, then apply `20261007211316_atomic_sol_xp_redemption.sql`.
+   The second migration installs atomic queue and refund operations. These
+   migrations preserve existing promises; they are not a database reset.
 3. Configure `SOL_PAYOUT_SECRET` on the payout processor with the intended SOL
    treasury key (base58 or a JSON secret-key byte array). Fund that address with
    enough SOL for rewards and transaction fees. Keep `SAKURA_PAYOUT_SECRET` and
@@ -32,7 +34,13 @@ row's recorded currency. No historical rewards are repriced.
 5. Deploy `redeem-xp`, then release the mobile app / rebuild the shared Expo web
    app. Older clients can read history but cannot submit a SAKURA-priced swap to
    the SOL endpoint.
-6. Resume the payout schedule after the SOL treasury and release are ready.
+6. Resume the payout schedule after the SOL treasury and release are ready,
+   then set `XP_SOL_REDEMPTIONS_ENABLED=true`. This flag defaults to paused,
+   keeps quotes/history readable, and rejects new swaps without spending XP.
+   Set it to `false` before treasury maintenance or if funding runs low.
+
+Insufficient treasury funds leave existing rewards pending without discarding
+the recorded promise or refunding/redebitting XP on each scheduled run.
 
 Do not roll back to the old processor while SOL rows exist: it only understands
 `sakura_amount`. Stop new requests and drain/reconcile the SOL queue using this
@@ -63,3 +71,20 @@ table schema. It is explicitly skipped unless `PGLITE_MODULE_PATH` is set:
 npm install --prefix /tmp/sakura-sol-validation --no-audit --no-fund @electric-sql/pglite
 PGLITE_MODULE_PATH=/tmp/sakura-sol-validation/node_modules/@electric-sql/pglite node --test sakura-mobile/test/*.test.*
 ```
+
+## October 7 verification and remaining operations
+
+The web app now resolves the current provider player, bounds anime metadata
+requests, displays novel lists without waiting for optional covers, and uses
+readable public-domain comics. Manga image denial is surfaced with per-page
+retry controls. The native scraper services still require deployment on the
+media host once SSH access is restored.
+
+The settlement schedule and new SOL swaps remain paused until an operator
+configures `SOL_PAYOUT_SECRET`, funds it, and restores a working transaction
+RPC. Wallet display reads can fall back to the matching public Solana cluster;
+transaction submission does not automatically switch providers.
+
+Never automatically replay a signed payout merely because it is old or missing
+from one RPC response. Unknown signatures remain in processing for chain
+reconciliation. Queue reservation and failure refunds are transactional.

@@ -68,9 +68,17 @@ function harness(options = {}) {
     from(name) { assert.equal(name, 'xp_redemptions'); return new Query(); },
     async rpc(name, args) {
       if (name === 'xp_payout_gate_secret') return { data: null, error: null };
-      assert.equal(name, 'debit_xp_for_redemption');
-      refunds.push(args);
-      return { data: null, error: null };
+      assert.equal(name, 'fail_xp_redemption');
+      options.beforeRefund?.(args, rows);
+      if (options.refundFails) return { data: null, error: { message: 'refund transaction failed' } };
+      const row = rows.find((candidate) => candidate.id === args.p_id && candidate.status === 'processing'
+        && candidate.tx_signature === args.p_expected_signature);
+      if (!row) return { data: false, error: null };
+      Object.assign(row, { status: 'failed', error: args.p_reason });
+      events.push({ type: 'update', id: row.id, status: 'failed' });
+      refunds.push({ p_wallet: row.wallet_address, p_xp: -row.xp_spent });
+      if (options.refundResponseLost) return { data: null, error: { message: 'refund response lost after commit' } };
+      return { data: true, error: null };
     },
   };
   class Connection {
@@ -157,10 +165,10 @@ test('SOL balance must cover the entire reward plus the estimated fee', async ()
   const h = harness({ balance: 316999, rows: [redemption(), redemption({ id: 'reward-2' })] });
   await h.run();
   assert.equal(h.wires.length, 0);
-  assert.equal(h.rows[0].status, 'failed');
+  assert.equal(h.rows[0].status, 'pending');
   assert.equal(h.rows[1].status, 'pending');
-  assert.equal(h.refunds.length, 1);
-  assert.equal(h.refunds[0].p_xp, -100);
+  assert.equal(h.refunds.length, 0);
+  assert.match(h.rows[0].error, /balance too low/);
 });
 
 test('unknown fee prevents a transfer', async () => {
@@ -210,6 +218,37 @@ test('confirmed signatures reconcile without either treasury key or token access
   assert.deepEqual(h.events.map((e) => e.type), ['reconcile', 'update']);
 });
 
+for (const [name, value] of [
+  ['unknown', null],
+  ['processed successfully', { confirmationStatus: 'processed', err: null }],
+  ['processed with an error', { confirmationStatus: 'processed', err: { InstructionError: [0, 'Failure'] } }],
+]) {
+  test(`an old signed transaction that is ${name} is never repaid or refunded`, async () => {
+    const h = harness({
+      rows: [redemption({ status: 'processing', tx_signature: 'original-signature', updated_at: new Date(Date.now() - 3600000).toISOString() })],
+      signatureStatus: { value },
+    });
+    const response = await h.run();
+    assert.equal(h.rows[0].status, 'processing');
+    assert.equal(h.rows[0].tx_signature, 'original-signature');
+    assert.equal(h.wires.length, 0);
+    assert.equal(h.refunds.length, 0);
+    assert.equal(response.body.results[0].status, 'inflight');
+  });
+}
+
+test('an abandoned unsigned claim can safely return to the pending queue', async () => {
+  const h = harness({
+    env: { SOL_PAYOUT_SECRET: undefined },
+    rows: [redemption({ status: 'processing', updated_at: new Date(Date.now() - 3600000).toISOString() })],
+  });
+  await h.run();
+  assert.equal(h.rows[0].status, 'pending');
+  assert.equal(h.rows[0].tx_signature, null);
+  assert.equal(h.wires.length, 0);
+  assert.equal(h.refunds.length, 0);
+});
+
 test('ambiguous broadcast failure keeps the signature and never refunds XP', async () => {
   const h = harness({ sendFails: true });
   await h.run();
@@ -233,6 +272,45 @@ test('confirmed on-chain failure refunds XP once', async () => {
   assert.equal(h.refunds.length, 1);
   await h.run();
   assert.equal(h.refunds.length, 1);
+});
+
+test('failed refund transactions leave processing intact and report pending repair', async () => {
+  const h = harness({
+    refundFails: true, env: { SOL_PAYOUT_SECRET: undefined },
+    rows: [redemption({ status: 'processing', tx_signature: 'failed-signature' })],
+    signatureStatus: { value: { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Failure'] } } },
+  });
+  const response = await h.run();
+  assert.equal(h.rows[0].status, 'processing');
+  assert.equal(h.rows[0].tx_signature, 'failed-signature');
+  assert.equal(h.refunds.length, 0);
+  assert.equal(h.wires.length, 0);
+  assert.equal(response.body.results[0].status, 'refund-pending');
+});
+
+test('a lost refund response cannot cause another refund or payment on retry', async () => {
+  const h = harness({
+    refundResponseLost: true, env: { SOL_PAYOUT_SECRET: undefined },
+    rows: [redemption({ status: 'processing', tx_signature: 'failed-signature' })],
+    signatureStatus: { value: { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Failure'] } } },
+  });
+  await h.run();
+  await h.run();
+  assert.equal(h.rows[0].status, 'failed');
+  assert.equal(h.refunds.length, 1);
+  assert.equal(h.wires.length, 0);
+});
+
+test('concurrent reconciliation attempts refund a failed signature only once', async () => {
+  const h = harness({
+    env: { SOL_PAYOUT_SECRET: undefined },
+    rows: [redemption({ status: 'processing', tx_signature: 'failed-signature' })],
+    signatureStatus: { value: { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Failure'] } } },
+  });
+  await Promise.all([h.run(), h.run()]);
+  assert.equal(h.rows[0].status, 'failed');
+  assert.equal(h.refunds.length, 1);
+  assert.equal(h.wires.length, 0);
 });
 
 test('legacy SAKURA rows retain Token-2022 transfer amounts and treasury key', async () => {
@@ -292,8 +370,8 @@ test('stale reconciliation cannot refund a row with a newer signature', async ()
     env: { SOL_PAYOUT_SECRET: undefined },
     rows: [redemption({ status: 'processing', tx_signature: 'old-signature' })],
     signatureStatus: { value: { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Failure'] } } },
-    beforeQuery(query, rows) {
-      if (query.change?.status === 'failed' && !replaced) {
+    beforeRefund(_args, rows) {
+      if (!replaced) {
         rows[0].tx_signature = 'new-signature';
         replaced = true;
       }

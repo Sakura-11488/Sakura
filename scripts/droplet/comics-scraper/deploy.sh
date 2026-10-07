@@ -43,6 +43,7 @@ rollback_app() {
             --exclude 'image-proxy-template*.txt' \
             --exclude 'debug-token.txt' \
             --exclude img-cache \
+            --exclude response-cache \
             "$PREV_DIR/" "$APP_DIR/"
         (cd "$APP_DIR" && pm2 reload ecosystem.config.cjs --update-env) || true
         log "rolled back. nginx was NOT reverted — see the backup path printed above."
@@ -84,6 +85,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
         --exclude 'image-proxy-template*.txt' \
         --exclude 'debug-token.txt' \
         --exclude img-cache \
+        --exclude response-cache \
         "$SCRIPT_DIR/" "$APP_DIR/"
 
     cd "$APP_DIR"

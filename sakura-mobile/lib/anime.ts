@@ -1,3 +1,4 @@
+import { withAnimeTimeout } from './anime-network';
 import { getCachedValue, setCachedValue } from '@/lib/cache';
 import {
   consuGet,
@@ -298,8 +299,6 @@ function pickMegaplayFile(data: unknown): string | null {
 async function fetchMegaplaySourceFromEmbed(
   embedUrl: string,
   category: 'sub' | 'dub',
-  malId?: string,
-  epNum?: string,
 ): Promise<StreamingSource | null> {
   let playerUrl = embedUrl;
   let html = await fetchUpstreamText(playerUrl, HIANIME_BASE + '/');
@@ -327,7 +326,7 @@ async function fetchMegaplaySourceFromEmbed(
     for (const endpoint of endpoints) {
       try {
         payload = await fetchUpstreamJson(endpoint, playerUrl, origin);
-        if (pickMegaplayFile(payload)) break;
+        if (pickMegaplayFile(payload) || (typeof payload.enc === 'string' && payload.enc)) break;
       } catch {
         // try the next known Megaplay source endpoint
       }
@@ -338,22 +337,22 @@ async function fetchMegaplaySourceFromEmbed(
   if (!url) {
     url = findMegaplayM3u8InHtml(html);
   }
-  if (!url) return null;
+  if (!url && !(typeof payload?.enc === 'string' && payload.enc)) return null;
 
   const intro = (payload?.intro || (payload?.data as any)?.intro) as { start: number; end: number } | undefined;
   const outro = (payload?.outro || (payload?.data as any)?.outro) as { start: number; end: number } | undefined;
 
   return {
-    url,
-    isM3U8: /\.m3u8(?:[?#]|$)/i.test(url),
+    url: url || '',
+    isM3U8: !!url && /\.m3u8(?:[?#]|$)/i.test(url),
     referer: playerUrl,
     requestHeaders: buildPlaybackHeaders(playerUrl),
-    embedUrl: malId && epNum ? buildStreamEmbedUrl(malId, epNum, category, playerUrl) : embedUrl,
+    embedUrl: playerUrl,
     intro,
     outro,
     category,
     availableCategories: ['sub', 'dub'],
-    allSources: [{ url, quality: 'auto', isM3U8: /\.m3u8(?:[?#]|$)/i.test(url) }],
+    allSources: url ? [{ url, quality: 'auto', isM3U8: /\.m3u8(?:[?#]|$)/i.test(url) }] : [],
   };
 }
 
@@ -364,18 +363,12 @@ async function fetchDirectMalSource(
 ): Promise<StreamingSource | null> {
   const embedUrl = buildStreamEmbedUrl(malId, epNum, category);
   try {
-    const source = await fetchMegaplaySourceFromEmbed(embedUrl, category, malId, epNum);
+    const source = await fetchMegaplaySourceFromEmbed(embedUrl, category);
     if (source?.url || source?.embedUrl) return source;
   } catch {
-    // The MAL player page can still be embedded even when direct HLS extraction fails.
+    // Removed/error pages are not playable fallback sources.
   }
-  return {
-    url: '',
-    isM3U8: false,
-    embedUrl,
-    category,
-    availableCategories: ['sub', 'dub'],
-  };
+  return null;
 }
 
 export const ANIME_GENRES: { id: number; name: string }[] = [
@@ -402,15 +395,18 @@ function escGql(s: string) {
 }
 
 async function runAL(q: string): Promise<unknown> {
-  const res = await fetch(ANILIST_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ query: q }),
+  return withAnimeTimeout(async (signal) => {
+    const res = await fetch(ANILIST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: q }),
+      signal,
+    });
+    if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+    const json = await res.json();
+    if (json?.errors?.length) throw new Error(json.errors[0]?.message);
+    return json;
   });
-  if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
-  const json = await res.json();
-  if (json?.errors?.length) throw new Error(json.errors[0]?.message);
-  return json;
 }
 
 function alToResult(m: Record<string, unknown>): AnimeResult | null {
@@ -508,7 +504,7 @@ function breakerOpen(path: string): boolean {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function jikanRequest(path: string): Promise<Record<string, unknown>> {
+async function jikanRequest(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   if (breakerOpen(path)) throw new Error(`Jikan unavailable: ${path}`);
 
   for (let attempt = 0; attempt < JIKAN_MAX_ATTEMPTS; attempt += 1) {
@@ -516,7 +512,8 @@ async function jikanRequest(path: string): Promise<Record<string, unknown>> {
     if (gap > 0) await delay(gap);
     jikanLastAt = Date.now();
 
-    const res = await fetch(`${JIKAN_API}${path}`);
+    if (signal.aborted) throw new Error('Anime request timed out.');
+    const res = await fetch(`${JIKAN_API}${path}`, { signal });
 
     // Retry rate limits AND upstream 5xx. Jikan is a free community API that
     // 504s regularly under its own load — the /episodes and search endpoints
@@ -525,7 +522,9 @@ async function jikanRequest(path: string): Promise<Record<string, unknown>> {
     // hard failure, which the anime screen reports as "Could not load anime".
     if (res.status === 429 || res.status >= 500) {
       const retryAfter = Number(res.headers.get('retry-after')) || 0;
-      await delay(retryAfter > 0 ? retryAfter * 1000 : 1000 * (attempt + 1));
+      if (attempt + 1 < JIKAN_MAX_ATTEMPTS) {
+        await delay(Math.min(2000, retryAfter > 0 ? retryAfter * 1000 : 1000 * (attempt + 1)));
+      }
       continue;
     }
     if (!res.ok) throw new Error(`Jikan HTTP ${res.status}`);
@@ -548,7 +547,12 @@ async function jikanGet(path: string): Promise<Record<string, unknown>> {
   //
   // Burst protection now comes from the per-path circuit breaker plus the gap
   // inside jikanRequest, neither of which can stall an unrelated request.
-  return jikanRequest(path);
+  try {
+    return await withAnimeTimeout((signal) => jikanRequest(path, signal));
+  } catch (error) {
+    jikanBreaker.set(path, Date.now() + JIKAN_BREAKER_MS);
+    throw error;
+  }
 }
 
 function jikanToResult(r: Record<string, unknown>): AnimeResult {
@@ -612,7 +616,7 @@ async function jikanFull(id: string): Promise<JikanFull | null> {
  */
 async function offlineMetaFull(id: string): Promise<JikanFull | null> {
   try {
-    const m = await consuGet(`/api/meta/${encodeURIComponent(id)}`);
+    const m = await consuGet(`/api/meta/${encodeURIComponent(id)}`, 6000, 0);
     if (!m || typeof m !== 'object' || !m.malId) return null;
     const image = String(m.image || '');
     return {
@@ -769,17 +773,6 @@ async function fetchAniListEpisodeThumbnails(malId: string): Promise<Map<number,
   return map;
 }
 
-function mergeEpisodeThumbnails(
-  episodes: AnimeEpisode[],
-  thumbs: Map<number, string>,
-): AnimeEpisode[] {
-  if (thumbs.size === 0) return episodes;
-  return episodes.map((ep) => {
-    const thumbnail = thumbs.get(ep.number);
-    return thumbnail ? { ...ep, thumbnail } : ep;
-  });
-}
-
 async function enrichEpisodeThumbnails(episodes: AnimeEpisode[], malId: string) {
   if (episodes.length === 0) return;
   const thumbs = await fetchAniListEpisodeThumbnails(malId);
@@ -843,8 +836,13 @@ function titleSim(a: string, b: string): number {
   return (overlap / Math.max(aToks.size, bToks.size, 1)) * 0.7;
 }
 
-async function findSourceMatch(
+async function findSourceMatch(jikan: JikanFull): Promise<{ slug: string; animeId: string } | null> {
+  return withAnimeTimeout((signal) => findSourceMatchWithinBudget(jikan, signal), 8000);
+}
+
+async function findSourceMatchWithinBudget(
   jikan: JikanFull,
+  signal: AbortSignal,
 ): Promise<{ slug: string; animeId: string } | null> {
   const titleVariants = [
     jikan.title_english,
@@ -859,6 +857,7 @@ async function findSourceMatch(
   const isMovie = jikan.type === 'Movie';
 
   for (const title of titleVariants.slice(0, 5)) {
+    if (signal.aborted) return null;
     const nk = normTitle(title);
     if (!nk || seenQueries.has(nk)) continue;
     seenQueries.add(nk);
@@ -907,6 +906,7 @@ async function findSourceMatch(
   // Validate top candidates against /api/info (parallel batches)
   const toCheck = sorted.filter((c) => c.score >= 0.22).slice(0, 12);
   for (let i = 0; i < toCheck.length; i += 4) {
+    if (signal.aborted) return null;
     const batch = toCheck.slice(i, i + 4);
     const results = await Promise.all(
       batch.map(async (candidate) => {
@@ -929,7 +929,7 @@ async function findSourceMatch(
     if (validated.length > 0) break;
   }
 
-  if (validated.length === 0) return null;
+  if (signal.aborted || validated.length === 0) return null;
 
   validated.sort((a, b) => b.score - a.score);
   const best = validated[0];
@@ -1075,7 +1075,7 @@ function hasPlaceholderEpisodes(info: AnimeInfo): boolean {
 }
 
 function hasPlayableEpisodes(info: AnimeInfo): boolean {
-  return info.episodes.some((e) => /^hi-\d+-\d+$/.test(e.id));
+  return info.episodes.some((e) => /^(?:hi|mal)-\d+-\d+$/.test(e.id));
 }
 
 function hasSuspiciousEpisodeCount(info: AnimeInfo): boolean {
@@ -1165,7 +1165,7 @@ export async function fetchAnimeInfo(
   if (cached && !opts?.force && hasPlayableEpisodes(cached) && !hasPlaceholderEpisodes(cached) && !hasSuspiciousEpisodeCount(cached)) {
     hydrateStreamingFromInfo(cached, id);
     if (!cached.episodes.some((e) => e.thumbnail)) {
-      await enrichEpisodeThumbnails(cached.episodes, id);
+      void enrichEpisodeThumbnails(cached.episodes, id);
     }
     return cached;
   }
@@ -1177,7 +1177,7 @@ export async function fetchAnimeInfo(
     cSet(key, diskCached, 24 * 3_600_000);
     await hydrateStreamingFromDisk(diskCached, id);
     if (!diskCached.episodes.some((e) => e.thumbnail)) {
-      await enrichEpisodeThumbnails(diskCached.episodes, id);
+      void enrichEpisodeThumbnails(diskCached.episodes, id);
     }
     return diskCached;
   }
@@ -1201,6 +1201,18 @@ export async function fetchAnimeInfo(
     year: jikan.year,
     episodes: [],
   };
+
+  // Metadata already gives an exact episode count for completed shows. Render
+  // those MAL-addressed episodes immediately; provider matching belongs to the
+  // play action and optional thumbnails must not keep the details spinner up.
+  if (jikan.episodes && jikan.episodes > 0 && /^(?:finished airing|finished)$/i.test(jikan.status)) {
+    info.episodes = makeMalEpisodes(id, jikan.episodes);
+    hydrateStreamingFromInfo(info, id);
+    void enrichEpisodeThumbnails(info.episodes, id);
+    cSet(key, info, 24 * 3_600_000);
+    await setCachedValue(diskKey, info, 24 * 3_600_000);
+    return info;
+  }
 
   try {
     const srcKey = `srcmap_${id}`;
@@ -1228,9 +1240,8 @@ export async function fetchAnimeInfo(
         info.streamingSlug = undefined;
         info.streamingAnimeId = undefined;
       }
-      const thumbs = await fetchAniListEpisodeThumbnails(id);
-      eps = mergeEpisodeThumbnails(eps, thumbs);
       info.episodes = eps;
+      void enrichEpisodeThumbnails(eps, id);
       if (eps.length > 0) cSet(`episodes_${srcmap.animeId}`, eps, 6 * 3_600_000);
     }
   } catch (e) {
@@ -1241,7 +1252,7 @@ export async function fetchAnimeInfo(
     const fallbackCount = await estimateJikanEpisodeCount(jikan);
     if (fallbackCount > 0) {
       info.episodes = makeMalEpisodes(id, fallbackCount);
-      await enrichEpisodeThumbnails(info.episodes, id);
+      void enrichEpisodeThumbnails(info.episodes, id);
     }
   }
 
@@ -1287,11 +1298,13 @@ async function fetchM3u8Source(
 ): Promise<StreamingSource | null> {
   const d = await consuGet(
     `/api/m3u8/${encodeURIComponent(slug)}/${epNum}?category=${category}`,
-    45_000,
+    12_000,
+    0,
   );
 
-  const sources = d.sources as Record<string, unknown>[];
-  if (!Array.isArray(sources) || sources.length === 0) return null;
+  const sources = Array.isArray(d.sources) ? d.sources as Record<string, unknown>[] : [];
+  const suppliedEmbed = typeof d.embedUrl === 'string' && /^https:\/\//.test(d.embedUrl) ? d.embedUrl : '';
+  if (!sources.length && !suppliedEmbed) return null;
 
   const headers = d.headers as Record<string, string> | undefined;
   const intro = d.intro as { start: number; end: number } | null;
@@ -1302,11 +1315,11 @@ async function fetchM3u8Source(
     sources.find((s) => String(s.quality || '') === '1080p') ||
     sources[0];
 
-  const url = String(preferred.url || '');
-  if (!url) return null;
+  const url = String(preferred?.url || '');
+  if (!url && !suppliedEmbed) return null;
 
   const referer = headers?.Referer || headers?.referer || '';
-  const embedUrl = buildStreamEmbedUrl(malId || '0', epNum, category, referer, slug);
+  const embedUrl = suppliedEmbed || buildStreamEmbedUrl(malId || '0', epNum, category, referer, slug);
 
   const requestHeaders: Record<string, string> = {};
   if (headers) {
@@ -1317,7 +1330,7 @@ async function fetchM3u8Source(
 
   return {
     url,
-    isM3U8: preferred.isM3U8 !== false,
+    isM3U8: !!url && preferred?.isM3U8 !== false,
     referer,
     requestHeaders: Object.keys(requestHeaders).length ? requestHeaders : undefined,
     embedUrl,
@@ -1358,12 +1371,15 @@ export async function fetchEpisodeSources(
       const [, directMalId, directEpNum] = malParts;
       const categories: Array<'sub' | 'dub'> = category === 'dub' ? ['dub', 'sub'] : ['sub', 'dub'];
 
+      const direct = await fetchDirectMalSource(directMalId, directEpNum, category).catch(() => null);
+      if (direct?.url || direct?.embedUrl) return direct;
+
       const resolved = await resolveStreamingByMalId(directMalId).catch(() => null);
       if (resolved?.slug) {
         for (const cat of categories) {
           try {
             const src = await fetchM3u8Source(resolved.slug, directEpNum, cat, directMalId);
-            if (src?.url) return src;
+            if (src?.url || src?.embedUrl) return src;
           } catch {
             // try alternate category or Megaplay fallback
           }

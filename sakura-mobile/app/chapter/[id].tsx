@@ -28,6 +28,7 @@ import ReaderSettingsSheet from '@/components/reader/ReaderSettingsSheet';
 import ReaderAskSheet from '@/components/reader/ReaderAskSheet';
 import { buildReaderContext, mediumFromSource } from '@/lib/ai-context';
 import ReaderChapterBar from '@/components/reader/ReaderChapterBar';
+import ReaderPageImage from '@/components/reader/ReaderPageImage';
 import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib/wallet/pass';
@@ -106,6 +107,8 @@ export default function ChapterReader() {
   // is simply off and the reader behaves exactly as it always did.
   const [orderedChapters, setOrderedChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pageLoadError, setPageLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   /* The overlay starts HIDDEN and is only ever summoned by a double tap.
      A reader opens a chapter to read it, not to look at chrome, and anything
      that appears on entry has to be waited out over the first page. */
@@ -121,6 +124,7 @@ export default function ChapterReader() {
   // the route was opened on, once reading has crossed a boundary.
   const [activeChapterId, setActiveChapterId] = useState('');
   const [activePageIndex, setActivePageIndex] = useState(0);
+  const [visiblePageIds, setVisiblePageIds] = useState<Set<string>>(() => new Set());
   const [readingMode, setReadingMode] = useState<'page' | 'scroll'>('scroll');
   const [readDirection, setReadDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [continuous, setContinuous] = useState(true);
@@ -130,27 +134,6 @@ export default function ChapterReader() {
   // tall manhwa strips get their full height instead of being cropped to 1.5.
   const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
 
-  /**
-   * Pages whose image failed to load.
-   *
-   * Tracked so the reader can tell "this chapter is unavailable" from "this
-   * chapter is empty".
-   *
-   * Never reset. The guard that uses it asks whether every row CURRENTLY on
-   * screen has failed, rather than comparing this set's size against the row
-   * count — so entries left over from an earlier chapter in a continuous
-   * scroll session cannot make a healthy chapter look dead. That matters here
-   * because the reader scrolls through multiple chapters without remounting.
-   */
-  const [failedPages, setFailedPages] = useState<Set<string>>(new Set());
-  const notePageFailed = useCallback((id: string) => {
-    setFailedPages((prev) => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-  }, []);
   /**
    * Overlay fade, on React Native's own Animated rather than Reanimated.
    *
@@ -292,6 +275,8 @@ export default function ChapterReader() {
       return;
     }
     let cancelled = false;
+    setLoading(true);
+    setPageLoadError(null);
     setAccessChecked(false);
     (async () => {
       if (!address) {
@@ -349,6 +334,7 @@ export default function ChapterReader() {
           contentId: mangaId,
           chapterId: entryChapterId,
           source,
+          preferOffline: loadAttempt === 0,
         });
         if (cancelled) return;
         // Opening a chapter always resets the session to just that chapter;
@@ -368,8 +354,11 @@ export default function ChapterReader() {
           }),
         ]);
         setActiveChapterId(entryChapterId);
-      } catch {
-        if (!cancelled) setSegments([]);
+      } catch (error) {
+        if (!cancelled) {
+          setSegments([]);
+          setPageLoadError(error instanceof Error ? error.message : 'The chapter source is unavailable.');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -378,7 +367,7 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess]);
+  }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess, loadAttempt]);
 
   /**
    * Web gets its fade from a CSS transition on a state-driven opacity.
@@ -838,6 +827,13 @@ export default function ChapterReader() {
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     // Reads refs only: this callback is held in a useRef and can never see
     // fresh state through a closure.
+    const visibleIds = new Set<string>();
+    for (const item of viewableItems) {
+      const visibleRow = item.index == null ? undefined : rowsRef.current[item.index];
+      if (visibleRow?.kind === 'page') visibleIds.add(visibleRow.id);
+    }
+    setVisiblePageIds((previous) => previous.size === visibleIds.size
+      && [...visibleIds].every((pageId) => previous.has(pageId)) ? previous : visibleIds);
     const first = viewableItems.find((v) => v.index != null);
     const index = Number(first?.index ?? -1);
     if (index < 0) return;
@@ -900,56 +896,6 @@ export default function ChapterReader() {
     minimumViewTime: 80,
   }).current;
 
-  const renderPage = useCallback(
-    ({ item }: { item: ReaderRow }) => {
-      if (item.kind === 'marker') {
-        // A labelled hairline, not a card: the ask was that crossing into the
-        // next chapter shouldn't feel like a stop, while still saying where you
-        // are. Only ever rendered in webtoon mode.
-        return (
-          <View style={styles.chapterDivider}>
-            <View style={styles.chapterDividerRule} />
-            <Text style={styles.chapterDividerLabel}>{item.label}</Text>
-            <View style={styles.chapterDividerRule} />
-          </View>
-        );
-      }
-      // Paged mode: one full screen per page, letterboxed so the whole page fits.
-      if (readingMode === 'page') {
-        return (
-          <Image
-            source={{ uri: item.url }}
-            // Un-mirrors the list's scaleX in RTL so the artwork reads the right
-            // way round while the geometry stays left-to-right.
-            style={[
-              { width: SCREEN_WIDTH, height: SCREEN_HEIGHT },
-              isRtlPageMode && styles.mirrored,
-            ]}
-            contentFit="contain"
-            transition={0}
-            recyclingKey={item.id}
-            onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
-            onError={() => notePageFailed(item.id)}
-          />
-        );
-      }
-      // Scroll (webtoon) mode: height follows the image's own aspect ratio, so a
-      // long manhwa strip renders in full instead of being cropped.
-      const ratio = pageRatios[item.id] ?? DEFAULT_PAGE_RATIO;
-      return (
-        <Image
-          source={{ uri: item.url }}
-          style={{ width: SCREEN_WIDTH, height: SCREEN_WIDTH * ratio }}
-          contentFit="contain"
-          transition={0}
-          recyclingKey={item.id}
-          onLoad={(e) => handlePageLoad(item.id, e?.source?.width, e?.source?.height)}
-          onError={() => notePageFailed(item.id)}
-        />
-      );
-    },
-    [readingMode, isRtlPageMode, pageRatios, handlePageLoad, notePageFailed],
-  );
 
 
   useEffect(() => {
@@ -1308,6 +1254,38 @@ export default function ChapterReader() {
       },
     });
   }, [clearHideTimer, router, mangaId, source]);
+
+  const renderPage = useCallback(
+    ({ item }: { item: ReaderRow }) => {
+      if (item.kind === 'marker') {
+        return (
+          <View style={styles.chapterDivider}>
+            <View style={styles.chapterDividerRule} />
+            <Text style={styles.chapterDividerLabel}>{item.label}</Text>
+            <View style={styles.chapterDividerRule} />
+          </View>
+        );
+      }
+      const height = readingMode === 'page'
+        ? SCREEN_HEIGHT
+        : SCREEN_WIDTH * (pageRatios[item.id] ?? DEFAULT_PAGE_RATIO);
+      return (
+        <ReaderPageImage
+          uri={item.url}
+          pageId={item.id}
+          pageNumber={item.pageIndex + 1}
+          width={SCREEN_WIDTH}
+          height={height}
+          viewportHeight={SCREEN_HEIGHT}
+          mirrored={isRtlPageMode}
+          isVisible={visiblePageIds.has(item.id)}
+          onLoad={(width, height) => handlePageLoad(item.id, width, height)}
+          onBack={goBack}
+        />
+      );
+    },
+    [readingMode, isRtlPageMode, pageRatios, visiblePageIds, handlePageLoad, goBack],
+  );
 
   /**
    * Desktop's double tap is a double click.
@@ -1699,32 +1677,6 @@ export default function ChapterReader() {
     );
   }
 
-  /**
-   * Every page in the list failed to load.
-   *
-   * Distinct from "no pages found": the source handed us a page list and then
-   * 404d every image, which is exactly what the comics source does today —
-   * upstream serves HTML for page-image paths, the proxy correctly refuses it,
-   * and the reader used to render N blank pages and say nothing. A chapter that
-   * silently renders blank is worse than one that admits it is unavailable.
-   */
-  if (rows.length > 0 && rows.every((r) => failedPages.has(r.id))) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <StatusBar hidden />
-        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtn}>
-          <BackIcon />
-        </TouchableOpacity>
-        <EmptyState
-          inverted
-          compact
-          title="This chapter's pages are unavailable"
-          subtitle="The source is not serving images right now. Try another chapter, or come back later."
-        />
-      </View>
-    );
-  }
-
   if (rows.length === 0) {
     return (
       <View style={[styles.screen, styles.center]}>
@@ -1732,7 +1684,10 @@ export default function ChapterReader() {
         <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtn}>
           <BackIcon />
         </TouchableOpacity>
-        <EmptyState inverted compact title="No pages found" />
+        <EmptyState inverted compact title={pageLoadError ? 'Chapter unavailable' : 'No pages found'} subtitle={pageLoadError || undefined} />
+        <TouchableOpacity accessibilityRole="button" style={styles.pageRetry} onPress={() => setLoadAttempt((attempt) => attempt + 1)}>
+          <Text style={styles.pageRetryLabel}>Retry chapter</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -1965,6 +1920,8 @@ export default function ChapterReader() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
+  pageRetry: { backgroundColor: '#E84545', borderRadius: 20, paddingHorizontal: 20, paddingVertical: 12 },
+  pageRetryLabel: { color: '#fff', fontWeight: '600' },
   /** Applied to the list and re-applied per page, so RTL flips geometry only. */
   mirrored: { transform: [{ scaleX: -1 }] },
   listHeaderSpacer: { height: 48, backgroundColor: '#000' },

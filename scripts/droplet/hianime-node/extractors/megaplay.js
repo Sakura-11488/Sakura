@@ -130,6 +130,7 @@ async function fetchSourcesJson(baseUrl, dataId, embedUrl) {
   // returns a usable payload — none should require auth, and a 404 is
   // cheap.
   var endpoints = [
+    baseUrl + "/stream/getSourcesNew?id=" + dataId,
     baseUrl + "/stream/getSources?id=" + dataId,
     baseUrl + "/getSources?id=" + dataId,
     baseUrl + "/ajax/getSources?id=" + dataId,
@@ -148,7 +149,9 @@ async function fetchSourcesJson(baseUrl, dataId, embedUrl) {
         },
         timeout: 15000,
       });
-      if (data) return { data: data, endpoint: url };
+      if (pickFile(data) || (data && typeof data.enc === "string" && data.enc)) {
+        return { data: data, endpoint: url };
+      }
     } catch (error) {
       lastError = error;
     }
@@ -275,6 +278,23 @@ async function extractM3u8(embedUrl) {
   var resolved = await fetchSourcesJson(sourcesOrigin, dataId, resolvedEmbedUrl);
   var data = resolved.data;
   var file = pickFile(data);
+
+  // The current public player consumes an encoded source payload itself.
+  // Use that supported player rather than inventing a file URL or attempting
+  // to decode its private format. The page and source response above confirm
+  // this episode exists; a missing/410 page never reaches this fallback.
+  if (!file && data && typeof data.enc === "string" && data.enc) {
+    return {
+      sources: [],
+      embedUrl: resolvedEmbedUrl,
+      requiresEmbed: true,
+      subtitles: pickTracks(data),
+      headers: { Referer: sourcesOrigin + "/" },
+      category: categoryFromUrl(resolvedEmbedUrl),
+      intro: data.intro,
+      outro: data.outro,
+    };
+  }
 
   if (!file) {
     throw new Error(

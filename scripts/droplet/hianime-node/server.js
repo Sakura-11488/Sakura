@@ -58,7 +58,8 @@ async function probeTitle(keyword) {
     var embed = await hianime.resolveEmbedForEpisode(probe.slug, eps[0].number, "sub");
     probe.server = embed.serverName;
     var out = await extractor.extract(embed.embedUrl, config.HIANIME_BASE + "/");
-    probe.playable = Boolean(out && out.sources && out.sources.length);
+    probe.playable = Boolean(out && ((out.sources && out.sources.length) || out.embedUrl));
+    probe.playbackMode = out && out.embedUrl ? "embed" : "direct";
     if (!probe.playable) probe.reason = "extractor returned no sources";
   } catch (err) {
     probe.reason = String(err && err.message ? err.message : err).slice(0, 140);
@@ -275,9 +276,11 @@ app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
   if (category !== "sub" && category !== "dub") category = "sub";
   console.log("\n[m3u8] Request: " + slug + " ep " + epNum + " category=" + category);
   try {
-    var embed = await hianime.resolveEmbedForEpisode(slug, parseInt(epNum, 10), category);
+    var embed = await hianime.resolveEmbedForEpisode(slug, parseInt(epNum, 10), category, function(url) {
+      return extractor.extract(url, config.HIANIME_BASE + "/");
+    });
     console.log("[m3u8] Embed: " + embed.embedUrl + " (" + embed.serverName + ", " + embed.type + ")");
-    var result = await extractor.extract(embed.embedUrl, config.HIANIME_BASE + "/");
+    var result = embed.playback;
     // Only override intro/outro from wrapper skip_data if it carries real
     // values. hianime.dk's /ajax/mal often returns [0,0] / {start:0,end:0}
     // for titles where Megaplay has the actual markers — clobbering the
@@ -292,7 +295,7 @@ app.get("/api/m3u8/:slug/:epNum", async function(req, res) {
     result.category = embed.type;
     result.availableCategories = embed.availableCategories || ["sub"];
     result.debug = { serverName: embed.serverName, triedServers: embed.triedServers || [] };
-    console.log("[m3u8] SUCCESS: " + result.sources[0].url.substring(0, 80) + "...");
+    console.log("[m3u8] SUCCESS: " + (result.embedUrl || result.sources[0].url).substring(0, 80) + "...");
     res.json(result);
   } catch (error) {
     console.error("[m3u8] FAILED: " + error.message);

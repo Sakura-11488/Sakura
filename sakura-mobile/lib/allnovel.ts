@@ -193,6 +193,8 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
   const genreParts: string[] = [];
   const authorParts: string[] = [];
   const statusParts: string[] = [];
+  let headingParts: string[] | null = null;
+  let hasHeadingTitle = false;
 
   let novelDataId: string | null = null;
   let infoDepth = 0;
@@ -224,11 +226,14 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
           if (state === S.Cover) {
             const src = attrs.src || attrs['data-cfsrc'] || attrs['data-src'];
             if (src) result.cover = resolveUrl(src);
-            if (attrs.title) result.name = attrs.title;
+            if (attrs.title && !hasHeadingTitle) result.name = attrs.title;
           }
           break;
         case 'h3':
-          if (state === S.Cover) push(S.NovelName);
+          if (state === S.Cover) {
+            headingParts = [];
+            push(S.NovelName);
+          }
           break;
         case 'span':
           if (state === S.Cover && attrs.title) {
@@ -245,10 +250,13 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
       }
     },
     ontext(text) {
+      if (peek() === S.NovelName) {
+        headingParts?.push(text);
+        return;
+      }
       const t = text.trim();
       if (!t) return;
       switch (peek()) {
-        case S.NovelName: result.name = (result.name || '') + t; break;
         case S.Summary:   summaryParts.push(text); break;
         case S.Info:      infoParts.push(t); break;
         case S.Genres:    genreParts.push(text); break;
@@ -271,7 +279,19 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
             pop();
           }
           break;
-        case 'h3': if (state === S.NovelName) pop(); break;
+        case 'h3':
+          if (state === S.NovelName) {
+            // The cover's title attribute is a fallback, not a prefix. Keep
+            // one complete heading even when responsive markup repeats it.
+            const heading = headingParts?.join('').replace(/\s+/g, ' ').trim();
+            if (heading && !hasHeadingTitle) {
+              result.name = heading;
+              hasHeadingTitle = true;
+            }
+            headingParts = null;
+            pop();
+          }
+          break;
         case 'li': if (state === S.Info) infoParts.push('\n'); break;
         case 'ul': if (state === S.Info || state === S.ChapterList) pop(); break;
       }
@@ -408,6 +428,7 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
   const parts: string[] = [];
   let depth = 0;
   let hiddenDepth = 0;
+  const paragraphTags = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']);
   const stack: S[] = [S.Idle];
   const peek = () => stack[stack.length - 1];
   const push = (s: S) => stack.push(s);
@@ -425,6 +446,10 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
           }
           break;
         case S.Chapter:
+          // HTML text nodes omit the boundaries between adjacent paragraphs.
+          // Preserve those boundaries while keeping inline emphasis contiguous.
+          if (paragraphTags.has(name)) parts.push('\n\n');
+          else if (name === 'br') parts.push('\n');
           if (name === 'sub') {
             push(S.Hidden);
           } else if (name === 'div') {
@@ -446,6 +471,7 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
     },
     onclosetag(name) {
       const state = peek();
+      if (state === S.Chapter && paragraphTags.has(name)) parts.push('\n\n');
       if (state === S.Hidden) {
         if (name === 'sub') pop();
         else if (name === 'div') {
@@ -461,42 +487,12 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
   });
   parser.write(html);
   parser.end();
-  return parts.join('').trim();
+  return parts.join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
-// ─── HD cover via Google Books ────────────────────────────────────────────────
-
-const coverCache = new Map<string, string | null>();
-
-export async function getHDCover(title: string): Promise<string | null> {
-  const key = title.toLowerCase().trim();
-  if (coverCache.has(key)) return coverCache.get(key) ?? null;
-  try {
-    const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(title)}&maxResults=1`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const links = data.items?.[0]?.volumeInfo?.imageLinks;
-    if (links) {
-      const raw = (links.extraLarge || links.large || links.medium || links.thumbnail || links.smallThumbnail || '') as string;
-      const hdUrl = raw
-        .replace('http://', 'https://')
-        .replace('&edge=curl', '')
-        .replace(/zoom=\d+/, 'zoom=5');
-      coverCache.set(key, hdUrl || null);
-      return hdUrl || null;
-    }
-  } catch { /* ignore */ }
-  coverCache.set(key, null);
-  return null;
-}
-
-export async function enhanceCovers(items: AllNovelItem[]): Promise<AllNovelItem[]> {
-  const results = await Promise.allSettled(
-    items.map(async (item) => {
-      const hd = await getHDCover(item.name);
-      const original = item.originalCover || item.cover;
-      return hd ? { ...item, cover: hd, originalCover: original } : { ...item, originalCover: original };
-    }),
-  );
-  return results.map((r, i) => (r.status === 'fulfilled' ? r.value : items[i]));
-}
+// Optional cover enrichment is separate from the readable novel data.
+export { getHDCover, enhanceCovers, mergeNovelCovers } from './novel-covers';
