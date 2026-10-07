@@ -36,7 +36,7 @@ function routeFromNotificationData(
   }
 
   if (type === 'home') {
-    router.push('/(tabs)/home');
+    router.push('/home');
     return;
   }
   if (type === 'new_releases') {

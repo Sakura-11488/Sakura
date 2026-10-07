@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
-import { corsHeaders, jsonResponse } from '../_shared/wallet-auth.ts';
+import { corsHeaders, jsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 
 /**
  * Public reader for a creator work. Given a work_id, returns the work, its
@@ -26,6 +26,9 @@ type AssetRow = {
     bucket: string;
     object_path: string;
     is_public: boolean;
+    original_filename: string;
+    mime_type: string;
+    size_bytes: number;
     metadata: Record<string, unknown> | null;
   } | null;
 };
@@ -35,6 +38,14 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return jsonResponse(405, { error: 'Method not allowed.' }, cors);
 
   try {
+    let readerWallet: string | null = null;
+    if (req.headers.get('x-wallet-address')) {
+      try {
+        readerWallet = verifyWalletHeaders(req.headers, 'read-work-media').walletAddress;
+      } catch (e) {
+        return jsonResponse(401, { error: e instanceof Error ? e.message : 'Invalid wallet signature.' }, cors);
+      }
+    }
     const body = (await req.json().catch(() => ({}))) as { work_id?: string };
     const workId = body.work_id?.trim() ?? '';
     if (!UUID_RE.test(workId)) return jsonResponse(400, { error: 'Valid work_id is required.' }, cors);
@@ -47,7 +58,7 @@ Deno.serve(async (req) => {
     const { data: work, error: workErr } = await supabase
       .from('creator_works')
       .select(
-        'id, creator_wallet, kind, title, slug, description, genres, series_status, published_at, release_metadata',
+        'id, creator_wallet, kind, title, slug, description, genres, series_status, published_at, release_metadata, price_sakura',
       )
       .eq('id', workId)
       .eq('publication_status', 'published')
@@ -55,6 +66,15 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (workErr) throw workErr;
     if (!work) return jsonResponse(404, { error: 'Work not found or not public.' }, cors);
+    const price = Number(work.price_sakura) || 0;
+    let unlocked = price === 0 || readerWallet === work.creator_wallet;
+    if (price > 0 && readerWallet && !unlocked) {
+      const { data: entitlement, error: entitlementErr } = await supabase
+        .from('creator_work_entitlements').select('id')
+        .eq('work_id', workId).eq('buyer_wallet', readerWallet).maybeSingle();
+      if (entitlementErr) throw entitlementErr;
+      unlocked = !!entitlement;
+    }
 
     const { data: releases, error: relErr } = await supabase
       .from('work_releases')
@@ -68,7 +88,7 @@ Deno.serve(async (req) => {
     // All media for the work in one query, grouped by release below.
     const { data: assets, error: assetErr } = await supabase
       .from('work_assets')
-      .select('role, sort_order, release_id, asset_files(bucket, object_path, is_public, metadata)')
+      .select('role, sort_order, release_id, asset_files(bucket, object_path, is_public, original_filename, mime_type, size_bytes, metadata)')
       .eq('work_id', workId)
       .order('sort_order', { ascending: true });
     if (assetErr) throw assetErr;
@@ -81,6 +101,19 @@ Deno.serve(async (req) => {
       const rows = ((assets ?? []) as AssetRow[]).filter(
         (a) => a.release_id === releaseId && a.asset_files,
       );
+      const attachments = [];
+      for (const row of rows.filter((a) => a.role === 'attachment')) {
+        const af = row.asset_files!;
+        const { data: signed, error: signErr } = await supabase.storage
+          .from(af.bucket).createSignedUrl(af.object_path, PAGE_URL_TTL,
+            { download: af.original_filename || 'attachment' });
+        if (signErr || !signed?.signedUrl) {
+          console.error('[read-work-media] attachment sign failed:', signErr);
+          continue;
+        }
+        attachments.push({ name: af.original_filename || 'attachment',
+          mimeType: af.mime_type, sizeBytes: af.size_bytes, url: signed.signedUrl });
+      }
       if (kind === 'manga') {
         const pageRows = rows.filter((a) => a.role === 'manga_page');
         const pages: string[] = [];
@@ -104,19 +137,36 @@ Deno.serve(async (req) => {
           }
           if (signedUrl) pages.push(signedUrl);
         }
-        return { pages };
+        return { pages, attachments };
       }
       if (kind === 'anime') {
         const video = rows.find((a) => a.role === 'video_source')?.asset_files ?? null;
         const poster = rows.find((a) => a.role === 'poster')?.asset_files ?? null;
+        let videoPath = video?.object_path ?? null;
+        if (price > 0 && videoPath) {
+          if (!videoPath.startsWith('/media/v1/creator/private/')) {
+            throw new Error('Paid episode is not stored on the private media route.');
+          }
+          const rawToken = crypto.randomUUID() + crypto.randomUUID();
+          const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken));
+          const tokenHash = Array.from(new Uint8Array(digest))
+            .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+          const { error: tokenErr } = await supabase.from('creator_video_access').insert({
+            token_hash: tokenHash, work_id: workId, video_path: videoPath,
+            expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+          });
+          if (tokenErr) throw tokenErr;
+          videoPath = `${videoPath}?token=${rawToken}`;
+        }
         return {
           // Droplet paths (storage_provider 'local'); client prefixes the media
           // host and, on web, routes through the media proxy.
-          videoPath: video?.object_path ?? null,
+          videoPath,
           posterPath: poster?.object_path ?? null,
+          attachments,
         };
       }
-      return {};
+      return { attachments };
     }
 
     const releaseOut = [];
@@ -127,9 +177,10 @@ Deno.serve(async (req) => {
         title: r.title,
         summary: r.summary,
         content_type: r.content_type,
-        body_text: work.kind === 'novel' ? r.body_text : '',
+        body_text: unlocked && work.kind === 'novel' ? r.body_text : '',
         published_at: r.published_at,
-        media: await mediaForRelease(r.id, work.kind),
+        locked: !unlocked,
+        media: unlocked ? await mediaForRelease(r.id, work.kind) : {},
       });
     }
 
@@ -140,6 +191,8 @@ Deno.serve(async (req) => {
         work: {
           id: work.id,
           creator_wallet: work.creator_wallet,
+          price_sakura: price,
+          unlocked,
           kind: work.kind,
           title: work.title,
           slug: work.slug,

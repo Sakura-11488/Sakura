@@ -7,24 +7,14 @@ import {
 } from '@solana/web3.js';
 import { PhoenixHttpClient } from '@ellipsis-labs/rise';
 import { getConnection } from './connection';
+import { validatePhoenixInstructions } from './phoenix-validation';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 const DEFAULT_PHOENIX_API_URL = 'https://perp-api.phoenix.trade';
 const DEFAULT_MARKET_SYMBOL = 'SOL';
-const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
-const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-const ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bRS';
-const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
 
 export function getPhoenixApiUrl(): string {
   return (process.env.EXPO_PUBLIC_PHOENIX_API_URL || DEFAULT_PHOENIX_API_URL).replace(/\/+$/, '');
-}
-
-function getConfiguredPhoenixProgramId(): string | null {
-  const configured = process.env.EXPO_PUBLIC_PHOENIX_PROGRAM_ID?.trim();
-  if (!configured) return null;
-  return new PublicKey(configured).toBase58();
 }
 
 export function normalizePhoenixSymbol(symbol?: string | null): string {
@@ -383,60 +373,6 @@ function toTransactionInstruction(
   });
 }
 
-function readU32LE(data: Buffer, offset: number): number {
-  return (
-    data[offset] |
-    (data[offset + 1] << 8) |
-    (data[offset + 2] << 16) |
-    (data[offset + 3] << 24)
-  ) >>> 0;
-}
-
-function isSystemTransferFromUser(ix: TransactionInstruction, user: PublicKey): boolean {
-  if (!ix.programId.equals(SystemProgram.programId)) return false;
-  if (ix.data.length < 12 || readU32LE(Buffer.from(ix.data), 0) !== 2) return false;
-  return ix.keys[0]?.pubkey.equals(user) === true;
-}
-
-function validatePhoenixInstructions(
-  instructions: TransactionInstruction[],
-  request: PhoenixOrderRequest,
-  user: PublicKey,
-): void {
-  const configuredProgram = getConfiguredPhoenixProgramId();
-  const corePrograms = new Set([
-    SYSTEM_PROGRAM_ID,
-    TOKEN_PROGRAM_ID,
-    TOKEN_2022_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-    COMPUTE_BUDGET_PROGRAM_ID,
-  ]);
-  let sawConfiguredPhoenixProgram = !configuredProgram;
-
-  for (const ix of instructions) {
-    const programId = ix.programId.toBase58();
-    if (configuredProgram && programId === configuredProgram) {
-      sawConfiguredPhoenixProgram = true;
-    } else if (configuredProgram && !corePrograms.has(programId)) {
-      throw new Error('Phoenix returned an instruction for an unexpected program.');
-    }
-
-    for (const key of ix.keys) {
-      if (key.isSigner && !key.pubkey.equals(user)) {
-        throw new Error('Phoenix returned an instruction with an unexpected signer.');
-      }
-    }
-
-    if (!request.transferAmount && isSystemTransferFromUser(ix, user)) {
-      throw new Error('Phoenix returned an unexpected SOL transfer instruction.');
-    }
-  }
-
-  if (!sawConfiguredPhoenixProgram) {
-    throw new Error('Phoenix transaction is missing the configured Phoenix program.');
-  }
-}
-
 function sideToPhoenix(side: 'long' | 'short'): 'bid' | 'ask' {
   return side === 'long' ? 'bid' : 'ask';
 }
@@ -490,7 +426,7 @@ export async function executePhoenixOrder(
     const instructions = await buildOrderInstructions(request);
     if (!instructions.length) throw new Error('Phoenix did not return any instructions');
     const parsedInstructions = instructions.map(toTransactionInstruction);
-    validatePhoenixInstructions(parsedInstructions, request, keypair.publicKey);
+    await validatePhoenixInstructions(parsedInstructions, request, keypair.publicKey);
 
     const connection = getConnection();
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');

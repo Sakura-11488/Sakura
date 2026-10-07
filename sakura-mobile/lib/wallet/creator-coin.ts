@@ -1,6 +1,8 @@
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { getConnection } from './connection';
 import { base64ToBytes } from './base64';
+import { validateCreatorCoinTransaction, type ExpectedCreatorCoinLaunch } from './creator-coin-validation';
 
 /**
  * Sign and submit a creator coin launch.
@@ -14,20 +16,8 @@ import { base64ToBytes } from './base64';
  * skipPreflight with manual rebroadcast, because a launch that silently expires
  * is worse than one that fails loudly.
  *
- * THE VALIDATION IS THE POINT. The transaction is built by a service, and the
- * wallet signing it holds real funds. `swap.ts:73` asserts Jupiter's transaction
- * has exactly one signer and that it is us; a pump.fun create legitimately has
- * TWO — the creator and the new mint — so the same rule cannot be reused
- * verbatim. What is asserted instead:
- *
- *   - the fee payer is this wallet, so nobody else's transaction gets signed;
- *   - the signer set is exactly {this wallet, the mint the SERVER declared},
- *     so a compromised builder cannot smuggle in a third signer or a different
- *     mint;
- *   - the mint carries a signature already, since the builder partially signs
- *     as the mint and a transaction missing it can never land.
- *
- * Without those checks this function would sign whatever bytes it was handed.
+ * The builder's bytes are checked against the requested create_v2 instruction
+ * and bounded compute budget before this wallet signs them.
  */
 
 export interface LaunchSubmitResult {
@@ -44,36 +34,6 @@ function decode(unsignedTransactionBase64: string): Transaction {
     throw new Error('The launch transaction could not be decoded.');
   }
   return tx;
-}
-
-function validate(tx: Transaction, keypair: Keypair, expectedMint: string): void {
-  const me = keypair.publicKey.toBase58();
-
-  const feePayer = tx.feePayer?.toBase58();
-  if (feePayer !== me) {
-    throw new Error('Launch transaction fee payer does not match your wallet.');
-  }
-
-  // Signature slots are the required signers, in order, whether or not each is
-  // filled in yet — which is what makes this checkable before signing.
-  const signers = tx.signatures.map((s) => s.publicKey.toBase58());
-  if (signers.length !== 2) {
-    throw new Error(`Launch transaction expects ${signers.length} signers, not 2.`);
-  }
-  if (!signers.includes(me)) {
-    throw new Error('Launch transaction does not ask this wallet to sign.');
-  }
-  if (!signers.includes(expectedMint)) {
-    throw new Error('Launch transaction is for a different mint than the one issued.');
-  }
-
-  // The builder partially signs as the mint. If that signature is absent the
-  // transaction can never land, and submitting it would waste the reservation
-  // and leave the creator staring at a failure they cannot act on.
-  const mintSlot = tx.signatures.find((s) => s.publicKey.toBase58() === expectedMint);
-  if (!mintSlot?.signature) {
-    throw new Error('Launch transaction is missing the mint signature.');
-  }
 }
 
 /**
@@ -131,7 +91,12 @@ export async function executeCreatorCoinLaunch(input: {
    */
   lastValidBlockHeight: number;
   keypair: Keypair;
+  intent: ExpectedCreatorCoinLaunch;
+  onSigned?: (signature: string) => Promise<void>;
 }): Promise<LaunchSubmitResult> {
+  if (!Number.isSafeInteger(input.lastValidBlockHeight) || input.lastValidBlockHeight <= 0) {
+    throw new Error('The launch transaction has no valid block height.');
+  }
   // Reject a malformed mint before it is compared against anything.
   let mint: PublicKey;
   try {
@@ -141,13 +106,15 @@ export async function executeCreatorCoinLaunch(input: {
   }
 
   const tx = decode(input.unsignedTransaction);
-  validate(tx, input.keypair, mint.toBase58());
+  validateCreatorCoinTransaction(tx, input.keypair, mint, input.intent);
 
   // partialSign, not sign: the mint's signature is already present and `sign`
   // would clear it.
   tx.partialSign(input.keypair);
 
   const raw = tx.serialize({ requireAllSignatures: true, verifySignatures: true });
+  if (!tx.signature) throw new Error('Launch transaction has no creator signature.');
+  await input.onSigned?.(bs58.encode(Uint8Array.from(tx.signature)));
   const signature = await sendAndConfirm(new Uint8Array(raw), input.lastValidBlockHeight);
 
   return { signature, mintAddress: mint.toBase58() };

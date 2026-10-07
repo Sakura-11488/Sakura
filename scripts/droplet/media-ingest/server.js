@@ -33,6 +33,7 @@ import crypto, { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -42,6 +43,7 @@ const PORT = Number(process.env.PORT || 3200);
 const INGEST_TOKEN = (process.env.MEDIA_INGEST_TOKEN || '').trim();
 const ORIGINALS_ROOT = process.env.ORIGINALS_ROOT || '/var/www/sakura-originals';
 const CREATOR_ROOT = process.env.CREATOR_ROOT || '/var/www/creator-media';
+const CREATOR_PRIVATE_ROOT = process.env.CREATOR_PRIVATE_ROOT || '/var/lib/sakura/creator-paid-media';
 
 if (!INGEST_TOKEN) {
   console.error('[media-ingest] MEDIA_INGEST_TOKEN is required. Refusing to start unauthenticated.');
@@ -66,6 +68,9 @@ const VIDEO_EXT_RE = /\.(mp4|mov|webm|m4v)$/i;
 const IMAGE_EXT_RE = /\.(jpe?g|png|webp|gif)$/i;
 const MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024;
+const WORK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://aofzomovaozcwcozokll.supabase.co';
+const PRIVATE_VIDEO_RE = /^\/media\/v1\/creator\/private\/([1-9A-HJ-NP-Za-km-z]{32,44})\/([0-9a-f-]{36})\/([a-f0-9-]{36}\.(?:mp4|mov|webm|m4v))$/i;
 
 function workRoot(slug) {
   return (
@@ -145,6 +150,41 @@ function requireCreator(req, res, next) {
   const verified = verifyWalletHeaders(req, 'upload-work-media');
   if (!verified) return res.status(401).json({ error: 'Unauthorized (valid wallet signature required)' });
   req.creatorWallet = verified.walletAddress;
+  next();
+}
+
+async function verifyCreatorVideoWork(req, workId) {
+  if (!WORK_ID_RE.test(workId)) return { ok: false, status: 400, error: 'Invalid workId.' };
+  try {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/upload-work-media`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-wallet-address': req.headers['x-wallet-address'],
+        'x-signature': req.headers['x-signature'],
+        'x-message': req.headers['x-message'],
+      },
+      body: JSON.stringify({ work_id: workId, video_preflight: true }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    return response.ok && payload.ok
+      ? { ok: true, paid: payload.paid === true }
+      : { ok: false, status: response.status, error: payload.error || 'Work ownership check failed.' };
+  } catch {
+    return { ok: false, status: 503, error: 'Could not verify this work. Try again.' };
+  }
+}
+
+/** New clients include x-work-id so ownership is checked before multer writes
+ * any bytes. Old clients are checked immediately after their multipart upload. */
+async function preflightCreatorVideo(req, res, next) {
+  const raw = String(req.headers['x-work-id'] || '').trim().toLowerCase();
+  if (!raw) return next();
+  const check = await verifyCreatorVideoWork(req, raw);
+  if (!check.ok) return res.status(check.status).json({ error: check.error });
+  req.verifiedWorkId = raw;
+  req.verifiedPaid = check.paid;
   next();
 }
 
@@ -241,7 +281,7 @@ app.use((_req, res, next) => {
   // a CORS problem — the web PWA cannot upload at all without them listed.
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Authorization, Content-Type, x-wallet-address, x-signature, x-message',
+    'Authorization, Content-Type, x-wallet-address, x-signature, x-message, x-work-id',
   );
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   next();
@@ -254,6 +294,70 @@ app.get('/healthz', (_req, res) => res.json({ ok: true, service: 'sakura-media-i
 // from "route not deployed" — Express answers unknown routes with an HTML 404
 // just like nginx does, so only an affirmative JSON body distinguishes them.
 app.get('/v1/healthz', (_req, res) => res.json({ ok: true, service: 'sakura-media-ingest' }));
+
+// Supabase checks that a signed creator upload actually landed on this host
+// before it records the asset. This route never serves the private bytes.
+app.get('/v1/creator/videos/check', requireCreator, async (req, res) => {
+  const mediaPath = String(req.query.path || '');
+  const match = PRIVATE_VIDEO_RE.exec(mediaPath);
+  if (!match || match[1] !== req.creatorWallet) return res.sendStatus(403);
+  try {
+    await fs.access(path.join(CREATOR_PRIVATE_ROOT, match[1], match[2], match[3]));
+    return res.sendStatus(200);
+  } catch {
+    return res.sendStatus(404);
+  }
+});
+
+// The file lives outside every nginx web root. A fresh bearer token is issued
+// only after the owner or buyer signs read-work-media. Range requests support
+// seeking without copying a multi-GB file into the Edge runtime.
+async function servePrivateVideo(req, res) {
+  const mediaPath = `/media/v1${req.path.slice(3)}`;
+  const match = PRIVATE_VIDEO_RE.exec(mediaPath);
+  const token = String(req.query.token || '');
+  if (!match || !/^[0-9a-f-]{72}$/i.test(token)) return res.sendStatus(403);
+  try {
+    const auth = await fetch(`${SUPABASE_URL}/functions/v1/authorize-creator-video`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: mediaPath, token }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!auth.ok) return res.sendStatus(auth.status === 403 ? 403 : 503);
+    const file = path.join(CREATOR_PRIVATE_ROOT, match[1], match[2], match[3]);
+    const stat = await fs.stat(file);
+    const size = stat.size;
+    let start = 0;
+    let end = size - 1;
+    if (req.headers.range) {
+      const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range));
+      if (!range) return res.status(416).set('Content-Range', `bytes */${size}`).end();
+      if (range[1]) start = Number(range[1]);
+      if (range[2]) end = Number(range[2]);
+      if (!range[1] && range[2]) {
+        start = Math.max(0, size - end);
+        end = size - 1;
+      }
+      if (!range[2]) end = size - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        start < 0 || end < start || start >= size) {
+        return res.status(416).set('Content-Range', `bytes */${size}`).end();
+      }
+      end = Math.min(end, size - 1);
+      res.status(206).set('Content-Range', `bytes ${start}-${end}/${size}`);
+    }
+    const ext = path.extname(match[3]).toLowerCase();
+    res.set({ 'Content-Type': ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4',
+      'Content-Length': String(end - start + 1), 'Accept-Ranges': 'bytes',
+      'Cache-Control': 'private, no-store' });
+    if (req.method === 'HEAD') return res.end();
+    createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res);
+  } catch {
+    return res.sendStatus(503);
+  }
+}
+app.get('/v1/creator/private/:wallet/:workId/:name', servePrivateVideo);
+app.head('/v1/creator/private/:wallet/:workId/:name', servePrivateVideo);
 
 /** Upsert work-level metadata in the manifest. */
 app.post('/v1/works', requireAdmin, async (req, res) => {
@@ -442,7 +546,7 @@ app.get('/v1/works/:slug/manifest', async (req, res) => {
  * these via the upload-work-media edge function, which enforces work
  * ownership before any DB rows are written.
  */
-app.post('/v1/creator/videos', requireCreator, upload.single('file'), async (req, res) => {
+app.post('/v1/creator/videos', requireCreator, preflightCreatorVideo, upload.single('file'), async (req, res) => {
   const tmp = req.file?.path;
   try {
     if (!tmp) return res.status(400).json({ error: 'Provide multipart `file`' });
@@ -451,23 +555,36 @@ app.post('/v1/creator/videos', requireCreator, upload.single('file'), async (req
     }
     const workId = safeSegment(String(req.body.workId || '').toLowerCase(), 'workId', res);
     if (!workId) return;
+    if (req.verifiedWorkId && req.verifiedWorkId !== workId) {
+      return res.status(400).json({ error: 'Signed workId does not match the upload.' });
+    }
+    let paid = req.verifiedPaid === true;
+    if (!req.verifiedWorkId) {
+      const check = await verifyCreatorVideoWork(req, workId);
+      if (!check.ok) return res.status(check.status).json({ error: check.error });
+      paid = check.paid;
+    }
 
     const userId = req.creatorWallet;
-    const baseDir = path.join(CREATOR_ROOT, userId, workId);
-    await fs.mkdir(baseDir, { recursive: true });
+    const publicDir = path.join(CREATOR_ROOT, userId, workId);
+    const videoDir = path.join(paid ? CREATOR_PRIVATE_ROOT : CREATOR_ROOT, userId, workId);
+    await fs.mkdir(publicDir, { recursive: true });
+    await fs.mkdir(videoDir, { recursive: true });
 
     const fileId = randomUUID();
     const ext = req.file.originalname.match(VIDEO_EXT_RE)[0].toLowerCase();
-    const videoFile = path.join(baseDir, `${fileId}${ext}`);
+    const videoFile = path.join(videoDir, `${fileId}${ext}`);
     await fs.copyFile(tmp, videoFile);
-    const posterFile = path.join(baseDir, `${fileId}.jpg`);
+    const posterFile = path.join(publicDir, `${fileId}.jpg`);
     await videoThumbnail(videoFile, posterFile);
     const stat = await fs.stat(videoFile);
 
     const prefix = `/creator-media/${userId}/${workId}`;
     res.json({
       ok: true,
-      videoUrl: `${prefix}/${fileId}${ext}`,
+      videoUrl: paid
+        ? `/media/v1/creator/private/${userId}/${workId}/${fileId}${ext}`
+        : `${prefix}/${fileId}${ext}`,
       posterUrl: `${prefix}/${fileId}.jpg`,
       bytes: stat.size,
     });

@@ -21,7 +21,7 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
-import { showAlert } from '@/lib/confirm-alert';
+import { confirmDestructive, showAlert } from '@/lib/confirm-alert';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import {
   getCreatorCoinStatus,
@@ -29,12 +29,15 @@ import {
   type CreatorCoinStatus,
 } from '@/lib/creator-coin-status';
 import { solanaExplorerToken } from '@/lib/wallet/config';
+import { clearPendingCreatorCoinLaunch, getPendingCreatorCoinLaunch, type PendingCreatorCoinLaunch } from '@/lib/creator-coin-recovery';
+import { creatorTokenErrorMessage, verifyCreatorCoinLaunch } from '@/lib/creator-social';
 import { onTap } from '@/lib/sound';
 import { CreatorDashboardSkeleton } from '@/components/creator/CreatorSkeletons';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import {
   getCreatorProfile,
   getCreatorWorks,
+  discardCreatorDraft,
   statusLabel,
   uploadCreatorAvatar,
   workCoverUrl,
@@ -87,17 +90,22 @@ export default function CreatorDashboardScreen() {
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [works, setWorks] = useState<CreatorWork[]>([]);
   const [coinStatus, setCoinStatus] = useState<CreatorCoinStatus | null>(null);
+  const [pendingLaunch, setPendingLaunch] = useState<PendingCreatorCoinLaunch | null>(null);
+  const [verifyingLaunch, setVerifyingLaunch] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (isActive: () => boolean) => {
     if (!address) {
       setCreator(null);
       setWorks([]);
+      setCoinStatus(null);
+      setPendingLaunch(null);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
       const profile = await getCreatorProfile(address);
+      if (!isActive()) return;
       if (!profile.username) {
         router.replace('/become-creator');
         return;
@@ -110,35 +118,93 @@ export default function CreatorDashboardScreen() {
       // wallet cannot be unlocked, fall back to the published-only view rather
       // than showing an empty library.
       const sessionKeypair = await unlockForAppSession();
-      setWorks(
-        await getCreatorWorks(
-          address,
-          sessionKeypair ? buildWalletAuthHeaders(sessionKeypair, 'creator-manage-work') : undefined,
-        ),
+      if (!isActive()) return;
+      const creatorWorks = await getCreatorWorks(
+        address,
+        sessionKeypair ? buildWalletAuthHeaders(sessionKeypair, 'creator-manage-work') : undefined,
       );
+      if (!isActive()) return;
+      setWorks(creatorWorks);
       // Deliberately not in the same try as the profile: the coin card is
       // supplementary, and a failure to count followers should not empty the
       // creator's library.
-      getCreatorCoinStatus(address)
-        .then(setCoinStatus)
-        .catch(() => setCoinStatus(null));
+      const [statusResult, pendingResult] = await Promise.allSettled([
+        getCreatorCoinStatus(address),
+        getPendingCreatorCoinLaunch(address),
+      ]);
+      if (!isActive()) return;
+      const status = statusResult.status === 'fulfilled' ? statusResult.value : null;
+      const pending = pendingResult.status === 'fulfilled' ? pendingResult.value : null;
+      setCoinStatus(status);
+      setPendingLaunch(status?.launchedCoin ? null : pending);
+      if (status?.launchedCoin && pending) {
+        void clearPendingCreatorCoinLaunch(address).catch(() => {});
+      }
     } catch {
-      setCreator(null);
-      setWorks([]);
+      if (isActive()) {
+        setCreator(null);
+        setWorks([]);
+      }
     } finally {
-      setLoading(false);
+      if (isActive()) setLoading(false);
     }
   }, [address, router, unlockForAppSession]);
 
+  const finishPendingLaunch = useCallback(async () => {
+    if (!address || !pendingLaunch || verifyingLaunch) return;
+    setVerifyingLaunch(true);
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock your creator wallet to verify this token.');
+      }
+      await verifyCreatorCoinLaunch({
+        coinId: pendingLaunch.coinId,
+        launchRequestId: pendingLaunch.launchRequestId,
+        signature: pendingLaunch.signature,
+        mintAddress: pendingLaunch.mintAddress,
+        authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-verify'),
+      });
+      await clearPendingCreatorCoinLaunch(address).catch(() => {});
+      setPendingLaunch(null);
+      setCoinStatus(await getCreatorCoinStatus(address));
+      showAlert('Token verified', 'Your Japanese Stock token is live.');
+    } catch (error) {
+      showAlert('Verification incomplete', creatorTokenErrorMessage(error));
+    } finally {
+      setVerifyingLaunch(false);
+    }
+  }, [address, pendingLaunch, signWithBiometrics, verifyingLaunch]);
+
+  const discardDraft = useCallback(async (work: CreatorWork) => {
+    if (!address || work.creator_wallet !== address || work.publication_status !== 'draft') return;
+    const confirmed = await confirmDestructive('Discard draft',
+      `Delete “${work.title}” and its uploaded files? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      const keypair = await signWithBiometrics();
+      if (!keypair || keypair.publicKey.toBase58() !== address) {
+        throw new Error('Unlock your creator wallet to discard this draft.');
+      }
+      await discardCreatorDraft(work.id, buildWalletAuthHeaders(keypair, 'creator-manage-work'));
+      setWorks((current) => current.filter((item) => item.id !== work.id));
+      showAlert('Draft discarded', 'The draft has been removed.');
+    } catch (error) {
+      showAlert('Could not discard draft', error instanceof Error ? error.message : 'Try again.');
+    }
+  }, [address, signWithBiometrics]);
+
   useFocusEffect(
     useCallback(() => {
+      let active = true;
       // See creator-upload.tsx: don't judge the session until it has loaded.
-      if (restoring) return;
+      if (restoring) return () => { active = false; };
       if (!connected) {
         router.replace('/become-creator');
-        return;
+        return () => { active = false; };
       }
-      refresh();
+      void refresh(() => active);
+      return () => { active = false; };
     }, [restoring, connected, refresh, router]),
   );
 
@@ -538,7 +604,7 @@ export default function CreatorDashboardScreen() {
               <View>
                 <Text style={[styles.actionTitle, { color: '#fff' }]}>Upload work</Text>
                 <Text style={[styles.actionSub, { color: 'rgba(255,255,255,0.85)' }]}>
-                  New chapter, episode, or series
+                  Start a new series
                 </Text>
               </View>
               <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -572,41 +638,53 @@ export default function CreatorDashboardScreen() {
         </Animated.View>
 
         <View style={styles.sectionHead}>
-          {coinStatus ? (
+          {coinStatus || pendingLaunch ? (
             <Animated.View entering={FadeInUp.delay(120).duration(380)} style={styles.coinCard}>
-              {coinStatus.launchedCoin ? (
+              {coinStatus?.launchedCoin ? (
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={onTap(() => {
-                    const mint = coinStatus.launchedCoin?.mint_address;
+                    const mint = coinStatus?.launchedCoin?.mint_address;
                     if (mint) Linking.openURL(solanaExplorerToken(mint));
                   })}
                 >
-                  <Text style={styles.coinTitle}>${coinStatus.launchedCoin.symbol} is live</Text>
+                  <Text style={styles.coinTitle}>${coinStatus.launchedCoin.symbol} is live on Japanese Stock</Text>
                   <Text style={styles.coinSub}>
-                    {coinStatus.launchedCoin.mint_address ?? 'Mint address unavailable'}
+                    {coinStatus.launchedCoin.mint_address ?? 'Token address unavailable'}
                   </Text>
-                  <Text style={styles.coinLink}>View on Solscan</Text>
+                  <Text style={styles.coinLink}>View token record</Text>
                 </TouchableOpacity>
-              ) : coinStatus.likelyEligible ? (
+              ) : pendingLaunch ? (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Finish verifying your Japanese Stock token"
+                  activeOpacity={0.85}
+                  disabled={verifyingLaunch}
+                  onPress={onTap(() => { void finishPendingLaunch(); })}
+                >
+                  <Text style={styles.coinTitle}>Token setup in progress</Text>
+                  <Text style={styles.coinSub}>{pendingLaunch.mintAddress}</Text>
+                  <Text style={styles.coinLink}>{verifyingLaunch ? 'Checking…' : 'Finish verification'}</Text>
+                </TouchableOpacity>
+              ) : coinStatus?.likelyEligible ? (
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={onTap(() => router.push('/creator-coin-launch'))}
                 >
-                  <Text style={styles.coinTitle}>Launch your creator coin</Text>
+                  <Text style={styles.coinTitle}>Tokenise your work with Japanese Stock</Text>
                   <Text style={styles.coinSub}>
-                    One coin per creator, on pump.fun, with a contract address ending in
-                    {' '}sakura. Launching is permanent.
+                    Give your published catalog one community token readers can follow and support.
+                    Your wallet approves the setup before it goes live.
                   </Text>
-                  <Text style={styles.coinLink}>Start</Text>
+                  <Text style={styles.coinLink}>Explore Japanese Stock</Text>
                 </TouchableOpacity>
               ) : (
                 <View>
-                  <Text style={styles.coinTitle}>Creator coin</Text>
+                  <Text style={styles.coinTitle}>Japanese Stock</Text>
                   <Text style={styles.coinSub}>
-                    {coinStatus.publishedWorks < 1
-                      ? 'Publish a work on Sakura to unlock this.'
-                      : `${coinStatus.followerCount} of ${DEFAULT_MIN_FOLLOWERS} followers.`}
+                    {(coinStatus?.publishedWorks ?? 0) < 1
+                      ? 'Publish a work on Sakura to unlock tokenisation.'
+                      : `${coinStatus?.followerCount ?? 0} of ${DEFAULT_MIN_FOLLOWERS} followers needed to unlock tokenisation.`}
                   </Text>
                 </View>
               )}
@@ -695,6 +773,36 @@ export default function CreatorDashboardScreen() {
                       <View style={[styles.statusDot, { backgroundColor: live ? colors.success : colors.warning }]} />
                       <Text style={styles.workStatus}>{statusLabel(work.publication_status)}</Text>
                     </View>
+                    {live && work.kind === 'manga' ? (
+                      <TouchableOpacity
+                        onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Add chapters to ${work.title}`}
+                        style={{ paddingVertical: Spacing.sm }}
+                      >
+                        <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>+ Add chapters</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {!live && work.publication_status === 'draft' ? (
+                      <View style={{ marginTop: Spacing.sm, flexDirection: 'row', gap: Spacing.md }}>
+                        <TouchableOpacity
+                          onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Resume ${work.title} draft`}
+                          style={{ paddingVertical: Spacing.xs }}
+                        >
+                          <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>Resume →</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={onTap(() => { void discardDraft(work); })}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Discard ${work.title} draft`}
+                          style={{ paddingVertical: Spacing.xs }}
+                        >
+                          <Text style={{ color: colors.textSecondary }}>Discard</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               );

@@ -1,12 +1,14 @@
 {
   "name": "sakura-expo",
   "main": "index.js",
-  "version": "2.0.11",
+  "version": "2.0.13",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "test:wallet": "node --experimental-strip-types --test test/wallet-transactions.test.mjs",
     "eas": "eas",
     "eas:init": "eas init"
   },
@@ -30,6 +32,7 @@
     "expo-blur": "~56.0.3",
     "expo-constants": "~56.0.16",
     "expo-crypto": "~56.0.4",
+    "expo-document-picker": "~56.0.4",
     "expo-file-system": "~56.0.7",
     "expo-font": "~56.0.5",
     "expo-glass-effect": "~56.0.4",

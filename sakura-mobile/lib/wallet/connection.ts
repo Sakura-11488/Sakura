@@ -39,7 +39,18 @@ function destinationAta(owner: PublicKey): PublicKey {
   );
 }
 
+export class SubmittedTransactionError extends Error {
+  constructor(message: string, public readonly signature: string) {
+    super(`${message} Transaction: ${signature}`);
+    this.name = 'SubmittedTransactionError';
+  }
+}
+
 export async function sendSakura(keypair: Keypair, toAddress: string, amount: number): Promise<string> {
+  if (!Number.isFinite(amount) || amount <= 0 || sakuraToRaw(amount) <= 0 ||
+    !Number.isSafeInteger(sakuraToRaw(amount))) {
+    throw new Error('Enter a valid SAKURA amount.');
+  }
   const conn = getConnection();
   const toPubkey = new PublicKey(toAddress);
   const rawAmount = BigInt(sakuraToRaw(amount));
@@ -91,7 +102,14 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
 
   tx.sign(keypair);
   const txid = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-  await conn.confirmTransaction({ blockhash, lastValidBlockHeight, signature: txid }, 'confirmed');
+  try {
+    const confirmation = await conn.confirmTransaction(
+      { blockhash, lastValidBlockHeight, signature: txid }, 'confirmed');
+    if (confirmation.value.err) throw new Error('The transaction failed on-chain.');
+  } catch (error) {
+    throw new SubmittedTransactionError(
+      error instanceof Error ? error.message : 'Confirmation is still pending.', txid);
+  }
   return txid;
 }
 

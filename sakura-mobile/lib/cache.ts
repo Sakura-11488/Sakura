@@ -10,7 +10,7 @@ const mem = new Map<string, CacheRecord>();
 let loaded = false;
 let loadingPromise: Promise<void> | null = null;
 
-function isFresh(rec: CacheRecord | undefined): rec is CacheRecord {
+function isFresh(rec: CacheRecord | undefined): boolean {
   return !!rec && Date.now() < rec.exp;
 }
 
@@ -60,7 +60,7 @@ export async function getCachedValue<T>(key: string): Promise<T | null> {
     if (hit) mem.delete(key);
     return null;
   }
-  return hit.value as T;
+  return hit!.value as T;
 }
 
 export async function setCachedValue<T>(key: string, value: T, ttlMs: number): Promise<void> {
@@ -77,7 +77,7 @@ export async function getOrSetCached<T>(
 ): Promise<T> {
   await ensureLoaded();
   const hit = mem.get(key);
-  if (isFresh(hit)) return hit.value as T;
+  if (isFresh(hit)) return hit!.value as T;
 
   try {
     const fresh = await fetcher();

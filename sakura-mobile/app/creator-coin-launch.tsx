@@ -1,13 +1,14 @@
 import React, { useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
-import { requestCreatorCoinLaunch, verifyCreatorCoinLaunch } from '@/lib/creator-social';
+import { creatorTokenErrorMessage, requestCreatorCoinLaunch, verifyCreatorCoinLaunch } from '@/lib/creator-social';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
 import { executeCreatorCoinLaunch } from '@/lib/wallet/creator-coin';
+import { clearPendingCreatorCoinLaunch, savePendingCreatorCoinLaunch } from '@/lib/creator-coin-recovery';
 import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 export default function CreatorCoinLaunchScreen() {
@@ -28,9 +29,11 @@ export default function CreatorCoinLaunchScreen() {
     () =>
       StyleSheet.create({
         safe: { flex: 1, backgroundColor: colors.background },
-        wrap: { flex: 1, padding: Spacing.md, gap: Spacing.md },
+        keyboard: { flex: 1 },
+        wrap: { flexGrow: 1, padding: Spacing.md, paddingBottom: Spacing.xxl, gap: Spacing.md },
         title: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 28, color: colors.text },
         sub: { fontSize: FontSize.sm, color: colors.textSecondary, lineHeight: 20 },
+        hint: { fontSize: FontSize.xs, color: colors.textSecondary, lineHeight: 18 },
         input: {
           borderRadius: Radius.lg,
           borderWidth: 1,
@@ -53,7 +56,20 @@ export default function CreatorCoinLaunchScreen() {
       showAlert('Wallet required', 'Connect your creator wallet first.');
       return;
     }
+    if (name.trim().length < 2) {
+      showAlert('Name your token', 'Choose a name with at least two characters.');
+      return;
+    }
+    if (!/^[A-Z0-9]{2,10}$/.test(symbol.trim().toUpperCase())) {
+      showAlert('Short symbol', 'Use 2–10 letters or numbers for your token symbol.');
+      return;
+    }
+    if (!metadataUri.trim() && !imageUrl.trim()) {
+      showAlert('Add token artwork', 'Add an artwork URL or a metadata link to continue.');
+      return;
+    }
     setSubmitting(true);
+    let signed = false;
     try {
       const keypair = await signWithBiometrics();
       if (!keypair) throw new Error('Wallet approval is required.');
@@ -67,7 +83,7 @@ export default function CreatorCoinLaunchScreen() {
       });
       if (!result.unsigned_transaction || !result.mint_address) {
         // No builder configured: the request is recorded, nothing is minted.
-        showAlert('Launch requested', 'Your launch request is queued for building.');
+        showAlert('Request received', 'Your Japanese Stock setup request is in progress. You can check its status from your creator dashboard.');
         router.replace('/creator-dashboard');
         return;
       }
@@ -81,6 +97,21 @@ export default function CreatorCoinLaunchScreen() {
         mintAddress: result.mint_address,
         lastValidBlockHeight: result.last_valid_block_height ?? 0,
         keypair,
+        intent: {
+          name: name.trim().slice(0, 80),
+          symbol: symbol.trim().toUpperCase(),
+          metadataUri: metadataUri.trim(),
+        },
+        onSigned: async (signature) => {
+          await savePendingCreatorCoinLaunch({
+            creatorWallet: address,
+            coinId: result.coin_id,
+            launchRequestId: result.launch_request_id,
+            mintAddress: result.mint_address!,
+            signature,
+          });
+          signed = true;
+        },
       });
 
       // A confirmed signature is not success on its own. Verification is what
@@ -95,11 +126,17 @@ export default function CreatorCoinLaunchScreen() {
         mintAddress: submitted.mintAddress,
         authHeaders: buildWalletAuthHeaders(keypair, 'creator-coin-verify'),
       });
+      await clearPendingCreatorCoinLaunch(address).catch(() => {});
 
-      showAlert('Coin launched', `${symbol.toUpperCase()} is live at ${submitted.mintAddress}`);
+      showAlert('Japanese Stock is live', `Your ${symbol.toUpperCase()} token is live. Address: ${submitted.mintAddress}`);
       router.replace('/creator-dashboard');
     } catch (error) {
-      showAlert('Coin launch failed', error instanceof Error ? error.message : 'Please try again.');
+      if (signed) {
+        showAlert('Check token status', 'Your wallet signed the transaction, but confirmation is incomplete. Finish verification from your creator dashboard before trying again.');
+        router.replace('/creator-dashboard');
+      } else {
+        showAlert('Token setup failed', creatorTokenErrorMessage(error));
+      }
     } finally {
       setSubmitting(false);
       setStage(null);
@@ -108,37 +145,40 @@ export default function CreatorCoinLaunchScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.wrap}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Text style={styles.back}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>Revenue Generation</Text>
-        <Text style={styles.sub}>
-          This creates a reviewed coin launch request. Sakura never asks for creator private keys; launch providers
-          must return unsigned transactions for your wallet to sign.
-        </Text>
-        <TextInput style={styles.input} placeholder="Coin name" placeholderTextColor={colors.textTertiary} value={name} onChangeText={setName} />
-        <TextInput
-          style={styles.input}
-          placeholder="Symbol, e.g. BURNIE"
-          placeholderTextColor={colors.textTertiary}
-          value={symbol}
-          autoCapitalize="characters"
-          onChangeText={setSymbol}
-        />
-        <TextInput
-          style={[styles.input, styles.field]}
-          placeholder="Description"
-          placeholderTextColor={colors.textTertiary}
-          multiline
-          value={description}
-          onChangeText={setDescription}
-        />
-        <TextInput style={styles.input} placeholder="Metadata URI or IPFS URL" placeholderTextColor={colors.textTertiary} value={metadataUri} onChangeText={setMetadataUri} />
-        <TextInput style={styles.input} placeholder="Image URL" placeholderTextColor={colors.textTertiary} value={imageUrl} onChangeText={setImageUrl} />
-        <TouchableOpacity style={[styles.btn, submitting && styles.btnDisabled]} onPress={submit} disabled={submitting} activeOpacity={0.88}>
-          <Text style={styles.btnText}>{stage ?? (submitting ? 'Requesting...' : 'Request Launch')}</Text>
-        </TouchableOpacity>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboard}>
+        <ScrollView contentContainerStyle={styles.wrap} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Text style={styles.back}>Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Tokenise your work with Japanese Stock</Text>
+          <Text style={styles.sub}>
+            Give your creator community one token inspired by the work you publish on Sakura. This is a digital token,
+            not company shares or ownership of your work. Your wallet approves any creation on Solana through pump.fun.
+          </Text>
+          <TextInput style={styles.input} placeholder="Token name" placeholderTextColor={colors.textTertiary} value={name} onChangeText={setName} />
+          <TextInput
+            style={styles.input}
+            placeholder="Short symbol, e.g. BURNIE"
+            placeholderTextColor={colors.textTertiary}
+            value={symbol}
+            autoCapitalize="characters"
+            onChangeText={setSymbol}
+          />
+          <TextInput
+            style={[styles.input, styles.field]}
+            placeholder="What should readers know about this token?"
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            value={description}
+            onChangeText={setDescription}
+          />
+          <TextInput style={styles.input} placeholder="Metadata link for final creation" placeholderTextColor={colors.textTertiary} value={metadataUri} onChangeText={setMetadataUri} />
+          <TextInput style={styles.input} placeholder="Artwork image URL" placeholderTextColor={colors.textTertiary} value={imageUrl} onChangeText={setImageUrl} />
+          <Text style={styles.hint}>Add an artwork URL or metadata link. A hosted metadata link is needed before the token can be created on Solana.</Text>
+          <TouchableOpacity style={[styles.btn, submitting && styles.btnDisabled]} onPress={submit} disabled={submitting} activeOpacity={0.88}>
+            <Text style={styles.btnText}>{stage ?? (submitting ? 'Preparing…' : 'Continue with wallet')}</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

@@ -15,6 +15,19 @@ export class CreatorApiError extends Error {
   }
 }
 
+async function functionErrorMessage(error: unknown, fallback: string): Promise<string> {
+  const response = (error as { context?: Response })?.context;
+  if (response && typeof response.json === 'function') {
+    try {
+      const payload = await response.json();
+      if (typeof payload?.error === 'string' && payload.error) return payload.error;
+    } catch {
+      // Keep the transport error if the response body is not JSON.
+    }
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export async function invokeCreatorFunction<T>(
   functionName: string,
   authAction: string,
@@ -31,7 +44,7 @@ export async function invokeCreatorFunction<T>(
   });
 
   if (error) {
-    throw new CreatorApiError(error.message ?? `${functionName} failed`);
+    throw new CreatorApiError(await functionErrorMessage(error, `${functionName} failed`));
   }
 
   const payload = data as T & { error?: string };
@@ -47,7 +60,7 @@ export async function invokeCreatorFunctionPublic<T>(
   body: Record<string, unknown>,
 ): Promise<T> {
   const { data, error } = await supabase.functions.invoke(functionName, { body });
-  if (error) throw new CreatorApiError(error.message ?? `${functionName} failed`);
+  if (error) throw new CreatorApiError(await functionErrorMessage(error, `${functionName} failed`));
   const payload = data as T & { error?: string };
   if (payload && typeof payload === 'object' && 'error' in payload && payload.error) {
     throw new CreatorApiError(String(payload.error));

@@ -1,7 +1,8 @@
 import { PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js';
 import { getConnection } from './connection';
-import { SAKURA_MINT, SAKURA_DECIMALS } from './config';
+import { SAKURA_MINT, SAKURA_DECIMALS, SAKURA_TOKEN_PROGRAM_ID } from './config';
 import { base64ToBytes } from './base64';
+import { validateJupiterTransaction } from './swap-validation';
 
 const JUPITER_BASE = 'https://api.jup.ag/swap/v1';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -44,35 +45,6 @@ function parseJupiterError(status: number, body: any, fallback: string): string 
   return message;
 }
 
-function validateQuoteShape(quote: SwapQuote): void {
-  const raw = quote._raw || {};
-  if (raw.inputMint !== WSOL_MINT) {
-    throw new Error('Swap quote input mint changed unexpectedly.');
-  }
-  if (raw.outputMint !== SAKURA_MINT.toBase58()) {
-    throw new Error('Swap quote output mint changed unexpectedly.');
-  }
-  if (String(raw.inAmount) !== String(quote.inAmount) || String(raw.outAmount) !== String(quote.outAmount)) {
-    throw new Error('Swap quote amounts changed unexpectedly.');
-  }
-}
-
-function validateJupiterTransaction(tx: VersionedTransaction, quote: SwapQuote, keypair: Keypair): void {
-  validateQuoteShape(quote);
-
-  const message = tx.message;
-  const feePayer = message.staticAccountKeys[0]?.toBase58();
-  if (feePayer !== keypair.publicKey.toBase58()) {
-    throw new Error('Swap transaction fee payer does not match wallet.');
-  }
-
-  const signerCount = message.header.numRequiredSignatures;
-  const signers = message.staticAccountKeys.slice(0, signerCount).map((key) => key.toBase58());
-  if (signers.length !== 1 || signers[0] !== keypair.publicKey.toBase58()) {
-    throw new Error('Swap transaction requested an unexpected signer.');
-  }
-}
-
 export async function getSakuraSwapQuote(amountSol: number): Promise<SwapQuote> {
   if (!JUPITER_API_KEY) {
     throw new Error('Jupiter API key not configured. Get a free key at portal.jup.ag and set EXPO_PUBLIC_JUPITER_API_KEY.');
@@ -109,7 +81,6 @@ export async function executeSakuraSwap(
         userPublicKey: keypair.publicKey.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
-        dynamicSlippage: true,
         prioritizationFeeLamports: {
           priorityLevelWithMaxLamports: {
             maxLamports: MAX_PRIORITY_FEE_LAMPORTS,
@@ -126,7 +97,19 @@ export async function executeSakuraSwap(
 
     const { swapTransaction, lastValidBlockHeight } = await swapRes.json();
     const tx = VersionedTransaction.deserialize(base64ToBytes(swapTransaction));
-    validateJupiterTransaction(tx, quote, keypair);
+    const lookups = 'addressTableLookups' in tx.message
+      ? await Promise.all(tx.message.addressTableLookups.map(async ({ accountKey }) => {
+          const { value } = await connection.getAddressLookupTable(accountKey);
+          if (!value) throw new Error('Swap address lookup table is unavailable.');
+          return value;
+        }))
+      : [];
+    validateJupiterTransaction(
+      tx,
+      { ...quote, outputMint: SAKURA_MINT, outputTokenProgram: SAKURA_TOKEN_PROGRAM_ID },
+      keypair.publicKey,
+      lookups,
+    );
 
     tx.sign([keypair]);
 

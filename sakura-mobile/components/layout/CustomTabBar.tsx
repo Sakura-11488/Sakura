@@ -160,12 +160,9 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
   const ws5 = useAnimatedStyle(() => ({ width: w5.value }));
   const wStyles = [ws0, ws1, ws2, ws3, ws4, ws5];
 
-  // Label reveal is opacity + translateX only. It used to also animate
-  // maxWidth 0 -> 56, which is a layout property and therefore reflowed the
-  // bar on every frame of every tab press — for nothing: ts.tabSlot is already
-  // overflow:'hidden', so the slot clips the label as it widens. The clipping
-  // was doing the same job twice, once for free and once at the cost of a
-  // relayout.
+  // Only the active tab mounts its label. An invisible label still consumes
+  // width in a row; that pushed inactive icons outside their 42px pills on web.
+  // The active label keeps its short fade and slide after the slot widens.
   const ls0 = useAnimatedStyle(() => ({
     opacity: lo0.value,
     transform: [{ translateX: interpolate(lo0.value, [0, 1], [10, 0]) }],
@@ -225,6 +222,9 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
           <TouchableOpacity
             onPress={() => handlePress(i)}
             activeOpacity={1}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.label}
+            accessibilityState={{ selected: active }}
             style={ts.tabBtn}
           >
             <View style={ts.iconWrap}>
@@ -235,9 +235,11 @@ export default function CustomTabBar({ state, navigation }: BottomTabBarProps) {
                 </View>
               ) : null}
             </View>
-            <Animated.View style={[ts.labelWrap, lStyles[i]]}>
-              <Text style={ts.label}>{tab.label}</Text>
-            </Animated.View>
+            {active ? (
+              <Animated.View style={[ts.labelWrap, lStyles[i]]}>
+                <Text style={ts.label}>{tab.label}</Text>
+              </Animated.View>
+            ) : null}
           </TouchableOpacity>
         </Animated.View>
       </Animated.View>

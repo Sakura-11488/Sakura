@@ -61,12 +61,9 @@ const BLOCKING_COIN_STATUSES = ['requested', 'pending_signature', 'launched'];
  * Long enough to cover signing in a wallet; short enough that a crash does not
  * cost somebody their only slot.
  *
- * Known trade-off: if a creator signs, the transaction lands on chain, and
- * creator-coin-verify is never called, reclaim will free the slot and they could
- * launch a second real coin. Nothing calls verify today, so that gap closes when
- * the verify step is wired up — a resume check on any 'pending_signature' row
- * before reclaiming it. Chose this direction deliberately: a rare duplicate is
- * recoverable, a permanent lockout is not.
+ * Rows with an assigned mint are never automatically reclaimed: a transaction
+ * may have landed even if the app lost the verification response. The client
+ * stores the signed signature and offers verification again on the dashboard.
  */
 const LAUNCH_STALE_AFTER_MS = 30 * 60 * 1000;
 
@@ -113,6 +110,10 @@ Deno.serve(async (req) => {
     if (!SYMBOL_RE.test(symbol)) return jsonResponse(400, { error: 'Symbol must be 2-10 uppercase letters or numbers.' }, cors);
     if (!body.metadata_uri && !body.image_url) {
       return jsonResponse(400, { error: 'Add stable token metadata or an image before launch.' }, cors);
+    }
+    const builderUrl = Deno.env.get('PUMPFUN_UNSIGNED_TX_URL')?.trim();
+    if (builderUrl && !body.metadata_uri?.trim()) {
+      return jsonResponse(400, { error: 'A hosted metadata URI is required for an on-chain coin launch.' }, cors);
     }
 
     const supabase = createClient(
@@ -245,6 +246,9 @@ Deno.serve(async (req) => {
       })
       .select('id')
       .single();
+    if (coinErr?.code === '23505') {
+      return jsonResponse(409, { error: 'A creator coin launch is already in progress for this wallet.' }, cors);
+    }
     if (coinErr) return jsonResponse(500, { error: coinErr.message }, cors);
 
     let providerResponse: Record<string, unknown> = {};
@@ -256,8 +260,6 @@ Deno.serve(async (req) => {
     // blockhash on the device would give a later deadline than the transaction
     // actually has.
     let lastValidBlockHeight: number | null = null;
-    const builderUrl = Deno.env.get('PUMPFUN_UNSIGNED_TX_URL')?.trim();
-
     if (builderUrl) {
       // The builder holds vanity mint keys, so it refuses unauthenticated
       // callers — without this header every launch comes back 401. The secret
@@ -295,13 +297,17 @@ Deno.serve(async (req) => {
       // because creator_coins.mint_address is UNIQUE, a false claim also
       // permanently locks out the real owner of that mint.
       const mintAddress = providerResponse.mintAddress;
-      if (typeof mintAddress !== 'string' || !mintAddress) {
+      const height = providerResponse.lastValidBlockHeight;
+      if (
+        typeof mintAddress !== 'string' || !mintAddress ||
+        !unsignedTransaction || typeof height !== 'number' ||
+        !Number.isSafeInteger(height) || height <= 0
+      ) {
         await supabase.from('creator_coins').update({ status: 'failed' }).eq('id', coin.id);
-        return jsonResponse(502, { error: 'Coin launch provider returned no mint address.' }, cors);
+        return jsonResponse(502, { error: 'Coin launch provider returned an incomplete transaction.' }, cors);
       }
       reservedMint = mintAddress;
-      const height = providerResponse.lastValidBlockHeight;
-      lastValidBlockHeight = typeof height === 'number' ? height : null;
+      lastValidBlockHeight = height;
       const { error: mintErr } = await supabase
         .from('creator_coins')
         .update({ mint_address: mintAddress })
