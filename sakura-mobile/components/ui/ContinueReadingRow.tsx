@@ -7,7 +7,7 @@ import {
   ScrollView,
   useWindowDimensions,
 } from 'react-native';
-import { Image } from 'expo-image';
+import CoverImage from './CoverImage';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
@@ -95,7 +95,7 @@ export default function ContinueReadingRow({ items, title = 'Continue Reading' }
               style={[s.card, { backgroundColor: colors.white, borderColor: colors.border }]}
             >
               {thumb ? (
-                <Image source={{ uri: thumb }} style={s.thumb} contentFit="cover" />
+                <CoverImage source={{ uri: thumb }} style={s.thumb} contentFit="cover" />
               ) : (
                 <View style={[s.thumb, s.thumbPlaceholder, { backgroundColor: `${colors.primary}18` }]} />
               )}

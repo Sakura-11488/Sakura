@@ -12,6 +12,7 @@ import {
   type ListRenderItemInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
+import CoverImage from '@/components/ui/CoverImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1243,8 +1244,10 @@ export default function MangaDetail() {
       >
         {/* ── Hero ── */}
         <View style={s.heroWrap}>
-          <Image
+          <CoverImage
             source={{ uri: manga.cover }}
+            thumbnailWidth={512}
+            priority="high"
             style={s.heroImg}
             contentFit="cover"
             transition={400}

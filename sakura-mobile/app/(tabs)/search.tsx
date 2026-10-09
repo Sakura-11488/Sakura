@@ -15,6 +15,7 @@ import {
 import { useScrollToTop, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
+import CoverImage from '@/components/ui/CoverImage';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -475,7 +476,7 @@ export default function SearchTabScreen() {
                     style={s.discoverCard}
                     onPress={() => router.push(`/manga/${card.id}` as never)}
                   >
-                    <Image source={{ uri: card.cover }} style={s.discoverImg} contentFit="cover" />
+                    <CoverImage source={{ uri: card.cover }} style={s.discoverImg} contentFit="cover" />
                   </TouchableOpacity>
                 </Animated.View>
               ))}
@@ -487,7 +488,7 @@ export default function SearchTabScreen() {
                 <Animated.View key={cat.label} entering={FadeInDown.delay(idx * 35).duration(260)}>
                   <TouchableOpacity activeOpacity={0.85} style={s.catCard} onPress={() => onChangeQuery(cat.query)}>
                     <Text style={s.catLabel}>{cat.label}</Text>
-                    {!!cat.cover && <Image source={{ uri: cat.cover }} style={s.catThumb} contentFit="cover" />}
+                    {!!cat.cover && <CoverImage source={{ uri: cat.cover }} style={s.catThumb} contentFit="cover" />}
                   </TouchableOpacity>
                 </Animated.View>
               ))}
@@ -547,7 +548,7 @@ export default function SearchTabScreen() {
                             )}
                           </View>
                         ) : (
-                          <Image source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
+                          <CoverImage source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
                         )}
                         <View style={s.resultInfo}>
                           <Text style={s.resultTitle} numberOfLines={2}>

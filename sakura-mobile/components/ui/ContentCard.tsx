@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Image } from 'expo-image';
+import CoverImage from './CoverImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
   useSharedValue,
@@ -77,7 +77,7 @@ function ContentCard({ item }: { item: ContentItem }) {
         activeOpacity={1}
         style={s.card}
       >
-        <Image
+        <CoverImage
           source={{ uri: item.cover }}
           style={[s.img, { backgroundColor: colors.surface }]}
           contentFit="cover"

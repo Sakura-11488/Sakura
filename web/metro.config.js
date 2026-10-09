@@ -1,5 +1,6 @@
 const path = require('path');
 const { getDefaultConfig } = require('expo/metro-config');
+const { resolveWebCardImages } = require('./scripts/card-images.cjs');
 
 const webRoot = __dirname;
 const mobileRoot = path.resolve(webRoot, '..', 'sakura-mobile');
@@ -69,10 +70,10 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (shimModules[moduleName]) {
     return { type: 'sourceFile', filePath: shimModules[moduleName] };
   }
-  if (originalResolveRequest) {
-    return originalResolveRequest(context, moduleName, platform);
-  }
-  return context.resolveRequest(context, moduleName, platform);
+  const resolution = originalResolveRequest
+    ? originalResolveRequest(context, moduleName, platform)
+    : context.resolveRequest(context, moduleName, platform);
+  return resolveWebCardImages(resolution, platform, { mobileRoot, webRoot });
 };
 
 module.exports = config;

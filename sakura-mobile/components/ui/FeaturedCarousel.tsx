@@ -13,7 +13,7 @@ import Animated, {
   runOnJS,
   type SharedValue,
 } from 'react-native-reanimated';
-import { Image } from 'expo-image';
+import CoverImage from './CoverImage';
 import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useRouter } from 'expo-router';
@@ -65,11 +65,13 @@ function Card({
   index,
   scrollX,
   metrics,
+  activeIndex,
 }: {
   item: CarouselItem;
   index: number;
   scrollX: SharedValue<number>;
   metrics: CarouselMetrics;
+  activeIndex: number;
 }) {
   const { CARD_W, CARD_H, SNAP } = metrics;
   const cardStyles = useMemo(
@@ -138,6 +140,8 @@ function Card({
 
   const shineX = useSharedValue(-CARD_W);
   useEffect(() => {
+    // Twenty perpetual shine animations compete with image decode on mobile web.
+    if (Platform.OS === 'web') return;
     shineX.value = withDelay(
       index * 700,
       withRepeat(
@@ -184,8 +188,10 @@ function Card({
     <Animated.View style={[cardStyles.wrap, { backgroundColor: colors.white }, cardStyle]}>
       <TouchableOpacity onPress={handlePress} activeOpacity={0.97} style={[cardStyles.card, { backgroundColor: colors.white }]}>
         <View style={[cardStyles.imgWrap, { backgroundColor: colors.white }]}>
-          <Image
+          <CoverImage
             source={item.localCover || { uri: item.cover }}
+            thumbnailWidth={512}
+            priority={Math.abs(index - activeIndex) <= 1 ? 'high' : 'low'}
             style={cardStyles.img}
             contentFit="cover"
             transition={350}
@@ -216,16 +222,23 @@ export default function FeaturedCarousel({ data }: { data: CarouselItem[] }) {
   const listRef      = useRef<any>(null);
   const currentIdx   = useRef(0);
   const [inited, setInited] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const priorityIndex = useSharedValue(0);
 
   const updateCurrentIndex = useCallback((idx: number) => {
     currentIdx.current = idx;
+    setActiveIndex(idx);
   }, []);
 
   const handler = useAnimatedScrollHandler({
-    onScroll:       (e) => { scrollX.value = e.contentOffset.x; },
-    onMomentumEnd:  (e) => {
+    onScroll: (e) => {
+      scrollX.value = e.contentOffset.x;
       const idx = Math.round(e.contentOffset.x / SNAP);
-      runOnJS(updateCurrentIndex)(idx);
+      // Web has no momentum-end event. Update once per card, not every frame.
+      if (priorityIndex.value !== idx) {
+        priorityIndex.value = idx;
+        runOnJS(updateCurrentIndex)(idx);
+      }
     },
   });
 
@@ -251,12 +264,14 @@ export default function FeaturedCarousel({ data }: { data: CarouselItem[] }) {
         if (!inited && data.length > 1) {
           const mid = Math.floor(data.length / 2);
           currentIdx.current = mid;
+          priorityIndex.value = mid;
+          setActiveIndex(mid);
           listRef.current?.scrollToOffset({ offset: mid * SNAP, animated: false });
           setInited(true);
         }
       }}
       renderItem={({ item, index }) => (
-        <Card item={item} index={index} scrollX={scrollX} metrics={metrics} />
+        <Card item={item} index={index} scrollX={scrollX} metrics={metrics} activeIndex={activeIndex} />
       )}
     />
   );

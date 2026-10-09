@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } fr
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { Image } from 'expo-image';
+import Image from '@/components/ui/CoverImage';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
 import { Spacing, Radius, FontSize, FontWeight, Shadow, Fonts } from '@/constants/theme';
@@ -291,4 +291,3 @@ export default function LibraryScreen() {
     </SafeAreaView>
   );
 }
-

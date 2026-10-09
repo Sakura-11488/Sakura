@@ -1,6 +1,7 @@
 node_modules/
 .expo/
 dist/
+generated/
 web-build/
 app
 components

@@ -5,10 +5,10 @@
   "main": "index.js",
   "scripts": {
     "postinstall": "node scripts/link-mobile-sources.mjs",
-    "start": "expo start --web",
+    "start": "node scripts/prepare-card-images.mjs && expo start --web",
     "dev": "node scripts/link-mobile-sources.mjs && npm run build && npx --yes serve dist -p 8081 --single",
-    "dev:metro": "expo start --web --no-dev",
-    "build": "node scripts/check-public-env.mjs && expo export --platform web --max-workers 1 && node scripts/normalize-export-assets.mjs && node scripts/inject-pwa-tags.mjs",
+    "dev:metro": "node scripts/prepare-card-images.mjs && expo start --web --no-dev",
+    "build": "node scripts/check-public-env.mjs && node scripts/prepare-card-images.mjs && expo export --platform web --max-workers 1 && node scripts/normalize-export-assets.mjs && node scripts/inject-pwa-tags.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -74,6 +74,7 @@
     "@babel/core": "^7.25.0",
     "@types/react": "~19.2.14",
     "@types/react-dom": "~19.2.3",
+    "sharp": "0.35.5",
     "typescript": "~6.0.3"
   }
 }

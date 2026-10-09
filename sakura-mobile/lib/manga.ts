@@ -16,8 +16,11 @@ export interface AtsuItem {
   type?: string;
 }
 
-function imgUrl(item: AtsuItem): string {
-  const path = item.largeImage || item.mediumImage || item.image;
+function imgUrl(item: AtsuItem, size: 'medium' | 'large' = 'large'): string {
+  // ATSU's smallImage is a square crop. Medium preserves the full portrait.
+  const path = size === 'medium'
+    ? item.mediumImage || item.largeImage || item.image
+    : item.largeImage || item.mediumImage || item.image;
   return absUrl(path);
 }
 
@@ -156,7 +159,7 @@ export function toCarouselItem(item: AtsuItem) {
   return {
     id: item.id,
     title: item.title,
-    cover: imgUrl(item),
+    cover: imgUrl(item, 'medium'),
     genres: item.type ? [item.type] : [],
     type: 'manga' as const,
   };
@@ -166,7 +169,7 @@ export function toContentItem(item: AtsuItem, badge?: string) {
   return {
     id: item.id,
     title: item.title,
-    cover: imgUrl(item),
+    cover: imgUrl(item, 'medium'),
     type: 'manga' as const,
     badge,
   };
