@@ -260,7 +260,8 @@ test('disguised TS streams preserve bytes and ignored Range status without leaki
 
 test('verified sub and dub segment families remain constrained to the episode hash directory', async () => {
   for (const host of ['7v8gl.eclipseharbor.space','iwlhp.stellarfrontier.space','7o819.twilightharbor.space','c6bk0.oakhorizon.space',
-    'k2m9x.shadowharbor.space','qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site']) {
+    'k2m9x.shadowharbor.space','qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site',
+    'f98cw.midnightvoyage.site','3xgg1.midnightvoyage.site','n953x.midnightvoyage.site']) {
     const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\nhttps://${host}${scope}seg-1.js\n`});
     const url = await segmentCapability(h);
     assert.equal(new URL(payload(url).u).hostname,host);
@@ -269,6 +270,23 @@ test('verified sub and dub segment families remain constrained to the episode ha
     assert.equal(response.status,200);
     assert.equal(response.headers.get('content-type'),'video/mp2t');
     await response.body.cancel();
+  }
+});
+
+test('midnightvoyage playlist children reject lookalike hosts and paths outside the signed episode', async () => {
+  const outside = `/anime/${'c'.repeat(32)}/${'d'.repeat(32)}/`;
+  for (const url of [
+    `https://f98cw.midnightvoyage.site.evil.test${scope}seg-f1-1.jpg`,
+    `https://f98cw.evilmidnightvoyage.site${scope}seg-f1-1.jpg`,
+    `https://f98cw.midnightvoyage.site/other/seg-f1-1.jpg`,
+    `https://f98cw.midnightvoyage.site${outside}seg-f1-1.jpg`,
+  ]) {
+    const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\n${url}\n`});
+    const source = await resolveSource(h);
+    const masterResponse = await h.handler(new Request(source.url));
+    const child = playlistUrls(await masterResponse.text())[0];
+    assert.equal((await h.handler(new Request(child))).status,502,url);
+    assert.equal(h.calls.length,2,'rejected segment is never fetched');
   }
 });
 

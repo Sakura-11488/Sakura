@@ -212,7 +212,7 @@ export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (reques
     // web downloads alike. Later rotations: ANIME_STREAM_MEDIA_HOSTS (index.ts).
     const providerMedia = url.hostname === 'fetch.nexabloom.top' ||
       /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon|shadowharbor)\.space$/.test(url.hostname) ||
-      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming)\.site$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming|midnightvoyage)\.site$/.test(url.hostname) ||
       configuredMediaHost(url.hostname);
     const providerSubtitle = /^[a-z0-9]+\.broforgotsave\.online$/.test(url.hostname) && /\/subtitles\/[a-zA-Z0-9_.-]+$/.test(url.pathname);
     const providerPath = /^\/anime\/[a-f0-9]{32}\/[a-f0-9]{32}\//i.test(url.pathname);
