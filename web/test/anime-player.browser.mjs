@@ -57,7 +57,7 @@ const fixtures = {
   'expo-router': `
     import {useEffect,useState} from 'react';
     export function useLocalSearchParams(){const [params,setParams]=useState(window.__params); useEffect(()=>{const update=()=>setParams(window.__params); window.addEventListener('fixture-route',update); return ()=>window.removeEventListener('fixture-route',update);},[]); return params;}
-    const router={back(){window.__backCalls++;}, dismissTo(destination){window.__backCalls++;window.__detailDestination=destination;}, replace({params}){window.__navigate(params);}};
+    const router={setParams(params){window.__setParamsCalls=(window.__setParamsCalls||0)+1;window.__navigate(params);},back(){window.__backCalls++;}, dismissTo(destination){window.__backCalls++;window.__detailDestination=destination;}, replace({params}){window.__navigate(params);}};
     export const useRouter=()=>router;
   `,
   '@/constants/theme': `export const Fonts={body:'sans-serif',bodyBold:'sans-serif'}; export const FontSize={xs:12,sm:14,md:16,lg:20}; export const Radius={full:999};`,
@@ -82,7 +82,7 @@ const fixtures = {
   '@/lib/anime-media-session': `export const buildAnimeMediaSessionScript=()=>'';`,
   '@/lib/sound': `export const playTap=()=>{}; export const onTap=callback=>callback;`,
   '@/lib/anime-skip-times': `export const fetchAnimeSkipTimes=async()=>({}); export const mergeAnimeSkipMarkers=(primary)=>primary;`,
-  '@/lib/anime-offline': `export const getOfflinePlaybackUri=async()=>null;`,
+  '@/lib/anime-offline': `export const getOfflinePlaybackUri=async()=>null; export const listOfflineEpisodes=async()=>[];`,
   '@/lib/sakura-originals': `
     export const isSakuraOriginal=()=>window.__mode==='original';
     export const fetchSakuraOriginalInfo=async()=>({id:'original-fixture',title:'Fixture Original',episodes:[{id:'original-1',number:1,title:'Episode 1'}]});
@@ -96,7 +96,7 @@ const fixtures = {
       React.useImperativeHandle(ref,()=>({seekTo(seconds){setPosition(seconds);onTimeUpdate?.(seconds,1478);}}));
       React.useEffect(()=>{setPosition(startAt||0);onReady?.();},[uri]);
       const advance=(seconds,checkpoint=false,ended=false)=>{setPosition(seconds);onTimeUpdate?.(seconds,1478);if(checkpoint)onCheckpoint?.(seconds,1478,ended);};
-      return <div data-direct-stream={uri} data-position={position}><span>Direct stream: {uri}</span><button onClick={chrome?.onToggleCategory}>{chrome?.category?.toUpperCase()}</button><button onClick={chrome?.onBack}>Back to series</button><button onClick={()=>advance(5,true)}>Pause at 5 seconds</button><button onClick={()=>advance(0,true)}>Restart episode</button><button onClick={()=>advance(1470,true)}>Pause during credits</button><button onClick={()=>advance(1478,true,true)}>Finish episode</button><button onClick={onError}>Fail direct stream</button><button onClick={()=>advance(60)}>Set playback to 60 seconds</button><button onClick={()=>advance(63)}>Set playback to 63 seconds</button></div>;
+      return <div data-direct-stream={uri} data-position={position}><span>Direct stream: {uri}</span>{chrome?.nextEpisode&&<button onClick={chrome.nextEpisode.onPlay}>Play next episode</button>}<button onClick={chrome?.onToggleCategory}>{chrome?.category?.toUpperCase()}</button><button onClick={chrome?.onBack}>Back to series</button><button onClick={()=>advance(5,true)}>Pause at 5 seconds</button><button onClick={()=>advance(0,true)}>Restart episode</button><button onClick={()=>advance(1470,true)}>Pause during credits</button><button onClick={()=>advance(1478,true,true)}>Finish episode</button><button onClick={onError}>Fail direct stream</button><button onClick={()=>advance(60)}>Set playback to 60 seconds</button><button onClick={()=>advance(63)}>Set playback to 63 seconds</button></div>;
     });
   `,
 };
@@ -112,6 +112,7 @@ async function bundleScreen() {
         if (args.path in fixtures) return {path:args.path,namespace:'fixture'};
         if (args.path === '@/components/anime/EmbedPlayer') return {path:resolve(root,'sakura-mobile/components/anime/EmbedPlayer.web.tsx')};
         if (args.path === '@/components/anime/WatchViewport') return {path:resolve(root,'sakura-mobile/components/anime/WatchViewport.web.tsx')};
+        if (args.path === '@/components/anime/player-preferences') return {path:resolve(root,'sakura-mobile/components/anime/player-preferences.ts')};
         if (args.path === '@/lib/watch-progress') return {path:resolve(root,'sakura-mobile/lib/watch-progress.ts')};
         return undefined;
       });
@@ -306,6 +307,36 @@ test('web watch only leaves Sakura after an explicit external-player choice', {t
         const finished=await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'));
         assert.equal(finished.episodeId,'mal-20-2');
         assert.equal(finished.progress,0);
+        assert.deepEqual(pageErrors,[]);
+      } finally {await context.close();}
+    });
+
+    await t.test('next episode keeps the viewport and audio choice, including alternate catalog IDs',async()=>{
+      const {context,page,pageErrors}=await openCase('progress');
+      try {
+        await page.locator('[data-direct-stream]').waitFor();
+        await page.getByRole('button',{name:'Pause at 5 seconds',exact:true}).click();
+        await page.evaluate(()=>window.__navigate({ep:'hi-99-1'}));
+        await page.locator('[data-direct-stream*="episode=hi-99-1"]').waitFor();
+        await page.waitForFunction(()=>document.querySelector('[data-direct-stream]')?.getAttribute('data-position')==='5');
+        await page.getByRole('button',{name:'SUB',exact:true}).click();
+        await page.locator('[data-direct-stream*="category=dub"]').waitFor();
+        await page.evaluate(()=>{window.__viewportBeforeNext=document.querySelector('[data-watch-viewport]');});
+        await page.getByRole('button',{name:'Finish episode',exact:true}).click();
+        await page.getByRole('button',{name:'Play next episode',exact:true}).click();
+        await page.locator('[data-direct-stream*="episode=mal-20-2"]').waitFor();
+        assert.equal(await page.evaluate(()=>window.__viewportBeforeNext===document.querySelector('[data-watch-viewport]')),true);
+        assert.equal(await page.evaluate(()=>window.__sourceCalls.at(-1).category),'dub');
+        assert.equal(await page.evaluate(()=>window.__setParamsCalls),1);
+        assert.equal(await page.locator('[data-direct-stream]').getAttribute('data-position'),'0');
+        assert.equal(await page.getByRole('button',{name:'Play next episode',exact:true}).count(),0,'final episode must not loop');
+        const queued=await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'));
+        assert.equal(queued.episodeId,'mal-20-2');
+        assert.equal(queued.progress,0);
+        assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sakura.player.preferences.v1')).audio),'dub');
+        await page.reload();
+        await page.locator('[data-direct-stream*="category=dub"]').waitFor();
+        assert.equal(await page.evaluate(()=>window.__sourceCalls[0].category),'dub','new sessions use the saved audio choice');
         assert.deepEqual(pageErrors,[]);
       } finally {await context.close();}
     });

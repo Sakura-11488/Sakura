@@ -1,5 +1,7 @@
+import { createOfflineJobCoordinator } from '@/lib/offline-job-coordinator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { toPageUrl } from '@/lib/manga';
+import { deleteOfflineTitle, listOfflineTitles } from '@/lib/offline-titles';
 
 const ATSU_BASE = 'https://atsu.moe';
 const ROOT = `${FileSystem.documentDirectory}sakura_manga_offline/`;
@@ -25,10 +27,18 @@ export interface OfflineMangaChapter {
 type Manifest = { chapters: Record<string, OfflineMangaChapter> };
 
 const mem: Manifest = { chapters: {} };
-let loaded = false;
+let loading: Promise<void> | null = null;
+let writing = Promise.resolve();
 const listeners = new Set<() => void>();
 const batchListeners = new Set<() => void>();
 const activeJobs = new Set<string>();
+const canceledChapterJobs = new Set<string>();
+const chapterJobs = createOfflineJobCoordinator<{ paused?: boolean }>({
+  canceledResult: () => ({}),
+  onCancel: (key) => canceledChapterJobs.add(key),
+});
+let batchGeneration = 0;
+const activeBatches = new Map<string, Promise<{ ok: number; failed: number; paused?: boolean }>>();
 const pausedChapterJobs = new Set<string>();
 
 type MangaBatchJob = {
@@ -107,32 +117,40 @@ function dirFor(mangaId: string, chapterId: string) {
   return `${ROOT}${encodeURIComponent(mangaId)}/${encodeURIComponent(chapterId)}/`;
 }
 
-async function ensureLoaded() {
-  if (loaded) return;
-  try {
+function ensureLoaded(): Promise<void> {
+  if (!loading) loading = (async () => {
     await FileSystem.makeDirectoryAsync(ROOT, { intermediates: true });
-    const info = await FileSystem.getInfoAsync(MANIFEST);
-    if (info.exists) {
-      const raw = await FileSystem.readAsStringAsync(MANIFEST);
-      mem.chapters = (JSON.parse(raw) as Manifest)?.chapters || {};
+    try {
+      const info = await FileSystem.getInfoAsync(MANIFEST);
+      if (info.exists) {
+        const raw = JSON.parse(await FileSystem.readAsStringAsync(MANIFEST));
+        if (raw?.chapters && typeof raw.chapters === 'object' && !Array.isArray(raw.chapters)) {
+          for (const [key, value] of Object.entries(raw.chapters)) {
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+              const row = value as Manifest['chapters'][string];
+              mem.chapters[key] = row.status === 'downloading' ? { ...row, status: 'paused' } : row;
+            }
+          }
+        }
+      }
+    } catch {
+      // A corrupt manifest must not stop a fresh download.
     }
-  } catch {
-    mem.chapters = {};
-  } finally {
-    loaded = true;
-  }
+  })().catch((error) => { loading = null; throw error; });
+  return loading;
 }
 
-async function persist() {
-  try {
+function persist(): Promise<void> {
+  const write = writing.then(async () => {
     await FileSystem.writeAsStringAsync(MANIFEST, JSON.stringify(mem));
     notify();
-  } catch {
-    // ignore
-  }
+  });
+  writing = write.catch(() => undefined);
+  return write;
 }
 
 async function patch(record: OfflineMangaChapter) {
+  if (canceledChapterJobs.has(chapterKey(record.mangaId, record.chapterId))) return;
   mem.chapters[chapterKey(record.mangaId, record.chapterId)] = record;
   await persist();
 }
@@ -232,27 +250,31 @@ export async function getOfflineMangaPageUris(
   }
 }
 
-export async function deleteOfflineMangaChapter(mangaId: string, chapterId: string) {
-  await ensureLoaded();
-  try {
+export function deleteOfflineMangaChapter(mangaId: string, chapterId: string): Promise<void> {
+  return chapterJobs.remove(chapterKey(mangaId, chapterId), async () => {
+    await ensureLoaded();
     await FileSystem.deleteAsync(dirFor(mangaId, chapterId), { idempotent: true });
-  } catch {
-    // ignore
-  }
-  delete mem.chapters[chapterKey(mangaId, chapterId)];
-  await persist();
+    delete mem.chapters[chapterKey(mangaId, chapterId)];
+    await persist();
+    if (!Object.values(mem.chapters).some((row) => row.mangaId === mangaId)) await deleteOfflineTitle('atsu', mangaId);
+  });
 }
 
-export async function clearAllOfflineManga() {
-  await ensureLoaded();
-  try {
+export function clearAllOfflineManga(): Promise<void> {
+  batchGeneration++;
+  return chapterJobs.clear(async () => {
+    await ensureLoaded();
+    batchJobs.clear();
+    pausedChapterJobs.clear();
     await FileSystem.deleteAsync(ROOT, { idempotent: true });
     await FileSystem.makeDirectoryAsync(ROOT, { intermediates: true });
-  } catch {
-    // ignore
-  }
-  mem.chapters = {};
-  await persist();
+    mem.chapters = {};
+    await persist();
+    const titles = await listOfflineTitles();
+    await Promise.all(titles.filter((title) => title.source === 'atsu')
+      .map((title) => deleteOfflineTitle(title.source, title.contentId)));
+    notifyBatch();
+  });
 }
 
 export async function getOfflineMangaStorageBytes(): Promise<number> {
@@ -273,7 +295,11 @@ export async function getOfflineMangaStorageBytes(): Promise<number> {
   return total;
 }
 
-export async function downloadMangaChapter(opts: {
+export function downloadMangaChapter(opts: Parameters<typeof runDownloadMangaChapter>[0]): Promise<{ paused?: boolean }> {
+  return chapterJobs.run(chapterKey(opts.mangaId, opts.chapterId), () => runDownloadMangaChapter(opts));
+}
+
+async function runDownloadMangaChapter(opts: {
   mangaId: string;
   chapterId: string;
   chapterNumber: number;
@@ -282,8 +308,9 @@ export async function downloadMangaChapter(opts: {
   cover: string;
 }): Promise<{ paused?: boolean }> {
   const key = chapterKey(opts.mangaId, opts.chapterId);
-  if (activeJobs.has(key)) return {};
+  canceledChapterJobs.delete(key);
   await ensureLoaded();
+  if (canceledChapterJobs.has(key)) return {};
   const existing = mem.chapters[key];
   if (existing?.status === 'ready') return {};
 
@@ -298,9 +325,9 @@ export async function downloadMangaChapter(opts: {
     completedPages: existing?.status === 'paused' ? existing.completedPages : 0,
     updatedAt: Date.now(),
   };
-  await patch(record);
 
   try {
+    await patch(record);
     const urls = await fetchChapterPageUrls(opts.mangaId, opts.chapterId);
     if (urls.length === 0) throw new Error('No pages found for this chapter.');
 
@@ -310,9 +337,10 @@ export async function downloadMangaChapter(opts: {
     record = { ...record, pageCount: urls.length, completedPages: record.completedPages, progress: record.completedPages / urls.length };
     await patch(record);
 
-    const startPage = existing?.status === 'paused' ? existing.completedPages : 0;
+    const startPage = 0;
 
     for (let i = startPage; i < urls.length; i++) {
+      if (canceledChapterJobs.has(key)) return {};
       if (pausedChapterJobs.has(key)) {
         record = {
           ...record,
@@ -331,7 +359,8 @@ export async function downloadMangaChapter(opts: {
         const result = await FileSystem.downloadAsync(urls[i], dest, {
           headers: { Referer: ATSU_BASE, Accept: 'image/*' },
         });
-        if (result.status < 200 || result.status >= 300) {
+        if (result.status < 200 || result.status >= 300 || !await fileHasContent(dest)) {
+          await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => undefined);
           throw new Error(`Failed to download page ${i + 1}`);
         }
       }
@@ -367,27 +396,35 @@ export async function downloadMangaChapter(opts: {
     await patch(record);
     return {};
   } catch (e) {
+    if (canceledChapterJobs.has(key)) return {};
     const message = e instanceof Error ? e.message : 'Download failed';
     record = { ...record, status: 'error', error: message, updatedAt: Date.now() };
-    await patch(record);
-    try {
-      await FileSystem.deleteAsync(dirFor(opts.mangaId, opts.chapterId), { idempotent: true });
-    } catch {
-      // ignore
-    }
+    await patch(record).catch(() => undefined);
     throw e;
   } finally {
     activeJobs.delete(key);
+    canceledChapterJobs.delete(key);
   }
 }
 
-export async function downloadAllMangaChapters(opts: {
+export function downloadAllMangaChapters(opts: Parameters<typeof runDownloadAllMangaChapters>[0]): Promise<{ ok: number; failed: number; paused?: boolean }> {
+  const key = opts.mangaId;
+  const existing = activeBatches.get(key);
+  if (existing) return existing;
+  const task = runDownloadAllMangaChapters(opts, batchGeneration);
+  activeBatches.set(key, task);
+  const release = () => { if (activeBatches.get(key) === task) activeBatches.delete(key); };
+  void task.then(release, release);
+  return task;
+}
+
+async function runDownloadAllMangaChapters(opts: {
   mangaId: string;
   title: string;
   cover: string;
   chapters: Array<{ id: string; number: number; title: string }>;
   onChapterStart?: (chapterNumber: number) => void;
-}): Promise<{ ok: number; failed: number; paused?: boolean }> {
+}, generation: number): Promise<{ ok: number; failed: number; paused?: boolean }> {
   const list = opts.chapters;
   const existing = batchJobs.get(opts.mangaId);
   const startIndex = existing?.paused ? existing.done : 0;
@@ -407,6 +444,7 @@ export async function downloadAllMangaChapters(opts: {
   let endedPaused = false;
   try {
     for (let i = startIndex; i < list.length; i++) {
+      if (generation !== batchGeneration) return { ok, failed };
       if (batchJobs.get(opts.mangaId)?.paused) {
         const job = batchJobs.get(opts.mangaId)!;
         job.done = i;
@@ -432,6 +470,7 @@ export async function downloadAllMangaChapters(opts: {
           endedPaused = true;
           return { ok, failed, paused: true };
         }
+        if (generation !== batchGeneration) return { ok, failed };
         ok += 1;
       } catch {
         failed += 1;

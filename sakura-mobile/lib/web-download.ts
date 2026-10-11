@@ -1,13 +1,13 @@
-// Web-only download helpers. On the web build there is no native filesystem, so
-// offline "downloads" instead stream content into the browser's own Downloads
-// folder: novels as a .txt file, image chapters (manga/comics/18+) as a .cbz of
-// pages. Call sites must branch on `Platform.OS === 'web'` before importing/using
-// these — the functions assume a browser environment (document/fetch/Blob).
+// Web-only "Save a copy" helpers: they write something the user already
+// downloaded into the browser's own Downloads folder — novels as a .txt file,
+// image chapters (manga/comics/manhwa/18+) as a .cbz of pages. Call sites must
+// branch on `Platform.OS === 'web'` before importing/using these — the
+// functions assume a browser environment (document/fetch/Blob).
 //
-// This is an EXPORT, not a library. The file lands in the browser's Downloads
-// folder and Sakura can never read it back — unlike native, where downloads live
-// under the app's control and the reader silently prefers them. Anything in the
-// UI that implies otherwise is a lie.
+// This is an EXPORT, not the library. Offline reading on web is served from
+// Cache Storage by the *-offline.web.ts stores; the file this writes lands in
+// the browser's Downloads folder and Sakura can never read it back. Its value
+// is that the browser cannot evict it, where it can evict Cache Storage.
 
 function ensureWebEnv(): void {
   if (typeof document === 'undefined' || typeof fetch === 'undefined') {
@@ -56,9 +56,16 @@ function sanitize(name: string): string {
   if (!out || RESERVED.test(out)) out = `sakura${out ? `-${out}` : ''}`;
   return out;
 }
-/** Extension from a MIME type, or '' when it says nothing useful. */
+/**
+ * Extension from a MIME type, or '' when it says nothing useful.
+ *
+ * AVIF matters: every atsu page is image/avif, and without this arm they would
+ * be named .jpg inside the .cbz — comic readers go by the extension, not the
+ * bytes, and refuse to decode them.
+ */
 function extFromMime(mime: string | undefined): string {
   const type = (mime || '').toLowerCase();
+  if (type.includes('avif')) return 'avif';
   if (type.includes('webp')) return 'webp';
   if (type.includes('png')) return 'png';
   if (type.includes('gif')) return 'gif';

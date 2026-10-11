@@ -1,6 +1,7 @@
 import { parseChapterContent } from '@/lib/allnovel';
 import {
   NOVEL_MANIFEST_URL,
+  OFFLINE_PREFIX,
   offlineNovelUrl,
   openOfflineLibrary,
 } from '@/lib/offline-cache-keys';
@@ -57,9 +58,22 @@ type Manifest = { chapters: Record<string, OfflineNovelChapter> };
 
 const mem: Manifest = { chapters: {} };
 let loaded = false;
+let loading: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 const batchListeners = new Set<() => void>();
-const activeJobs = new Set<string>();
+const activeJobs = new Map<string, object>();
+const deleting = new Set<string>();
+let clearing = 0;
+let mutations: Promise<unknown> = Promise.resolve();
+
+// Cache writes must finish before a delete, and manifests must be written in
+// order. Network requests stay outside this queue so deletion never waits on
+// a slow novel source.
+function mutate<T>(work: () => Promise<T>): Promise<T> {
+  const next = mutations.then(work);
+  mutations = next.catch(() => undefined);
+  return next;
+}
 
 type NovelBatchJob = {
   novelPath: string;
@@ -117,21 +131,26 @@ const openLibrary = openOfflineLibrary;
 
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;
-  loaded = true;
-  const cache = await openLibrary();
-  if (!cache) return;
-  try {
-    const res = await cache.match(MANIFEST_URL);
-    if (res) {
-      const parsed = (await res.json()) as Manifest;
-      if (parsed?.chapters) Object.assign(mem.chapters, parsed.chapters);
-    }
-  } catch {
-    // A corrupt manifest must not take the app down; re-downloading rewrites it.
+  if (!loading) {
+    loading = (async () => {
+      try {
+        const cache = await openLibrary();
+        const res = await cache?.match(MANIFEST_URL);
+        if (res) {
+          const parsed = (await res.json()) as Manifest;
+          if (parsed?.chapters) Object.assign(mem.chapters, parsed.chapters);
+        }
+      } catch {
+        // A corrupt manifest must not take the app down.
+      } finally {
+        loaded = true;
+      }
+    })();
   }
+  await loading;
 }
 
-async function persist(): Promise<void> {
+async function persist(strict = false): Promise<void> {
   const cache = await openLibrary();
   if (!cache) return;
   try {
@@ -139,7 +158,8 @@ async function persist(): Promise<void> {
       MANIFEST_URL,
       new Response(JSON.stringify(mem), { headers: { 'content-type': 'application/json' } }),
     );
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     // Quota or private mode. The in-memory manifest still drives this session.
   }
 }
@@ -221,32 +241,55 @@ export async function reconcileInterruptedNovelChapters(): Promise<void> {
     }
   }
   if (changed) {
-    await persist();
+    await mutate(() => persist());
     notify();
   }
 }
 
 export async function deleteOfflineNovelChapter(novelPath: string, chapterPath: string) {
-  await ensureLoaded();
-  const cache = await openLibrary();
-  if (cache) await cache.delete(contentUrl(novelPath, chapterPath)).catch(() => undefined);
-  delete mem.chapters[chapterKey(novelPath, chapterPath)];
-  await persist();
-  notify();
+  const key = chapterKey(novelPath, chapterPath);
+  if (deleting.has(key)) return;
+  deleting.add(key);
+  activeJobs.delete(key);
+  // Stop queued chapters too: a running Download all must not recreate a
+  // chapter after the user explicitly removes it.
+  batchJobs.delete(novelPath);
+  notifyBatch();
+  try {
+    await ensureLoaded();
+    await mutate(async () => {
+      const cache = await openLibrary();
+      if (cache) await cache.delete(contentUrl(novelPath, chapterPath));
+      delete mem.chapters[key];
+      await persist(true);
+      notify();
+    });
+  } finally { deleting.delete(key); }
 }
 
 export async function clearAllOfflineNovel() {
-  await ensureLoaded();
-  const cache = await openLibrary();
-  if (cache) {
-    for (const row of Object.values(mem.chapters)) {
-      // eslint-disable-next-line no-await-in-loop
-      await cache.delete(contentUrl(row.novelPath, row.chapterPath)).catch(() => undefined);
-    }
-  }
-  mem.chapters = {};
-  await persist();
-  notify();
+  clearing++;
+  activeJobs.clear();
+  batchJobs.clear();
+  notifyBatch();
+  try {
+    await ensureLoaded();
+    await mutate(async () => {
+      const cache = await openLibrary();
+      if (cache) {
+        // Include orphaned bodies left by interrupted older versions, but
+        // never touch another media type in this shared library.
+        for (const request of await cache.keys()) {
+          if (!new URL(request.url).pathname.startsWith(`${OFFLINE_PREFIX}novel/`)) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await cache.delete(request);
+        }
+      }
+      mem.chapters = {};
+      await persist(true);
+      notify();
+    });
+  } finally { clearing--; }
 }
 
 export async function getOfflineNovelStorageBytes(): Promise<number> {
@@ -268,25 +311,11 @@ export async function downloadNovelChapter(opts: {
   cover: string;
 }): Promise<void> {
   const key = chapterKey(opts.novelPath, opts.chapterPath);
-  if (activeJobs.has(key)) return;
-  await ensureLoaded();
-  if (mem.chapters[key]?.status === 'ready') return;
-
-  const cache = await openLibrary();
-  if (!cache) throw new Error('Offline downloads are not available in this browser.');
-
-  // Best-effort durability. On an installed Android Chrome PWA this is normally
-  // granted without a prompt; when it is not, downloads still work but the
-  // browser may reclaim them, which the Downloads screen says plainly.
-  try {
-    if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
-      void navigator.storage.persist();
-    }
-  } catch {
-    // Not fatal, and not worth telling the user about at this moment.
-  }
-
-  activeJobs.add(key);
+  if (clearing || deleting.has(key) || activeJobs.has(key)) return;
+  const job = {};
+  activeJobs.set(key, job);
+  const current = () => activeJobs.get(key) === job;
+  let cache: Cache | null = null;
   let record: OfflineNovelChapter = {
     ...opts,
     status: 'downloading',
@@ -294,42 +323,61 @@ export async function downloadNovelChapter(opts: {
     updatedAt: Date.now(),
     bytes: 0,
   };
-  await patch(record);
 
   try {
+    await ensureLoaded();
+    if (!current() || mem.chapters[key]?.status === 'ready') return;
+    cache = await openLibrary();
+    if (!cache) throw new Error('Offline downloads are not available in this browser.');
+    if (!current()) return;
+
+    // Best-effort durability; failure never blocks a download.
+    try {
+      if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
+        void navigator.storage.persist().catch(() => undefined);
+      }
+    } catch { /* Storage persistence is optional. */ }
+
+    await mutate(async () => { if (current()) await patch(record); });
+    if (!current()) return;
     const content = await parseChapterContent(opts.chapterPath);
+    if (!current()) return;
     if (!content?.trim()) throw new Error('Chapter has no content.');
 
-    await cache.put(
-      contentUrl(opts.novelPath, opts.chapterPath),
-      new Response(content, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
-    );
-
-    record = {
-      ...record,
-      status: 'ready',
-      progress: 1,
-      error: undefined,
-      // Byte length, not string length: the text is UTF-8 and a CJK novel is
-      // roughly three times its character count on disk.
-      bytes: new TextEncoder().encode(content).length,
-      updatedAt: Date.now(),
-    };
-    await patch(record);
+    await mutate(async () => {
+      if (!current()) return;
+      await cache!.put(
+        contentUrl(opts.novelPath, opts.chapterPath),
+        new Response(content, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
+      );
+      if (!current()) return;
+      record = {
+        ...record,
+        status: 'ready',
+        progress: 1,
+        error: undefined,
+        bytes: new TextEncoder().encode(content).length,
+        updatedAt: Date.now(),
+      };
+      await patch(record);
+    });
   } catch (e) {
+    // A deleted job may finish or fail later. Neither outcome may resurrect
+    // its row or remove a newer download of the same chapter.
+    if (!current()) return;
     const message =
       e instanceof DOMException && e.name === 'QuotaExceededError'
         ? 'Your device is out of space for downloads.'
-        : e instanceof Error
-          ? e.message
-          : 'Download failed';
-    record = { ...record, status: 'error', error: message, updatedAt: Date.now() };
-    await patch(record);
-    // Drop any half-written body so a retry cannot read a truncated chapter.
-    await cache.delete(contentUrl(opts.novelPath, opts.chapterPath)).catch(() => undefined);
-    throw e;
+        : e instanceof Error ? e.message : 'Download failed';
+    await mutate(async () => {
+      if (!current()) return;
+      record = { ...record, status: 'error', error: message, updatedAt: Date.now() };
+      await patch(record);
+      await cache?.delete(contentUrl(opts.novelPath, opts.chapterPath)).catch(() => undefined);
+    });
+    if (current()) throw e;
   } finally {
-    activeJobs.delete(key);
+    if (current()) activeJobs.delete(key);
   }
 }
 
@@ -341,25 +389,27 @@ export async function downloadAllNovelChapters(opts: {
   limit?: number;
   onProgress?: (done: number, total: number) => void;
 }): Promise<{ ok: number; failed: number; paused?: boolean }> {
+  if (clearing) return { ok: 0, failed: 0 };
   const list = opts.chapters.slice(0, opts.limit ?? opts.chapters.length);
   const existing = batchJobs.get(opts.novelPath);
   const startIndex = existing?.paused ? existing.done : 0;
   let ok = existing?.paused ? existing.ok : 0;
   let failed = existing?.paused ? existing.failed : 0;
 
-  batchJobs.set(opts.novelPath, {
+  const batch: NovelBatchJob = {
     novelPath: opts.novelPath,
     paused: false,
     done: startIndex,
     total: list.length,
     ok,
     failed,
-  });
+  };
+  batchJobs.set(opts.novelPath, batch);
   notifyBatch();
 
   for (let i = startIndex; i < list.length; i++) {
     const job = batchJobs.get(opts.novelPath);
-    if (!job) break;
+    if (job !== batch) return { ok, failed };
     if (job.paused) {
       notifyBatch();
       return { ok, failed, paused: true };
@@ -375,13 +425,16 @@ export async function downloadAllNovelChapters(opts: {
         title: opts.title,
         cover: opts.cover,
       });
+      if (batchJobs.get(opts.novelPath) !== batch) return { ok, failed };
       ok++;
     } catch {
+      if (batchJobs.get(opts.novelPath) !== batch) return { ok, failed };
       // One bad chapter must not abandon the rest of the book.
       failed++;
     }
 
     const current = batchJobs.get(opts.novelPath);
+    if (current !== batch) return { ok, failed };
     if (current) {
       current.done = i + 1;
       current.ok = ok;
@@ -391,7 +444,7 @@ export async function downloadAllNovelChapters(opts: {
     opts.onProgress?.(i + 1, list.length);
   }
 
-  batchJobs.delete(opts.novelPath);
+  if (batchJobs.get(opts.novelPath) === batch) batchJobs.delete(opts.novelPath);
   notifyBatch();
   return { ok, failed };
 }

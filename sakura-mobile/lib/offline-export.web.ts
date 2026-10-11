@@ -1,4 +1,9 @@
-import { offlineNovelUrl, offlinePageUrl, openOfflineLibrary } from '@/lib/offline-cache-keys';
+import {
+  offlineMangaPageUrl,
+  offlineNovelUrl,
+  offlinePageUrl,
+  openOfflineLibrary,
+} from '@/lib/offline-cache-keys';
 import { saveCbzFromBlobs, saveTextFile } from '@/lib/web-download';
 import type { ScrapedSource } from '@/lib/scraped-sources';
 
@@ -30,6 +35,8 @@ export type ExportTarget =
       pageCount: number;
       label: string;
     }
+  /** atsu, the default manga source (lib/manga-offline.web.ts). */
+  | { kind: 'manga'; mangaId: string; chapterId: string; pageCount: number; label: string }
   | { kind: 'novel'; novelPath: string; chapterPath: string; label: string };
 
 export const CAN_EXPORT_OFFLINE = true;
@@ -49,12 +56,17 @@ export async function exportDownloadedChapter(
     return { filename: `${target.label}.txt`, bytes: new TextEncoder().encode(text).length };
   }
 
+  // Both image stores key pages by index; only the prefix differs.
+  const keyFor =
+    target.kind === 'manga'
+      ? (i: number) => offlineMangaPageUrl(target.mangaId, target.chapterId, i)
+      : (i: number) =>
+          offlinePageUrl(target.source as ScrapedSource, target.contentId, target.chapterId, i);
+
   const pages: Array<{ blob: Blob }> = [];
   for (let i = 0; i < target.pageCount; i++) {
     // eslint-disable-next-line no-await-in-loop
-    const res = await cache.match(
-      offlinePageUrl(target.source as ScrapedSource, target.contentId, target.chapterId, i),
-    );
+    const res = await cache.match(keyFor(i));
     if (!res) continue;
     // eslint-disable-next-line no-await-in-loop
     pages.push({ blob: await res.blob() });

@@ -13,7 +13,14 @@ export type AnimeStreamDependencies = {
   fetch?: typeof fetch;
   /** Milliseconds, like Date.now. */
   now?: () => number;
-  /** Additional exact server-configured hosts; never read from a request. */
+  /**
+   * Extra provider media host families, configured on the server (index.ts reads
+   * ANIME_STREAM_MEDIA_HOSTS); never read from a request. `cdn.example` admits
+   * that host and its subdomains. They get exactly the checks the built-in
+   * families get — the /anime/<hash>/<hash>/ episode path and the signed scope —
+   * so the provider rotating its CDN needs a secret change, not a code change
+   * and a redeploy. Entries that are not a dotted DNS name are ignored.
+   */
   allowedMediaHosts?: readonly string[];
 };
 
@@ -155,7 +162,11 @@ function parseAttributes(line: string): HlsAttribute[] {
 export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (request: Request) => Promise<Response> {
   const upstreamFetch = deps.fetch ?? fetch;
   const now = deps.now ?? Date.now;
-  const extraHosts = new Set((deps.allowedMediaHosts ?? []).map(host => host.toLowerCase()));
+  const extraHosts = (deps.allowedMediaHosts ?? []).map(host => host.trim().toLowerCase().replace(/^\*?\./, ''))
+    // At least two labels, so a bare TLD ("space") can never admit a whole namespace.
+    .filter(host => /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(host) && !/^[\d.]+$/.test(host));
+  const configuredMediaHost = (hostname: string) =>
+    extraHosts.some(host => hostname === host || hostname.endsWith(`.${host}`));
   let validBase = false;
   try {
     const base = new URL(deps.publicBaseUrl);
@@ -195,12 +206,17 @@ export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (reques
       /(?:^|\.)(?:localhost|local|internal)$/.test(url.hostname)) {
       return fail(502, 'Unsupported media URL.');
     }
+    // shadowharbor.space: the segment CDN most titles were on when checked in
+    // October 2026. Without it, every variant playlist whose segments live there
+    // failed with 502 "Media host or path is not allowed." — the web player and
+    // web downloads alike. Later rotations: ANIME_STREAM_MEDIA_HOSTS (index.ts).
     const providerMedia = url.hostname === 'fetch.nexabloom.top' ||
-      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon)\.space$/.test(url.hostname) ||
-      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming)\.site$/.test(url.hostname);
+      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon|shadowharbor)\.space$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming)\.site$/.test(url.hostname) ||
+      configuredMediaHost(url.hostname);
     const providerSubtitle = /^[a-z0-9]+\.broforgotsave\.online$/.test(url.hostname) && /\/subtitles\/[a-zA-Z0-9_.-]+$/.test(url.pathname);
     const providerPath = /^\/anime\/[a-f0-9]{32}\/[a-f0-9]{32}\//i.test(url.pathname);
-    if (!(providerMedia && providerPath) && !(providerSubtitle && providerPath) && !extraHosts.has(url.hostname)) {
+    if (!(providerMedia && providerPath) && !(providerSubtitle && providerPath)) {
       return fail(502, 'Media host or path is not allowed.');
     }
     if (scope && !url.pathname.startsWith(scope)) return fail(502, 'Media URL is outside this episode.');

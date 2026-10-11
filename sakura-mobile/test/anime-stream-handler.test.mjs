@@ -260,7 +260,7 @@ test('disguised TS streams preserve bytes and ignored Range status without leaki
 
 test('verified sub and dub segment families remain constrained to the episode hash directory', async () => {
   for (const host of ['7v8gl.eclipseharbor.space','iwlhp.stellarfrontier.space','7o819.twilightharbor.space','c6bk0.oakhorizon.space',
-    'qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site']) {
+    'k2m9x.shadowharbor.space','qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site']) {
     const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\nhttps://${host}${scope}seg-1.js\n`});
     const url = await segmentCapability(h);
     assert.equal(new URL(payload(url).u).hostname,host);
@@ -406,4 +406,33 @@ test('global rate limits survive bounded IP-bucket eviction', async () => {
   }
   assert.equal(limited,101);
   assert.equal(h.calls.length,0);
+});
+
+test('server-configured media host families get the same episode path and scope checks', async () => {
+  const variantFor = host => `#EXTM3U\n#EXTINF:8,\nhttps://${host}${scope}seg-1.js\n`;
+  const deps = {allowedMediaHosts:[' NewCDN.example ', '*.wild.example', 'space', '10.0.0.1', 'localhost', '']};
+  for (const host of ['newcdn.example','a1b2c.newcdn.example','x.wild.example']) {
+    const h = fixture({deps, variantText:variantFor(host)});
+    const url = await segmentCapability(h);
+    assert.equal(new URL(payload(url).u).hostname,host);
+  }
+  const outside = `/anime/${'c'.repeat(32)}/${'d'.repeat(32)}/`;
+  for (const [label,variantText] of [
+    ['lookalike host', variantFor('evilnewcdn.example')],
+    ['bare TLD entry is ignored', variantFor('x.other.space')],
+    ['IP entry is ignored', `#EXTM3U\n#EXTINF:8,\nhttps://10.0.0.1${scope}seg-1.js\n`],
+    ['configured host still needs the episode path', '#EXTM3U\n#EXTINF:8,\nhttps://newcdn.example/other/seg-1.js\n'],
+    ['configured host still needs the signed scope', `#EXTM3U\n#EXTINF:8,\nhttps://newcdn.example${outside}seg-1.js\n`],
+  ]) {
+    const h = fixture({deps, variantText});
+    const source = await resolveSource(h);
+    const master = await h.handler(new Request(source.url));
+    const child = playlistUrls(await master.text())[0];
+    assert.equal((await h.handler(new Request(child))).status,502,label);
+  }
+  const without = fixture({variantText:variantFor('newcdn.example')});
+  const source = await resolveSource(without);
+  const master = await without.handler(new Request(source.url));
+  const child = playlistUrls(await master.text())[0];
+  assert.equal((await without.handler(new Request(child))).status,502,'not allowed unless configured');
 });

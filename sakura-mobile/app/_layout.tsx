@@ -37,6 +37,7 @@ import OtaUpdateBridge from '@/components/OtaUpdateBridge';
 import AppUpdateBridge from '@/components/AppUpdateBridge';
 import InstallAppBanner from '@/components/InstallAppBanner';
 import WebUpdateBanner from '@/components/WebUpdateBanner';
+import OfflineBanner from '@/components/OfflineBanner';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
 import AvatarApologyBridge from '@/components/AvatarApologyBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
@@ -238,6 +239,9 @@ export default function RootLayout() {
           <ThemedStatusBar />
           <LiveActivityDeepLinkBridge />
           <NotificationBridge />
+          {/* Web: an in-flow "You're offline · Downloads" strip above the
+              navigator. Native renders the Stack unchanged. */}
+          <OfflineBanner>
           <Stack screenOptions={{ headerShown: false, animation: 'fade_from_bottom' }}>
             <Stack.Screen name="index" options={{ animation: 'none' }} />
             <Stack.Screen name="welcome" options={{ animation: 'fade', gestureEnabled: false }} />
@@ -270,6 +274,7 @@ export default function RootLayout() {
             <Stack.Screen name="creator-coin-launch" options={{ animation: 'slide_from_right' }} />
             <Stack.Screen name="messages" options={{ animation: 'slide_from_right' }} />
           </Stack>
+          </OfflineBanner>
           <AnimeDownloadBridge />
           <OtaUpdateBridge />
           <AppUpdateBridge />

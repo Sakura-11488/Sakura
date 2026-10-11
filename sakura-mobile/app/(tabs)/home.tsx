@@ -215,8 +215,8 @@ export default function HomeScreen() {
   const [featured, setFeatured] = useState<CarouselItem[]>([]);
   const [trending, setTrending] = useState<ContentItem[]>([]);
   const [popularSeries, setPopularSeries] = useState<ContentItem[]>([]);
-  const [newReleases, setNewReleases] = useState<ContentItem[]>([]);
-  const [todaysPick, setTodaysPick] = useState<ContentItem[]>([]);
+  const [moreToExplore, setMoreToExplore] = useState<ContentItem[]>([]);
+  const [trendingPicks, setTrendingPicks] = useState<ContentItem[]>([]);
   const [actionPacked, setActionPacked] = useState<ContentItem[]>([]);
   const [romance, setRomance] = useState<ContentItem[]>([]);
   const [boredmBusters, setBoredmBusters] = useState<ContentItem[]>([]);
@@ -274,8 +274,8 @@ export default function HomeScreen() {
         setFeatured(list.slice(0, 20).map(toCarousel));
         setTrending(list.slice(7, 15));
         setPopularSeries(list.slice(0, 10).map((c) => ({ ...c, badge: 'HOT' })));
-        setNewReleases(list.slice(10, 20).map((c) => ({ ...c, badge: 'NEW' })));
-        setTodaysPick(list.slice(16, 24));
+        setMoreToExplore(list.slice(10, 20));
+        setTrendingPicks(list.slice(16, 24));
       } else {
         const [trend, pop] = await Promise.all([
           fetchTrendingManga(32),
@@ -285,8 +285,8 @@ export default function HomeScreen() {
         setFeatured(trend.slice(0, 20).map(toCarouselItem));
         setTrending(trend.slice(7, 15).map((i) => toContentItem(i)));
         setPopularSeries(pop.slice(0, 10).map((i) => toContentItem(i, 'HOT')));
-        setNewReleases(pop.slice(10, 20).map((i) => toContentItem(i, 'NEW')));
-        setTodaysPick(trend.slice(16, 24).map((i) => toContentItem(i)));
+        setMoreToExplore(pop.slice(10, 20).map((i) => toContentItem(i)));
+        setTrendingPicks(trend.slice(16, 24).map((i) => toContentItem(i)));
       }
     } catch {
       // keep previous data / fallback to empty
@@ -501,24 +501,24 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {/* New Releases */}
-          {newReleases.length > 0 && (
+          {/* More catalogue titles, without implying a release date. */}
+          {moreToExplore.length > 0 && (
             <View style={s.sectionGap}>
               <HorizSection
-                data={newReleases}
-                title="New Releases"
-                onSeeAll={() => goBrowse('New Releases', { kind: 'new' })}
+                data={moreToExplore}
+                title="More to Explore"
+                onSeeAll={() => goBrowse('More to Explore', { kind: 'popular' })}
               />
             </View>
           )}
 
-          {/* Today's Pick For You */}
-          {todaysPick.length > 0 && (
+          {/* Picks from the trending feed, not personalized recommendations. */}
+          {trendingPicks.length > 0 && (
             <View style={s.sectionGap}>
               <HorizSection
-                data={todaysPick}
-                title="Today's Pick For You"
-                onSeeAll={() => goBrowse("Today's Pick For You", { kind: 'todays' })}
+                data={trendingPicks}
+                title="Trending Picks"
+                onSeeAll={() => goBrowse('Trending Picks', { kind: 'trending' })}
               />
             </View>
           )}

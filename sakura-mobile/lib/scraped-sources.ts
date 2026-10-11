@@ -146,7 +146,7 @@ export const SCRAPED_SOURCE_KEYS = Object.keys(SCRAPED_SOURCES) as ScrapedSource
 
 /** Narrow an untrusted route param to a known source, or null for atsu manga. */
 export function asScrapedSource(value: unknown): ScrapedSource | null {
-  return typeof value === 'string' && value in SCRAPED_SOURCES
+  return typeof value === 'string' && Object.hasOwn(SCRAPED_SOURCES, value)
     ? (value as ScrapedSource)
     : null;
 }

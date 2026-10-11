@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { isDropletHost } from './content-hosts';
 
@@ -110,6 +111,88 @@ export function getWebMediaProxyUrl(mediaPathOrUrl: string): string {
   if (!path.startsWith('/')) path = `/${path}`;
   if (sameOriginProxy) return `${sameOriginProxy}?path=${encodeURIComponent(path)}`;
   return `${supabaseUrl}/functions/v1/web-media-proxy?path=${encodeURIComponent(path)}`;
+}
+
+/**
+ * atsu chapter pages, and how a browser gets at them.
+ *
+ * atsu moved its page images to the CDN host: https://atsu.moe/static/pages/…
+ * now answers 410 Gone with an HTML body, which broke the reader on every
+ * platform and made the web reader show "Page 1 could not load" for every atsu
+ * chapter. https://cdn.atsu.moe/static/pages/… serves them, but only to clients
+ * that look like servers: it 403s the Sec-Fetch headers a browser <img> sends
+ * and returns no Access-Control-Allow-Origin to fetch(). Native sends neither,
+ * so native uses the CDN URL directly; web has to go through a same-origin
+ * proxy.
+ */
+const ATSU_PAGE_HOSTS = new Set(['atsu.moe', 'www.atsu.moe', 'cdn.atsu.moe']);
+const ATSU_PAGE_CDN = 'https://cdn.atsu.moe';
+
+/**
+ * Same-origin Vercel function in the hosting repo (api/manga-page.js). It
+ * streams only cdn.atsu.moe/static/pages/… images, with
+ * Access-Control-Allow-Origin * and immutable caching, so reading and
+ * downloading atsu do not ride on the 1-worker droplet.
+ */
+const MANGA_PAGE_PROXY_PATH = '/api/manga-page/';
+
+/**
+ * The canonical CDN URL for an atsu chapter page, or null when `url` is not
+ * one. Accepts the old atsu.moe host, protocol-relative URLs and the
+ * /api/manga-page/ wrapper, so URLs cached or persisted by earlier builds
+ * normalise to the same thing. Query and fragment are dropped: page URLs carry
+ * none, and the proxy refuses them.
+ */
+export function atsuPageCdnUrl(url: string): string | null {
+  if (!url) return null;
+  let candidate = url;
+  if (candidate.startsWith(MANGA_PAGE_PROXY_PATH)) {
+    const q = candidate.indexOf('?');
+    const inner = q >= 0 ? new URLSearchParams(candidate.slice(q + 1)).get('u') : null;
+    if (!inner || inner.startsWith(MANGA_PAGE_PROXY_PATH)) return null;
+    candidate = inner;
+  }
+  if (candidate.startsWith('//')) candidate = `https:${candidate}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  if (parsed.username || parsed.password || parsed.port) return null;
+  if (!ATSU_PAGE_HOSTS.has(parsed.hostname)) return null;
+  if (!parsed.pathname.startsWith('/static/pages/')) return null;
+  return `${ATSU_PAGE_CDN}${parsed.pathname}`;
+}
+
+/**
+ * URL the browser should load an atsu page (or chapter thumbnail) from.
+ *
+ * Web only; native gets its input back, because native can load the CDN
+ * directly. Idempotent, and anything that is not an atsu page URL — posters,
+ * other sources, already-offline /app/__offline/ URLs — passes through
+ * untouched.
+ */
+export function getWebMangaPageProxyUrl(url: string): string {
+  if (Platform.OS !== 'web') return url;
+  if (url.startsWith(MANGA_PAGE_PROXY_PATH)) return url;
+  const cdn = atsuPageCdnUrl(url);
+  return cdn ? `${MANGA_PAGE_PROXY_PATH}?u=${encodeURIComponent(cdn)}` : url;
+}
+
+/**
+ * Second route to the same atsu page, for the web downloader only: the
+ * droplet's manhwa image proxy behind /api/media-proxy/, which has served
+ * cdn.atsu.moe pages since before /api/manga-page/ existed. It is a fallback
+ * and not the primary because the droplet is one small worker shared by every
+ * scraped source; the reader never uses it. Accepts raw or proxied page URLs;
+ * returns the input unchanged for anything else, and on native.
+ */
+export function getWebMangaPageFallbackUrl(url: string): string {
+  if (Platform.OS !== 'web') return url;
+  const cdn = atsuPageCdnUrl(url);
+  return cdn ? getWebMediaProxyUrl(`/manhwa/v1/img?u=${encodeURIComponent(cdn)}`) : url;
 }
 
 export function isSakuraMediaUrl(url: string): boolean {

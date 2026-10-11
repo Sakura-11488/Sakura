@@ -12,7 +12,7 @@ export type PlayerChromeOptions = {
   onToggleCategory?: () => void;
   intro?: { start: number; end: number };
   outro?: { start: number; end: number };
-  nextEpisode?: { label: string; onPlay: () => void };
+  nextEpisode?: { label: string; title?: string; number?: number; thumbnail?: string; onPlay: () => void };
 };
 export type WebVideoPlayerProps = {
   uri: string;

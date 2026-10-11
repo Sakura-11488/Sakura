@@ -4,6 +4,7 @@ import { getOfflineMapForManga, getOfflineMangaPageUris } from '@/lib/manga-offl
 import { getScrapedOfflineMap, getScrapedOfflinePageUris } from '@/lib/scraped-offline';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { normalizeChaptersForReading } from '@/lib/chapter-order';
+import { isOnline } from '@/lib/use-online';
 
 /**
  * One way to load a chapter, whatever backs it.
@@ -113,12 +114,20 @@ export async function fetchOfflineChapterList(
  * Chapter list for reader navigation: network when reachable, otherwise
  * whatever is on disk. Returns [] when neither yields anything, which the
  * caller should treat as "continuous reading unavailable" rather than an error.
+ *
+ * When the browser knows it is offline, the downloads are the whole answer:
+ * asking the network first only delays the reader behind a request that cannot
+ * succeed, and "next chapter" must only offer chapters that will open.
  */
 export async function fetchReaderChapterList(
   source: string | null | undefined,
   contentId: string,
   currentChapterId?: string,
 ): Promise<MangaChapter[]> {
+  if (!isOnline()) {
+    return fetchOfflineChapterList(source, contentId, currentChapterId).catch(() => [] as MangaChapter[]);
+  }
+
   const online = await fetchChapterListForSource(source, contentId, currentChapterId).catch(
     () => [] as MangaChapter[],
   );

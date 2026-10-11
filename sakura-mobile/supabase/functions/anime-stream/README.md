@@ -52,10 +52,31 @@ Expo export using the existing website release process. A missing deployment,
 configuration error, timeout, or unsupported provider response leaves the
 explicit external-player option available. No external player opens automatically.
 
+### When the provider moves its CDN
+
+Segments come from a rotating family of hosts. A host the relay does not know
+fails closed with `502 {"error":"Media host or path is not allowed."}` on the
+variant playlist, which breaks both web playback and web downloads for every
+title on that host. Add the new family without a code change:
+
+```sh
+# Comma-separated; each entry admits that host and its subdomains.
+supabase secrets set ANIME_STREAM_MEDIA_HOSTS=newcdn.space,othercdn.site --project-ref YOUR_PROJECT_REF
+```
+
+Configured families get the same checks as the built-in ones: HTTPS only, the
+`/anime/<32 hex>/<32 hex>/` episode path, and the signed episode scope. Entries
+that are not a dotted DNS name (a bare TLD, an IP address) are ignored. Once a
+family is confirmed, move it into `providerMedia` in `handler.ts` with a test.
+
 ## Limits and maintenance
 
 - Only verified provider host families and episode paths are accepted. Redirects
   and playlist children are checked again; arbitrary internet URLs are rejected.
+- Web downloads (`lib/anime-offline.web.ts`) fetch the same signed playlists,
+  segments and captions as playback, three requests at a time, and honour
+  `Retry-After`. A downloaded episode is a full pass over every segment, so it
+  costs more Edge Function bandwidth than a typical partial viewing.
 - Provider file extensions and MIME types are unreliable. Clear media is checked
   for supported video/audio signatures and served with a safe media type.
 - Segments stream with backpressure instead of being buffered as whole files.
