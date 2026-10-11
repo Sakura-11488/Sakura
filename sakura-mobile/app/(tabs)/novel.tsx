@@ -55,6 +55,7 @@ import ContinueReadingRow from '@/components/ui/ContinueReadingRow';
 import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 import EmptyState from '@/components/ui/EmptyState';
 import { useFocusEffect } from 'expo-router';
+import NovelDiscoveryWeb from '@/components/discovery/NovelDiscoveryWeb';
 
 const { width: W } = Dimensions.get('window');
 const GRID_GAP = 6;
@@ -604,6 +605,11 @@ export default function NovelScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [catalogueError, setCatalogueError] = useState('');
+  const [genreError, setGenreError] = useState('');
+  const [searchError, setSearchError] = useState('');
+  const [searchRetry, setSearchRetry] = useState(0);
 
   // Search
   const [search, setSearch] = useState('');
@@ -651,18 +657,21 @@ export default function NovelScreen() {
 
   const loadNovels = useCallback(async (showRefresh = false) => {
     const request = ++catalogueRequest.current;
+    setCatalogueError('');
     setLoadingMore(false);
     if (!showRefresh) setLoading(true);
     try {
       const items = await fetchPopularNovels(1);
       if (request !== catalogueRequest.current) return;
       setNovels(items);
+      setHasMore(items.length > 0);
       setPage(1);
       // Readers can open the list immediately, using its original covers.
       void enhanceCovers(items).then((enhanced) => {
         if (request === catalogueRequest.current) setNovels((current) => mergeNovelCovers(current, enhanced));
       }).catch(() => undefined);
     } catch {
+      if (request === catalogueRequest.current) setCatalogueError('The library could not load. Please try again.');
       // Keep the existing list if a refresh fails.
     } finally {
       if (request === catalogueRequest.current) {
@@ -685,6 +694,7 @@ export default function NovelScreen() {
     let active = true;
     if (!debouncedSearch.trim()) { setSearchResults([]); setSearchLoading(false); return; }
     setSearchLoading(true);
+    setSearchError('');
     searchNovels(debouncedSearch, 1)
       .then((items) => {
         if (!active) return;
@@ -695,14 +705,16 @@ export default function NovelScreen() {
           if (active) setSearchResults((current) => mergeNovelCovers(current, enhanced));
         }).catch(() => undefined);
       })
-      .catch(() => { if (active) setSearchLoading(false); });
+      .catch(() => { if (active) { setSearchLoading(false); setSearchError('Search is temporarily unavailable. Please try again.'); } });
     return () => { active = false; };
-  }, [debouncedSearch]);
+  }, [debouncedSearch, searchRetry]);
 
   // Genre filter
   const handleGenreSelect = useCallback(async (genreValue: string) => {
     const request = ++genreRequest.current;
     setActiveGenre(genreValue);
+    setGenreError('');
+    setHasMore(true);
     setSearch('');
     setPage(1);
     setLoadingMore(false);
@@ -712,18 +724,20 @@ export default function NovelScreen() {
       .then((items) => {
         if (request !== genreRequest.current) return;
         setGenreResults(items);
+        setHasMore(items.length > 0);
         setGenreLoading(false);
         void enhanceCovers(items).then((enhanced) => {
           if (request === genreRequest.current) setGenreResults((current) => mergeNovelCovers(current, enhanced));
         }).catch(() => undefined);
       })
-      .catch(() => { if (request === genreRequest.current) setGenreLoading(false); });
+      .catch(() => { if (request === genreRequest.current) { setGenreLoading(false); setGenreError('This shelf could not load. Please try again.'); } });
   }, []);
 
   // Load more
   const loadMore = useCallback(async () => {
     if (loadingMore) return;
     setLoadingMore(true);
+    (activeGenre ? setGenreError : setCatalogueError)('');
     const next = page + 1;
     const genreVersion = genreRequest.current;
     const catalogueVersion = catalogueRequest.current;
@@ -734,12 +748,13 @@ export default function NovelScreen() {
         const target = activeGenre ? setGenreResults : setNovels;
         target((prev) => [...prev, ...more]);
         setPage(next);
+        setHasMore(more.length > 0);
         setLoadingMore(false);
         void enhanceCovers(more).then((enhanced) => {
           if (currentRequest()) target((prev) => mergeNovelCovers(prev, enhanced));
         }).catch(() => undefined);
       })
-      .catch(() => { if (currentRequest()) setLoadingMore(false); });
+      .catch(() => { if (currentRequest()) { setLoadingMore(false); (activeGenre ? setGenreError : setCatalogueError)('The next shelf could not load. Please try again.'); } });
   }, [page, loadingMore, activeGenre]);
 
   // Recent search helpers
@@ -783,6 +798,40 @@ export default function NovelScreen() {
   };
 
   const activeGenreLabel = GENRES.find((g) => g.value === activeGenre)?.label ?? 'All';
+
+  if (Platform.OS === 'web') {
+    return <NovelDiscoveryWeb
+      scrollRef={scrollRef}
+      novels={displayNovels}
+      featured={HUMOR_ME_HERO}
+      loading={isLoadingDisplay || (isSearching && search.trim() !== debouncedSearch.trim())}
+      loadingMore={loadingMore}
+      refreshing={refreshing}
+      hasMore={!isSearching && hasMore}
+      search={search}
+      activeGenre={activeGenre}
+      genres={GENRES}
+      recentSearches={recentSearches}
+      continueReading={continueNovels}
+      progress={novelProgressMap}
+      error={isSearching ? searchError : isFiltering ? genreError : catalogueError}
+      onSearch={(value) => { setSearch(value); if (value) setActiveGenre(''); }}
+      onGenre={handleGenreSelect}
+      onRecentRemove={handleRecentRemove}
+      onClearRecent={handleClearAll}
+      onLoadMore={loadMore}
+      onRefresh={() => {
+        if (isSearching) setSearchRetry((value) => value + 1);
+        else if (isFiltering) void handleGenreSelect(activeGenre);
+        else onRefresh();
+      }}
+      onRetry={() => {
+        if (isSearching) setSearchRetry((value) => value + 1);
+        else if (isFiltering) void handleGenreSelect(activeGenre);
+        else void loadNovels();
+      }}
+    />;
+  }
 
   return (
     <View style={s.root}>
