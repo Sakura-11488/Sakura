@@ -399,7 +399,7 @@ function escGql(s: string) {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-async function runAL(q: string): Promise<unknown> {
+async function runAL(q: string, timeoutMs = 6000): Promise<unknown> {
   return withAnimeTimeout(async (signal) => {
     const res = await fetch(ANILIST_URL, {
       method: 'POST',
@@ -411,7 +411,7 @@ async function runAL(q: string): Promise<unknown> {
     const json = await res.json();
     if (json?.errors?.length) throw new Error(json.errors[0]?.message);
     return json;
-  });
+  }, timeoutMs);
 }
 
 function alToResult(m: Record<string, unknown>): AnimeResult | null {
@@ -1088,6 +1088,52 @@ function hasSuspiciousEpisodeCount(info: AnimeInfo): boolean {
   return title === 'one piece' && info.episodes.length < 100;
 }
 
+type AiredEpisodeBound = { count: number; nextAiringAt: number };
+
+async function applyAiredEpisodeBound(info: AnimeInfo): Promise<AnimeInfo> {
+  // Provider episode lists and completed shows already have their own counts.
+  // Only metadata-generated MAL lists can contain a season's planned total.
+  if (/^(?:finished airing|finished)$/i.test(info.status?.trim() || '')
+    || !/^[1-9]\d*$/.test(info.id) || !info.episodes.length
+    || !info.episodes.every((episode) => Number.isSafeInteger(episode.number) && episode.number > 0
+      && episode.id === `mal-${info.id}-${episode.number}`)) return info;
+
+  const key = `aired_bound_${info.id}`;
+  let bound = cGet<AiredEpisodeBound>(key);
+  if (bound && bound.nextAiringAt <= Date.now()) bound = null;
+  if (!bound) {
+    try {
+      const json = await runAL(`{
+        Media(idMal: ${Number(info.id)}, type: ANIME) {
+          idMal status nextAiringEpisode { episode airingAt }
+        }
+      }`, 2500) as { data?: { Media?: {
+        idMal?: number; status?: string;
+        nextAiringEpisode?: { episode?: number; airingAt?: number };
+      } } };
+      const media = json?.data?.Media;
+      const next = media?.nextAiringEpisode;
+      const nextEpisode = next?.episode;
+      const nextAiringSeconds = next?.airingAt;
+      const nextAiringAt = typeof nextAiringSeconds === 'number' && Number.isSafeInteger(nextAiringSeconds)
+        ? nextAiringSeconds * 1000 : 0;
+      if (media?.idMal !== Number(info.id) || media.status !== 'RELEASING'
+        || !Number.isSafeInteger(nextEpisode) || Number(nextEpisode) < 1 || Number(nextEpisode) > 50_001
+        || !Number.isSafeInteger(nextAiringAt) || nextAiringAt <= Date.now()) return info;
+      bound = { count: Number(nextEpisode) - 1, nextAiringAt };
+      cSet(key, bound, Math.min(5 * 60_000, nextAiringAt - Date.now()));
+    } catch {
+      // Metadata outages or missing schedules must never hide playable episodes.
+      return info;
+    }
+  }
+  // Keep the original list in both content caches. Once the schedule expires,
+  // a newly aired episode must be able to return without rebuilding that list.
+  const episodes = info.episodes.filter((episode) => episode.number <= bound.count);
+  return { ...info, status: 'Currently Airing', episodes,
+    ...(episodes.length ? {} : { episodeLoadError: 'The first episode has not aired yet.' }) };
+}
+
 function hydrateStreamingFromInfo(info: AnimeInfo, malId: string) {
   if (info.streamingSlug && info.streamingAnimeId) {
     registerStreamingSource(info.streamingSlug, info.streamingAnimeId, malId);
@@ -1164,6 +1210,7 @@ export async function fetchAnimeInfo(
     cDelete(key);
     cDelete(`srcmap_${id}`);
     cDelete(`srcslug_${id}`);
+    cDelete(`aired_bound_${id}`);
   }
 
   const cached = cGet<AnimeInfo>(key);
@@ -1172,7 +1219,7 @@ export async function fetchAnimeInfo(
     if (!cached.episodes.some((e) => e.thumbnail)) {
       void enrichEpisodeThumbnails(cached.episodes, id);
     }
-    return cached;
+    return applyAiredEpisodeBound(cached);
   }
   let diskCached = await getCachedValue<AnimeInfo>(diskKey);
   if (!diskCached) {
@@ -1184,7 +1231,7 @@ export async function fetchAnimeInfo(
     if (!diskCached.episodes.some((e) => e.thumbnail)) {
       void enrichEpisodeThumbnails(diskCached.episodes, id);
     }
-    return diskCached;
+    return applyAiredEpisodeBound(diskCached);
   }
 
   const jikan = await jikanFull(id);
@@ -1272,7 +1319,7 @@ export async function fetchAnimeInfo(
     await setCachedValue(diskKey, info, 24 * 3_600_000);
   }
 
-  return info;
+  return applyAiredEpisodeBound(info);
 }
 
 async function resolveSlugForPlayback(
