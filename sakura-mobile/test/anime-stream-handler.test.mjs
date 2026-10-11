@@ -23,6 +23,13 @@ const scope = `/anime/${'a'.repeat(32)}/${'b'.repeat(32)}/`;
 const master = `https://fetch.nexabloom.top${scope}master.m3u8`;
 const variant = `https://fetch.nexabloom.top${scope}index.m3u8`;
 const segment = `https://7v8gl.eclipseharbor.space${scope}seg-1.jpg`;
+// Observed in failing SUB/DUB episode manifests and validated with TS bytes.
+const auditedSegmentHosts = [
+  'fn5an.wintergrove.space', 'ifhid.mistyhorizon.space', '6of3m.goldenanchor.space',
+  'blwhh.hiddenvertex.space', 'uq03g.phantomharbor.space', '4qr2r.silentvoyage.space',
+  '79qle.hiddenvertex.top', '55z9f.midnightvale.top', 'ssoi0.silentforge.top',
+  'wlzr8.lootbeforehomework.site',
+];
 const caption = `https://6a8y6.broforgotsave.online${scope}subtitles/eng-2.vtt`;
 const publicUrl = 'https://project.supabase.co/functions/v1/anime-stream';
 const input = { malId: '21', episode: 1, category: 'sub' };
@@ -261,7 +268,7 @@ test('disguised TS streams preserve bytes and ignored Range status without leaki
 test('verified sub and dub segment families remain constrained to the episode hash directory', async () => {
   for (const host of ['7v8gl.eclipseharbor.space','iwlhp.stellarfrontier.space','7o819.twilightharbor.space','c6bk0.oakhorizon.space',
     'k2m9x.shadowharbor.space','qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site',
-    'f98cw.midnightvoyage.site','3xgg1.midnightvoyage.site','n953x.midnightvoyage.site']) {
+    'f98cw.midnightvoyage.site','3xgg1.midnightvoyage.site','n953x.midnightvoyage.site', ...auditedSegmentHosts]) {
     const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\nhttps://${host}${scope}seg-1.js\n`});
     const url = await segmentCapability(h);
     assert.equal(new URL(payload(url).u).hostname,host);
@@ -273,14 +280,15 @@ test('verified sub and dub segment families remain constrained to the episode ha
   }
 });
 
-test('midnightvoyage playlist children reject lookalike hosts and paths outside the signed episode', async () => {
+test('audited CDN playlist children reject lookalike hosts and paths outside the signed episode', async () => {
   const outside = `/anime/${'c'.repeat(32)}/${'d'.repeat(32)}/`;
-  for (const url of [
-    `https://f98cw.midnightvoyage.site.evil.test${scope}seg-f1-1.jpg`,
-    `https://f98cw.evilmidnightvoyage.site${scope}seg-f1-1.jpg`,
-    `https://f98cw.midnightvoyage.site/other/seg-f1-1.jpg`,
-    `https://f98cw.midnightvoyage.site${outside}seg-f1-1.jpg`,
-  ]) {
+  const invalidUrls = ['f98cw.midnightvoyage.site', ...auditedSegmentHosts].flatMap(host => [
+    `https://${host}.evil.test${scope}seg-f1-1.jpg`,
+    `https://${host.replace('.', '.evil')}${scope}seg-f1-1.jpg`,
+    `https://${host}/other/seg-f1-1.jpg`,
+    `https://${host}${outside}seg-f1-1.jpg`,
+  ]);
+  for (const url of invalidUrls) {
     const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\n${url}\n`});
     const source = await resolveSource(h);
     const masterResponse = await h.handler(new Request(source.url));
