@@ -3,7 +3,8 @@ import type Hls from 'hls.js';
 import type { SubtitleMode } from '@/lib/anime-playback-overrides';
 import type { PlayerChromeOptions } from './player-types';
 import PlayerIcon, { type PlayerIconName } from './PlayerIcon.web';
-import { readPlayerPreferences, savePlayerPreferences } from './player-preferences';
+import { readPlayerPreferences, savePlayerPreferences, type PlayerPreferences, type QualityPreference, type SubtitleLanguage } from './player-preferences';
+import { qualityLimit } from './player-media-preferences';
 import { playerStyles } from './player-styles';
 import useUpNext from './useUpNext.web';
 
@@ -12,16 +13,18 @@ type Props = {
   hlsRef: RefObject<Hls | null>;
   uri: string;
   options: PlayerChromeOptions;
-  onCaptionModeChange: (mode: SubtitleMode) => void;
+  onCaptionModeChange: (mode: SubtitleMode, language?: SubtitleLanguage) => void;
+  onQualityChange: (choice: QualityPreference | number) => void;
 };
 type Menu = 'speed' | 'quality' | 'captions' | null;
 type MediaState = {
   time: number; duration: number; buffered: number; paused: boolean; ended: boolean;
   volume: number; muted: boolean; speed: number; quality: number;
-  levels: Array<{ index: number; label: string }>;
-  captions: Array<{ index: number; label: string; selected: boolean }>;
+  levels: Array<{ index: number; label: string; height: number }>;
+  qualityManaged: boolean;
+  captions: Array<{ index: number; label: string; language: string; selected: boolean }>;
 };
-const INITIAL: MediaState = { time: 0, duration: 0, buffered: 0, paused: true, ended: false, volume: 1, muted: false, speed: 1, quality: -1, levels: [], captions: [] };
+const INITIAL: MediaState = { time: 0, duration: 0, buffered: 0, paused: true, ended: false, volume: 1, muted: false, speed: 1, quality: -1, levels: [], qualityManaged: false, captions: [] };
 const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 export function playerTime(seconds: number): string {
   const value = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
@@ -35,7 +38,7 @@ function IconButton({ icon, label, onClick, active, disabled, className = '' }: 
     aria-pressed={active} disabled={disabled}><PlayerIcon name={icon} /></button>;
 }
 
-export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaptionModeChange }: Props) {
+export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaptionModeChange, onQualityChange }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -50,6 +53,8 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   const [fullscreen, setFullscreen] = useState(false);
   const [resumedAt, setResumedAt] = useState<number | null>(null);
   const [notice, setNotice] = useState('');
+  const [preferences, setPreferences] = useState(readPlayerPreferences);
+  const [qualityOverride, setQualityOverride] = useState<number | null>(null);
   const { upNext, autoplay, toggleAutoplay, playNext, cancelNext, clearNext } = useUpNext(
     videoRef, `${uri}|${options.episodeNumber ?? ''}|${options.title}`, options.nextEpisode,
   );
@@ -118,6 +123,12 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
 
   useEffect(() => { menuRef.current = menu; reveal(); }, [menu, reveal]);
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.dataset.captionSize = preferences.captionSize;
+    video.dataset.captionBackground = preferences.captionBackground;
+  }, [videoRef, preferences.captionSize, preferences.captionBackground]);
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(''), 4500);
     return () => clearTimeout(timer);
@@ -128,6 +139,8 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     if (!video) return;
     let disposed = false, metadataSeen = false;
     const preferences = readPlayerPreferences();
+    setPreferences(preferences);
+    setQualityOverride(null);
     video.volume = preferences.volume;
     video.muted = preferences.muted;
     video.playbackRate = preferences.speed;
@@ -145,9 +158,10 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
       setMedia({ time: video.currentTime, duration, buffered, paused: video.paused, ended: video.ended,
         volume: video.volume, muted: video.muted, speed: video.playbackRate,
         quality: hls?.autoLevelEnabled === false ? hls.currentLevel : -1,
-        levels: (hls?.levels ?? []).map((level, index) => ({ index, label: level.height ? `${level.height}p` : `${Math.round(level.bitrate / 1000)} kbps` })),
+        qualityManaged: !!hls,
+        levels: (hls?.levels ?? []).map((level, index) => ({ index, height: level.height, label: level.height ? `${level.height}p` : `${Math.round(level.bitrate / 1000)} kbps` })),
         captions: Array.from(video.textTracks).filter(track => track.kind === 'subtitles' || track.kind === 'captions')
-          .map(track => ({ index: Array.from(video.textTracks).indexOf(track), label: track.label || track.language || 'Subtitles', selected: track.mode === 'showing' })),
+          .map(track => ({ index: Array.from(video.textTracks).indexOf(track), label: track.label || track.language || 'Subtitles', language: track.language, selected: track.mode === 'showing' })),
       });
     };
     const onMetadata = () => {
@@ -174,7 +188,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
       setFullscreen(!!(doc.fullscreenElement || doc.webkitFullscreenElement || (video as HTMLVideoElement & { webkitDisplayingFullscreen?: boolean }).webkitDisplayingFullscreen));
       reveal();
     };
-    for (const event of ['timeupdate', 'progress', 'durationchange', 'seeked', 'ended', 'loadeddata']) video.addEventListener(event, update);
+    for (const event of ['timeupdate', 'progress', 'durationchange', 'seeked', 'ended', 'loadeddata', 'sakura:media-options']) video.addEventListener(event, update);
     video.addEventListener('loadedmetadata', onMetadata);
     video.addEventListener('playing', onPlaying);
     video.addEventListener('play', onPlaying);
@@ -191,7 +205,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     update(); reveal();
     return () => {
       disposed = true;
-      for (const event of ['timeupdate', 'progress', 'durationchange', 'seeked', 'ended', 'loadeddata']) video.removeEventListener(event, update);
+      for (const event of ['timeupdate', 'progress', 'durationchange', 'seeked', 'ended', 'loadeddata', 'sakura:media-options']) video.removeEventListener(event, update);
       video.removeEventListener('loadedmetadata', onMetadata);
       video.removeEventListener('playing', onPlaying);
       video.removeEventListener('play', onPlaying);
@@ -236,18 +250,33 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     const video = videoRef.current;
     if (!video) return;
     const mode = index < 0 ? 'off' : 'auto';
-    captionCallback.current(mode);
-    savePlayerPreferences({ captions: mode });
-    if (hlsRef.current) hlsRef.current.subtitleDisplay = index >= 0;
-    Array.from(video.textTracks).forEach((track, at) => { track.mode = at === index ? 'showing' : 'disabled'; });
+    const track = index >= 0 ? video.textTracks[index] : undefined;
+    const language = track ? { code: track.language || undefined, label: track.label || undefined } : undefined;
+    const patch = { captions: mode as SubtitleMode, ...(language ? { subtitleLanguage: language } : {}) };
+    savePlayerPreferences(patch);
+    setPreferences(previous => ({ ...previous, ...patch }));
+    captionCallback.current(mode, language);
     setMedia(previous => ({ ...previous, captions: previous.captions.map(track => ({ ...track, selected: track.index === index })) }));
   };
-  const changeQuality = (index: number) => {
-    if (hlsRef.current) hlsRef.current.currentLevel = index;
-    setMedia(previous => ({ ...previous, quality: index }));
+  const changeQuality = (choice: QualityPreference | number) => {
+    setQualityOverride(typeof choice === 'number' ? choice : null);
+    if (typeof choice !== 'number') {
+      savePlayerPreferences({ qualityPreference: choice });
+      setPreferences(previous => ({ ...previous, qualityPreference: choice }));
+    }
+    onQualityChange(choice);
+  };
+  const changeAppearance = (patch: Partial<Pick<PlayerPreferences, 'captionSize' | 'captionBackground'>>) => {
+    savePlayerPreferences(patch);
+    setPreferences(previous => ({ ...previous, ...patch }));
   };
   const captionsOn = media.captions.some(track => track.selected);
-  const selectedQuality = media.levels.find(level => level.index === media.quality)?.label ?? 'Auto';
+  const qualityName = { auto: 'Auto', balanced: 'Balanced', 'data-saver': 'Data saver' }[preferences.qualityPreference];
+  const cap = qualityLimit(media.levels, preferences.qualityPreference);
+  const cappedLevel = media.levels[cap.index];
+  const capDescription = cappedLevel ? (cappedLevel.height > (preferences.qualityPreference === 'balanced' ? 720 : 480) ? `lowest available ${cappedLevel.label}` : `up to ${cappedLevel.label}`) : '';
+  const selectedQuality = qualityOverride !== null ? `${media.levels.find(level => level.index === qualityOverride)?.label ?? 'Manual'} · this episode`
+    : !media.qualityManaged ? 'Browser manages stream quality' : `${qualityName}${capDescription ? ` · ${capDescription}` : ''}`;
   const fraction = media.duration > 0 ? Math.min(100, media.time / media.duration * 100) : 0;
   const bufferedFraction = media.duration > 0 ? Math.min(100, media.buffered / media.duration * 100) : 0;
   const validMarker = (marker: { start: number; end: number } | undefined) => marker && Number.isFinite(marker.start) && Number.isFinite(marker.end)
@@ -256,6 +285,54 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     : validMarker(options.outro) ? { label: 'Skip Ending', end: options.outro!.end } : null;
   const showChrome = visible || media.paused || !!menu;
   const countdownSeconds = Math.max(1, Math.ceil((upNext?.remainingMs ?? 0) / 1000));
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !showChrome) return;
+    const positioned = new Map<VTTCue, { line: VTTCue['line']; snapToLines: boolean; placedLine: number }>();
+    const isPositioned = (cue: VTTCue) => cue.line === positioned.get(cue)?.placedLine && !cue.snapToLines;
+    const watched = new Set<TextTrack>();
+    let placementFrame = 0;
+    const placeCues = () => {
+      for (const track of watched) for (const item of Array.from(track.activeCues ?? [])) {
+        const cue = item as VTTCue;
+        // Leave authored placement untouched. Default cues get clear space above
+        // the custom controls, then return to the browser's placement on hide.
+        if (positioned.has(cue) && !isPositioned(cue)) { positioned.delete(cue); continue; }
+        if ((cue.snapToLines && cue.line === 'auto') || positioned.has(cue)) {
+          // Percentage positioning also clears the bar at the smallest caption
+          // size. Short viewports reserve room for a second caption line.
+          const placedLine = video.clientHeight <= 450 ? 60 : 72;
+          if (!positioned.has(cue)) positioned.set(cue, { line: cue.line, snapToLines: cue.snapToLines, placedLine });
+          else positioned.get(cue)!.placedLine = placedLine;
+          cue.snapToLines = false;
+          cue.line = placedLine;
+        }
+      }
+    };
+    // Chromium commits its default cue layout after cuechange listeners run.
+    // Apply placement on the next frame so that layout cannot overwrite it.
+    const schedulePlacement = () => {
+      cancelAnimationFrame(placementFrame);
+      placementFrame = requestAnimationFrame(() => { placementFrame = requestAnimationFrame(placeCues); });
+    };
+    const watchTracks = () => {
+      for (const track of Array.from(video.textTracks)) if (!watched.has(track)) { watched.add(track); track.addEventListener('cuechange', schedulePlacement); }
+      schedulePlacement();
+    };
+    video.textTracks.addEventListener('addtrack', watchTracks);
+    const resize = new ResizeObserver(schedulePlacement); resize.observe(video);
+    watchTracks();
+    return () => {
+      video.textTracks.removeEventListener('addtrack', watchTracks);
+      resize.disconnect();
+      cancelAnimationFrame(placementFrame);
+      for (const track of watched) track.removeEventListener('cuechange', schedulePlacement);
+      for (const [cue, original] of positioned) if (isPositioned(cue)) {
+        cue.snapToLines = original.snapToLines; cue.line = original.line;
+      }
+    };
+  }, [showChrome, uri, videoRef]);
+
 
   return <div className="sc-player" ref={rootRef} data-sakura-player="" data-up-next-visible={upNext && options.nextEpisode ? 'true' : 'false'} data-chrome-visible={showChrome ? 'true' : 'false'}
     onPointerMove={event => { if (event.pointerType !== 'touch') reveal(); }} onFocus={reveal}
@@ -309,7 +386,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
         <div className="sc-footer-space" />
         {options.nextEpisode && <button type="button" className="sc-button sc-next" onClick={playNext} aria-label={`Next episode: ${options.nextEpisode.label}`} title={`Next episode: ${options.nextEpisode.label}`}><PlayerIcon name="next" /><span>{options.nextEpisode.label}</span></button>}
         <button type="button" className="sc-button sc-speed" onClick={event => toggleMenu('speed', event.currentTarget)} aria-label="Playback speed" aria-expanded={menu === 'speed'}>{media.speed}×</button>
-        <button type="button" className={`sc-button${captionsOn ? ' sc-active' : ''}`} onClick={event => toggleMenu('captions', event.currentTarget)} aria-label="Captions" aria-expanded={menu === 'captions'} disabled={!media.captions.length}><PlayerIcon name="captions" /></button>
+        <button type="button" className={`sc-button${captionsOn ? ' sc-active' : ''}`} onClick={event => toggleMenu('captions', event.currentTarget)} aria-label="Captions" aria-expanded={menu === 'captions'}><PlayerIcon name="captions" /></button>
         <button type="button" className="sc-button" onClick={event => toggleMenu('quality', event.currentTarget)} aria-label="Playback settings" aria-expanded={!!menu}><PlayerIcon name="settings" /></button>
         <IconButton icon={fullscreen ? 'collapse' : 'fullscreen'} label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen} />
       </div>
@@ -320,20 +397,33 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
       <div className="sc-menu-options">
         {menu === 'speed' && SPEEDS.map(speed => <button type="button" key={speed} aria-pressed={media.speed === speed} onClick={() => { if (videoRef.current) { videoRef.current.playbackRate = speed; savePlayerPreferences({ speed }); } }}><span>{speed === 1 ? 'Normal' : `${speed}×`}</span>{media.speed === speed && <PlayerIcon name="check" />}</button>)}
         {menu === 'quality' && <>
-          <button type="button" aria-pressed={media.quality === -1} onClick={() => changeQuality(-1)}><span>Auto <small>Recommended</small></span>{media.quality === -1 && <PlayerIcon name="check" />}</button>
-          {media.levels.map(level => <button type="button" key={level.index} aria-pressed={media.quality === level.index} onClick={() => changeQuality(level.index)}><span>{level.label}</span>{media.quality === level.index && <PlayerIcon name="check" />}</button>)}
-          {!media.levels.length && <p>Your browser manages stream quality.</p>}
+          <p className="sc-option-heading">Preferred streaming quality</p>
+          {(['auto', 'balanced', 'data-saver'] as const).map(choice => <button type="button" key={choice} aria-pressed={qualityOverride === null && preferences.qualityPreference === choice} onClick={() => changeQuality(choice)}>
+            <span>{{ auto: 'Auto', balanced: 'Balanced', 'data-saver': 'Data saver' }[choice]}<small>{{ auto: 'Adapt to connection', balanced: 'Up to 720p', 'data-saver': 'Up to 480p' }[choice]}</small></span>
+            {qualityOverride === null && preferences.qualityPreference === choice && <PlayerIcon name="check" />}
+          </button>)}
+          {!media.qualityManaged && <p>Your browser manages this stream’s quality. Your preference is saved for supported streams.</p>}
+          {media.qualityManaged && media.levels.length > 0 && <>
+            <p className="sc-option-heading">This episode only</p>
+            {media.levels.map(level => <button type="button" key={level.index} aria-pressed={qualityOverride === level.index} onClick={() => changeQuality(level.index)}><span>{level.label}</span>{qualityOverride === level.index && <PlayerIcon name="check" />}</button>)}
+            <p>Uses a lower option when needed, or the lowest available if none fits your limit.</p>
+          </>}
         </>}
         {menu === 'captions' && <>
+          <p className="sc-option-heading">Language</p>
           <button type="button" aria-pressed={!captionsOn} onClick={() => changeCaptions(-1)}><span>Off</span>{!captionsOn && <PlayerIcon name="check" />}</button>
           {media.captions.map(track => <button type="button" key={track.index} aria-pressed={track.selected} onClick={() => changeCaptions(track.index)}><span>{track.label}</span>{track.selected && <PlayerIcon name="check" />}</button>)}
           {!media.captions.length && <p>No captions for this source.</p>}
+          {preferences.subtitleLanguage && <p>Preferred: {preferences.subtitleLanguage.label || preferences.subtitleLanguage.code}</p>}
+          <fieldset className="sc-caption-options"><legend>Text size</legend><div>{(['small', 'medium', 'large'] as const).map(size => <button type="button" key={size} aria-label={`${size} captions`} aria-pressed={preferences.captionSize === size} onClick={() => changeAppearance({ captionSize: size })}>{size === 'small' ? 'Small' : size === 'medium' ? 'Medium' : 'Large'}</button>)}</div></fieldset>
+          <fieldset className="sc-caption-options"><legend>Background</legend><div>{(['none', 'soft', 'solid'] as const).map(background => <button type="button" key={background} aria-label={`${background} caption background`} aria-pressed={preferences.captionBackground === background} onClick={() => changeAppearance({ captionBackground: background })}>{background === 'none' ? 'None' : background === 'soft' ? 'Soft' : 'Solid'}</button>)}</div></fieldset>
+          <div className="sc-caption-preview" aria-label="Caption preview" data-size={preferences.captionSize} data-background={preferences.captionBackground}><span>Your next story awaits.</span></div>
         </>}
       </div>
       <button type="button" className="sc-autoplay-toggle" role="switch" aria-label="Autoplay next episode" aria-checked={autoplay} onClick={toggleAutoplay}>
         <span>Autoplay next episode</span><span className="sc-switch-track" aria-hidden="true"><span /></span>
       </button>
-      <div className="sc-menu-foot">{menu === 'quality' ? `${selectedQuality} quality` : 'Saved for your next episode'}</div>
+      <div className="sc-menu-foot">{menu === 'quality' ? selectedQuality : 'Saved for your next episode'}</div>
     </div>}
   </div>;
 }

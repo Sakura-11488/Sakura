@@ -411,7 +411,7 @@ export default function AnimeWatch() {
       // Category switches and retries stay in the current episode. Their
       // in-memory clock is newer than the throttled persisted bookmark.
       const saved = episodeChanged
-        ? await getAnimeWatchProgress(String(id)).catch(() => null)
+        ? await getAnimeWatchProgress(String(id), ep, epNumInt).catch(() => null)
         : null;
       if (cancelled) return;
       playbackEpisodeKeyRef.current = episodeKey;
@@ -419,7 +419,7 @@ export default function AnimeWatch() {
         CATALOG_EPISODE_ID.test(ep || '') && CATALOG_EPISODE_ID.test(saved.episodeId) && saved.episodeNumber === epNumInt
       ));
       if (restartRequestedRef.current && matchingBookmark) {
-        await setAnimeWatchProgress({ ...saved, progress: 0, positionSeconds: 0, completed: false });
+        await setAnimeWatchProgress({ ...saved, progress: 0, positionSeconds: 0, completed: false, updatedAt: Date.now() });
         if (cancelled) return;
       }
       if (
@@ -506,13 +506,19 @@ export default function AnimeWatch() {
       let src = await fetchEpisodeSources(ep, category, id, {
         force: retryCount > 0 || !!playbackHint?.forceFreshSource,
       }).catch(() => null);
-      if (!src?.unavailableCategory && !src?.embedUrl && !src?.url && retryCount === 0) {
-        src = await fetchEpisodeSources(
-          ep,
-          category === 'sub' ? 'dub' : 'sub',
-          id,
-          { force: !!playbackHint?.forceFreshSource },
-        ).catch(() => null);
+      if (!src?.unavailableCategory && !src?.embedUrl && !src?.url) {
+        if (isWeb) {
+          // A failed lookup does not establish which audio is available. Keep
+          // the chosen language and offer an explicit switch in recovery UI.
+          if (!cancelled) setAvailableCategories(['sub', 'dub']);
+        } else if (retryCount === 0) {
+          src = await fetchEpisodeSources(
+            ep,
+            category === 'sub' ? 'dub' : 'sub',
+            id,
+            { force: !!playbackHint?.forceFreshSource },
+          ).catch(() => null);
+        }
       }
       if (cancelled) return;
 

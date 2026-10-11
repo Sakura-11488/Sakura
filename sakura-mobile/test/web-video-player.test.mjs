@@ -25,7 +25,7 @@ function events(target = {}) {
 
 // Drive source changes and actual registered callbacks without a browser decoder.
 // Browser playback/network verification remains separate from these lifecycle tests.
-function harness(initialProps = {}, { hlsSupported = true } = {}) {
+function harness(initialProps = {}, { hlsSupported = true, preferences = {} } = {}) {
   const slots = [], effects = [], instances = [], timers = new Map();
   let cursor = 0, nextTimer = 0, ready = 0, errors = 0, plays = 0;
   const track = { kind: 'subtitles', mode: 'disabled' };
@@ -38,10 +38,10 @@ function harness(initialProps = {}, { hlsSupported = true } = {}) {
     removeAttribute(name) { if (name === 'src') this.src = ''; },
   });
   class Hls {
-    static Events = { ERROR: 'error', MANIFEST_PARSED: 'manifest', SUBTITLE_TRACKS_UPDATED: 'subtitles' };
+    static Events = { ERROR: 'error', MANIFEST_PARSED: 'manifest', SUBTITLE_TRACKS_UPDATED: 'subtitles', LEVELS_UPDATED: 'levels' };
     static ErrorTypes = { MEDIA_ERROR: 'mediaError', NETWORK_ERROR: 'networkError' };
     static isSupported() { return hlsSupported; }
-    constructor(config) { this.config = config; this.handlers = new Map(); this.recoveries = 0; this.destroyed = false; instances.push(this); }
+    constructor(config) { this.levels = []; this.startLevel = config.startLevel ?? -1; this.autoLevelEnabled = true; this.subtitleTracks = []; this.subtitleTrack = -1; this.config = config; this.handlers = new Map(); this.recoveries = 0; this.destroyed = false; instances.push(this); }
     on(name, callback) { this.handlers.set(name, callback); }
     emit(name, data) { this.handlers.get(name)?.(name, data); }
     loadSource(uri) { this.uri = uri; }
@@ -72,7 +72,11 @@ function harness(initialProps = {}, { hlsSupported = true } = {}) {
       if (id === 'react-native') return { View: 'View', StyleSheet: { create: styles => styles } };
       if (id === 'hls.js') return Hls;
       if (id === './PlayerChrome.web') return 'PlayerChrome';
-      if (id === './player-preferences') return { readPlayerPreferences: () => ({ volume: 1, muted: false, speed: 1 }) };
+      if (id === './player-preferences') return { readPlayerPreferences: () => ({ volume: 1, muted: false, speed: 1, qualityPreference: 'auto', captionSize: 'medium', captionBackground: 'soft', ...preferences }) };
+      if (id === './player-media-preferences') {
+        const helper = ts.transpileModule(readFileSync(new URL('../components/anime/player-media-preferences.ts', import.meta.url), 'utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+        const helperExports = {};vm.runInNewContext(helper,{exports:helperExports});return helperExports;
+      }
       throw new Error(id);
     },
   });
@@ -323,4 +327,28 @@ test('checkpoint callback changes and custom chrome do not recreate the playback
   h.video.currentTime = 25; h.video.emit('pause');
   assert.equal(old.length, 0);
   assert.deepEqual(latest, [[25, 1440, false]]);
+});
+
+
+test('saved language is restored when tracks arrive later, while saved Off stays off', () => {
+  const h = harness({chrome:{title:'Fixture'},subtitleMode:'auto'}, {preferences:{captions:'auto',subtitleLanguage:{code:'es-MX',label:'Español'}}});
+  h.track.language='en';h.track.label='English';h.render();h.video.emit('loadedmetadata');
+  assert.equal(h.track.mode,'showing','fallback remains readable until preferred language arrives');
+  const spanish={kind:'subtitles',language:'spa',label:'Spanish',mode:'disabled'};
+  h.video.textTracks.push(spanish);h.video.textTracks.emit('addtrack');
+  assert.equal(spanish.mode,'showing');assert.equal(h.track.mode,'disabled');assert.equal(h.instances.length,1);
+  const off=harness({chrome:{title:'Fixture'},subtitleMode:'auto'}, {preferences:{captions:'off',subtitleLanguage:{code:'es'}}});
+  off.render();off.video.textTracks.push({...spanish,mode:'disabled'});off.video.textTracks.emit('addtrack');off.instances[0].emit('subtitles');
+  assert.ok(off.video.textTracks.every(track=>track.mode==='disabled'));assert.equal(off.instances[0].subtitleDisplay,false);
+});
+
+test('saved rendition limits apply at manifest, later discovery, and the next source', () => {
+  const h=harness({chrome:{title:'Fixture'}},{preferences:{qualityPreference:'balanced'}});h.render();
+  const engine=h.instances[0];assert.equal(engine.config.startLevel,0,'cap modes start conservatively before levels are discovered');
+  engine.levels=[{height:360},{height:480},{height:720},{height:1080}];engine.startLevel=3;engine.emit('manifest');
+  assert.equal(engine.autoLevelCapping,2);assert.equal(engine.startLevel,2);assert.equal(engine.nextAutoLevel,2);
+  engine.levels=[{height:240},{height:360},{height:480},{height:1080}];engine.emit('levels');assert.equal(engine.autoLevelCapping,2);
+  h.render({uri:'https://media.example/next.m3u8'});assert.equal(h.instances[1].config.startLevel,0);assert.equal(engine.destroyed,true);
+  const saver=harness({chrome:{title:'Fixture'}},{preferences:{qualityPreference:'data-saver'}});saver.render();
+  saver.instances[0].levels=[{height:720},{height:1080}];saver.instances[0].emit('manifest');assert.equal(saver.instances[0].autoLevelCapping,0,'lowest available is used when none is at or under480p');
 });

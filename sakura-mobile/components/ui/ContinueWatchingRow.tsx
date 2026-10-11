@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { contentWidth } from '@/constants/layout';
-import type { AnimeWatchProgress } from '@/lib/watch-progress';
+import { removeFromContinueWatching, type AnimeWatchProgress } from '@/lib/watch-progress';
 import { playTap } from '@/lib/sound';
 import SectionHeader from '@/components/ui/SectionHeader';
 
@@ -46,8 +46,10 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
   const CARD_H = CARD_W * 0.48;
   const s = useMemo(() => makeStyles(CARD_W, CARD_H), [CARD_W, CARD_H]);
   const router = useRouter();
+  const [dismissed, setDismissed] = useState<Record<string, number>>({});
+  const visibleItems = items.filter(item => item.updatedAt > (dismissed[item.animeId] ?? -1));
 
-  if (items.length === 0) return null;
+  if (visibleItems.length === 0) return null;
 
   const open = (item: AnimeWatchProgress) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -66,7 +68,7 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={s.list}
       >
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           const pct = Math.round(item.progress * 100);
           const thumb = item.episodeThumbnail || item.cover;
           const epLabel =
@@ -74,11 +76,13 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
               ? `Ep ${item.episodeNumber} · Up next`
               : `Ep ${item.episodeNumber}${item.episodeTitle ? ` · ${item.episodeTitle}` : ''}`;
           return (
+            <View key={item.animeId} style={[s.card, { backgroundColor: colors.white, borderColor: colors.border }]}>
             <TouchableOpacity
-              key={item.animeId}
+              accessibilityRole="button"
+              accessibilityLabel={`Continue ${item.title}, episode ${item.episodeNumber}`}
               activeOpacity={0.88}
               onPress={() => open(item)}
-              style={[s.card, { backgroundColor: colors.white, borderColor: colors.border }]}
+              style={s.cardContent}
             >
               <View style={s.thumbWrap}>
                 {thumb ? (
@@ -116,6 +120,17 @@ export default function ContinueWatchingRow({ items, title = 'Continue Watching'
                 </View>
               </View>
             </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${item.title} from Continue Watching`}
+              accessibilityHint="Keeps your episode history and watched status"
+              style={[s.remove, { backgroundColor: colors.white }]}
+              onPress={() => {
+                setDismissed(value => ({ ...value, [item.animeId]: item.updatedAt }));
+                void removeFromContinueWatching(item.animeId);
+              }}
+            ><AntDesign name="close" size={14} color={colors.textSecondary} /></TouchableOpacity>
+            </View>
           );
         })}
       </ScrollView>
@@ -141,6 +156,8 @@ const makeStyles = (CARD_W: number, CARD_H: number) => {
     borderWidth: StyleSheet.hairlineWidth,
     position: 'relative',
   },
+  cardContent: { flex: 1, flexDirection: 'row' },
+  remove: { position: 'absolute', right: 2, top: 2, width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', zIndex: 40 },
   thumbWrap: {
     width: THUMB_W,
     height: CARD_H,
@@ -205,7 +222,8 @@ const makeStyles = (CARD_W: number, CARD_H: number) => {
   body: {
     flex: 1,
     paddingHorizontal: Spacing.sm,
-    paddingVertical: 8,
+    paddingTop: 24,
+    paddingBottom: 8,
     justifyContent: 'center',
     gap: 3,
   },
