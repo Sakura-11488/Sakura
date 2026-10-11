@@ -206,13 +206,14 @@ export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (reques
       /(?:^|\.)(?:localhost|local|internal)$/.test(url.hostname)) {
       return fail(502, 'Unsupported media URL.');
     }
-    // shadowharbor.space: the segment CDN most titles were on when checked in
-    // October 2026. Without it, every variant playlist whose segments live there
-    // failed with 502 "Media host or path is not allowed." — the web player and
-    // web downloads alike. Later rotations: ANIME_STREAM_MEDIA_HOSTS (index.ts).
+    // Verified against provider playlists and actual MPEG-TS bytes, including
+    // different episode/language/rendition hosts in the October 2026 audit.
+    // Unknown rotations still fail closed; ANIME_STREAM_MEDIA_HOSTS (index.ts)
+    // supports adding a verified family without relaxing the episode scope.
     const providerMedia = url.hostname === 'fetch.nexabloom.top' ||
-      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon|shadowharbor)\.space$/.test(url.hostname) ||
-      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming|midnightvoyage)\.site$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon|shadowharbor|wintergrove|mistyhorizon|goldenanchor|hiddenvertex|phantomharbor|silentvoyage)\.space$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming|midnightvoyage|lootbeforehomework)\.site$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:hiddenvertex|midnightvale|silentforge)\.top$/.test(url.hostname) ||
       configuredMediaHost(url.hostname);
     const providerSubtitle = /^[a-z0-9]+\.broforgotsave\.online$/.test(url.hostname) && /\/subtitles\/[a-zA-Z0-9_.-]+$/.test(url.pathname);
     const providerPath = /^\/anime\/[a-f0-9]{32}\/[a-f0-9]{32}\//i.test(url.pathname);
