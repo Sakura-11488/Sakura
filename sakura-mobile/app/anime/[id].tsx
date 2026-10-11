@@ -33,7 +33,7 @@ import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { Toast } from '@/components/ui/Toast';
 import CommentsSection from '@/components/social/CommentsSection';
 import { fetchAnimeInfo, type AnimeInfo, type AnimeEpisode } from '@/lib/anime';
-import { getAnimeWatchProgress, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
+import { getAnimeWatchProgress, registerAnimeEpisodeCatalog, setAnimeEpisodeWatched, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 import {
   downloadAnimeEpisode,
   getOfflineEpisode,
@@ -743,6 +743,10 @@ export default function AnimeDetail() {
   }, [anime?.episodes.length, refreshOffline]);
 
   useEffect(() => {
+    if (id && anime?.episodes.length) void registerAnimeEpisodeCatalog(String(id), anime.episodes);
+  }, [id, anime?.episodes]);
+
+  useEffect(() => {
     if (!id) return;
     let active = true;
     setLoading(true);
@@ -997,6 +1001,13 @@ export default function AnimeDetail() {
               ...(offlineMap[episode.id]?.status === 'ready' ? { offline: '1' } : {}),
             },
           });
+        }}
+        onMarkWatched={(episode, watched) => {
+          void setAnimeEpisodeWatched({
+            animeId: String(id), title: anime.title, cover: anime.cover || anime.image || '',
+            episodeId: episode.id, episodeNumber: episode.number, episodeTitle: episode.title,
+            episodeThumbnail: episode.thumbnail, progress: 0, updatedAt: Date.now(),
+          }, watched, anime.episodes).then(() => setToast(watched ? 'Episode marked watched' : 'Episode marked unwatched'));
         }}
         onDownload={handleDownloadEpisode}
         discussion={offlineOnly

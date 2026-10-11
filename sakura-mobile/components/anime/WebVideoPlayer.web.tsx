@@ -9,25 +9,9 @@ import Hls from 'hls.js';
 import type { SubtitleMode } from '@/lib/anime-playback-overrides';
 import type { WebVideoPlayerHandle, WebVideoPlayerProps } from './player-types';
 import PlayerChrome from './PlayerChrome.web';
-import { readPlayerPreferences } from './player-preferences';
+import { readPlayerPreferences, type QualityPreference, type SubtitleLanguage } from './player-preferences';
+import { applyQualityPreference, applySubtitlePreferences } from './player-media-preferences';
 export type { WebVideoPlayerHandle } from './player-types';
-
-function applySubtitleMode(video: HTMLVideoElement, mode: SubtitleMode): void {
-  const tracks = video.textTracks;
-  if (!tracks?.length) return;
-  const captions = Array.from(tracks).filter((track) => track.kind === 'subtitles' || track.kind === 'captions');
-  const selected = captions.find((track) => track.mode === 'showing')
-    ?? captions.find((track) => /^en(?:-|$)/i.test(track.language))
-    ?? captions[0];
-  for (let i = 0; i < tracks.length; i++) {
-    const track = tracks[i];
-    if (mode === 'off') {
-      track.mode = 'disabled';
-    } else if (track.kind === 'subtitles' || track.kind === 'captions') {
-      track.mode = track === selected ? 'showing' : 'disabled';
-    }
-  }
-}
 
 // These provider headers only work in a native player or a server-side proxy.
 // Browsers own them; trying to set them cannot bypass a host's CORS policy.
@@ -72,7 +56,11 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const onTimeUpdateRef = useRef(onTimeUpdate);
-  const subtitleModeRef = useRef(chrome ? readPlayerPreferences().captions ?? subtitleMode : subtitleMode);
+  const preferences = chrome ? readPlayerPreferences() : undefined;
+  const subtitleModeRef = useRef(preferences?.captions ?? subtitleMode);
+  const subtitleLanguageRef = useRef<SubtitleLanguage | undefined>(preferences?.subtitleLanguage);
+  const qualityPreferenceRef = useRef<QualityPreference>(preferences?.qualityPreference ?? 'auto');
+  const manualQualityRef = useRef(false);
   // Equivalent header objects must not tear down a playing stream on rerender.
   const headersKey = browserHeadersKey(headers);
 
@@ -96,10 +84,11 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
   }, [onTimeUpdate]);
 
   useEffect(() => {
-    const mode = chrome ? readPlayerPreferences().captions ?? subtitleMode : subtitleMode;
+    const saved = chrome ? readPlayerPreferences() : undefined;
+    const mode = saved?.captions ?? subtitleMode;
     subtitleModeRef.current = mode;
-    if (hlsRef.current) hlsRef.current.subtitleDisplay = mode !== 'off';
-    if (videoRef.current) applySubtitleMode(videoRef.current, mode);
+    subtitleLanguageRef.current = saved?.subtitleLanguage;
+    if (videoRef.current) applySubtitlePreferences(videoRef.current, hlsRef.current, mode, subtitleLanguageRef.current);
   }, [subtitleMode, !!chrome]);
 
   useImperativeHandle(ref, () => ({
@@ -114,6 +103,8 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
     const video = videoRef.current;
     if (!video || !uri) return;
 
+    manualQualityRef.current = false;
+    qualityPreferenceRef.current = chrome ? readPlayerPreferences().qualityPreference : 'auto';
     let cancelled = false;
     let ready = false;
     let metadataLoaded = false;
@@ -151,8 +142,7 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
 
     const applySubtitles = () => {
       if (cancelled || failed) return;
-      if (hls) hls.subtitleDisplay = subtitleModeRef.current !== 'off';
-      applySubtitleMode(video, subtitleModeRef.current);
+      applySubtitlePreferences(video, hls, subtitleModeRef.current, subtitleLanguageRef.current);
     };
 
     const onMetadata = () => {
@@ -221,6 +211,8 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
       hls = new Hls({
         // Only play the selected episode; never launch a playlist's ad assets.
         enableInterstitialPlayback: false,
+        // Start capped modes at the lowest variant before automatic selection.
+        ...(qualityPreferenceRef.current !== 'auto' ? { startLevel: 0 } : {}),
         xhrSetup: (xhr) => {
           for (const [key, value] of safeHeaders) {
             xhr.setRequestHeader(key, value);
@@ -230,6 +222,13 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
       hlsRef.current = hls;
       hls.subtitleDisplay = subtitleModeRef.current !== 'off';
       hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, applySubtitles);
+      const updateQuality = (initial: boolean) => {
+        if (cancelled || failed || !hls) return;
+        if (!manualQualityRef.current) applyQualityPreference(hls, qualityPreferenceRef.current, initial);
+        if (typeof Event !== 'undefined') video.dispatchEvent?.(new Event('sakura:media-options'));
+      };
+      hls.on(Hls.Events.MANIFEST_PARSED, () => updateQuality(true));
+      hls.on(Hls.Events.LEVELS_UPDATED, () => updateQuality(false));
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal || cancelled || failed) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) recoverMedia();
@@ -264,6 +263,7 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
 
   const video = (
     <video ref={videoRef} style={styles.video} controls={!chrome} playsInline
+      className={chrome ? 'sakura-captions' : undefined} data-caption-size={preferences?.captionSize} data-caption-background={preferences?.captionBackground}
       crossOrigin={subtitles?.length ? 'anonymous' : undefined} preload="auto">
       {subtitles?.map((track) => <track key={track.url} kind="subtitles" src={track.url} srcLang={track.lang} label={track.label} />)}
     </video>
@@ -273,7 +273,18 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
       {chrome ? <>
         {video}
         <PlayerChrome videoRef={videoRef} hlsRef={hlsRef} uri={uri} options={chrome}
-          onCaptionModeChange={(mode) => { subtitleModeRef.current = mode; }} />
+          onCaptionModeChange={(mode, language) => {
+            subtitleModeRef.current = mode;
+            if (language) subtitleLanguageRef.current = language;
+            if (videoRef.current) applySubtitlePreferences(videoRef.current, hlsRef.current, mode, subtitleLanguageRef.current);
+          }} onQualityChange={(choice) => {
+            const hls = hlsRef.current;
+            manualQualityRef.current = typeof choice === 'number';
+            if (typeof choice !== 'number') qualityPreferenceRef.current = choice;
+            if (!hls) return;
+            if (typeof choice === 'number') { hls.autoLevelCapping = -1; hls.currentLevel = choice; }
+            else applyQualityPreference(hls, choice, false, true);
+          }} />
       </> : video}
     </View>
   );
