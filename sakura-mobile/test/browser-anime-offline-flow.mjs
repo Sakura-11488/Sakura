@@ -36,7 +36,8 @@ const server = createServer(async (req, res) => {
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true, ...(process.env.SAKURA_BROWSER_EXECUTABLE ? { executablePath: process.env.SAKURA_BROWSER_EXECUTABLE } : {}) });
-const context = await browser.newContext({ viewport: { width: 1100, height: 900 } });
+const context = await browser.newContext({ viewport: { width: 1100, height: 900 }, acceptDownloads: true });
+const exportedVideo = '/tmp/sakura-exported-offline-episode.mp4';
 const errors = [];
 const relayRequests = [];
 context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
@@ -84,11 +85,19 @@ try {
   await page.goto(`${base}/app/anime/21`, { waitUntil: 'domcontentloaded' });
   await page.getByText('Offline Anime Fixture', { exact: true }).first().waitFor();
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  const deviceDownload = page.waitForEvent('download', { timeout: 90_000 });
   await page.getByRole('button', { name: 'Download episode: episode 1', exact: true }).click();
   await waitForCache(async () => {
     const response = await (await caches.open('sakura-offline-v1')).match('/app/__offline/anime-manifest.json');
     return response && (await response.json()).episodes['21::mal-21-1']?.status === 'ready';
   });
+  const videoDownload = await deviceDownload;
+  assert.match(videoDownload.suggestedFilename(), /Offline Anime Fixture - Episode 1 - Sub.*\.mp4$/);
+  await videoDownload.saveAs(exportedVideo);
+  const exportedBytes = await readFile(exportedVideo);
+  assert.equal(exportedBytes.toString('ascii', 4, 8), 'ftyp');
+  await page.getByRole('heading', { name: 'Video download started', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Dismiss video download', exact: true }).click();
   assert.equal(relayRequests.filter(request => request.method === 'POST').length, 1);
   await page.evaluate(() => localStorage.removeItem('sakura_store_sakura_api_cache.json'));
   await page.close();
@@ -110,12 +119,39 @@ try {
   // Native captions can have white computed styles while a player overlay
   // paints black above them. Inspect actual pixels in the fixture's caption
   // band, between the left and right controls, to catch that regression.
-  const pixels = await sharp(screenshot).extract({ left: 300, top: 855, width: 500, height: 38 }).removeAlpha().raw().toBuffer();
+  // Current player preferences lift captions above visible controls. Check
+  // that cue region instead of the former hard-coded bottom caption line.
+  const band = await page.evaluate(() => {
+    const video = document.querySelector('video');
+    const rect = video.getBoundingClientRect();
+    const cue = [...video.textTracks].find(track => track.mode === 'showing')?.activeCues?.[0];
+    const line = cue && !cue.snapToLines && typeof cue.line === 'number' ? cue.line / 100 : 0.93;
+    return { left: Math.round(rect.left + rect.width * 0.2), top: Math.round(rect.top + rect.height * line), width: Math.round(rect.width * 0.6), height: Math.min(60, Math.floor(rect.height * (1 - line))) };
+  });
+  const pixels = await sharp(screenshot).extract(band).removeAlpha().raw().toBuffer();
   let brightCaptionPixels = 0;
   for (let i = 0; i < pixels.length; i += 3) if (pixels[i] > 200 && pixels[i + 1] > 200 && pixels[i + 2] > 200) brightCaptionPixels++;
   assert.ok(brightCaptionPixels > 200, `Captions must stay readable with controls visible (${brightCaptionPixels} bright pixels).`);
   assert.deepEqual(errors, []);
-  console.log('PASS: regular anime UI download, cold offline detail/watch, actual H.264/AAC playback, seek, local captions, zero uncaught page errors');
+  // Clear the website's storage, then open the device file in a completely
+  // separate browser context. It must be independent of Sakura and its HLS
+  // player, and remain usable after the browser copy is gone.
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await Promise.all((await caches.keys()).map(key => caches.delete(key)));
+    await Promise.all((await navigator.serviceWorker.getRegistrations()).map(reg => reg.unregister()));
+  });
+  const cleanContext = await browser.newContext();
+  const nativePage = await cleanContext.newPage();
+  await nativePage.setContent('<input type="file" accept="video/mp4"><video controls muted style="width:640px"></video>');
+  await nativePage.locator('input').setInputFiles(exportedVideo);
+  await nativePage.evaluate(() => { const video = document.querySelector('video'); video.src = URL.createObjectURL(document.querySelector('input').files[0]); video.load(); });
+  await nativePage.waitForFunction(() => { const v = document.querySelector('video'); return v.readyState >= 2 && v.videoWidth === 320 && v.duration > 7.9 && v.duration < 8.5; });
+  await nativePage.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 6; await v.play(); });
+  await nativePage.waitForFunction(() => { const v = document.querySelector('video'); return v.currentTime > 6.3 && !v.seeking && v.getVideoPlaybackQuality().totalVideoFrames > 0; });
+  await nativePage.screenshot({ path: '/tmp/sakura-exported-video-independent.png' });
+  await cleanContext.close();
+  console.log('PASS: UI download keeps Sakura offline copy and exports a real MP4; cold offline watch/seek/captions; exported native video still plays and seeks after clearing all site storage');
 } catch (error) {
   console.error(JSON.stringify({ url: page.url(), errors, requests: relayRequests.length, text: await page.locator('body').innerText().catch(() => '') }));
   await page.screenshot({ path: '/tmp/sakura-anime-offline-failure.png' }).catch(() => {});

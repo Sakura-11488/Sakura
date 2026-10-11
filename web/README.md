@@ -104,6 +104,27 @@ muxed audio/video. Progressive Sakura Original downloads can reuse partial bytes
 while the tab stays open, but restarting the tab restarts that transfer. Saved
 HLS segments remain resumable across reloads when the rendition still matches.
 
+Anime downloads now keep the browser copy and prepare a device video file from
+those same cached bytes. Existing episodes offer **Save video** on their title
+page and in Downloads. H.264/AAC transport streams are remuxed into MP4 without
+re-encoding; fragmented MP4 and cached progressive files are exported locally.
+Preparation is cancelable and does not delete the offline episode. One queued
+video is prepared at a time to avoid holding multiple large files in memory.
+
+The browser starts the file download and retains a **Download MP4** fallback.
+Android/desktop typically use Downloads; iPhone uses Files, with **Save / share**
+offering the system's available destinations, including Save Video when offered.
+File sharing must start from a fresh user tap after preparation. The app reports
+handoff, not a verified gallery save. Exported files survive clearing site data;
+websites cannot silently rediscover device files after their permissions/storage
+are cleared. Subtitles remain available in Sakura and as a separate VTT file.
+
+`sakura-mobile/test/anime-video-export.test.mjs` checks real generated media,
+AES-128 keys, byte ranges, discontinuities, and progressive-file integrity.
+`sakura-mobile/test/anime-device-save.test.mjs` checks completion, cancellation,
+queuing, retry, and share activation. The anime browser flow also saves the real
+MP4, clears website storage, and opens the file in a clean native video element.
+
 In the hosting checkout, run `node --test scripts/manga-page.test.cjs
 scripts/public-domain-comics.test.cjs scripts/cover-image.test.cjs` with its
 dependencies installed before syncing and reviewing the release.

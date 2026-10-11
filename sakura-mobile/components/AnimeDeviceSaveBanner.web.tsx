@@ -24,6 +24,7 @@ export default function AnimeDeviceSaveBanner() {
 
   const preparing = save.status === 'preparing';
   const ready = save.status === 'ready';
+  const videoFormat = /\.mov$/i.test(save.filename) ? 'MOV' : 'MP4';
   const progress = Math.round(Math.max(0, Math.min(1, save.progress || 0)) * 100);
   const heading = preparing ? 'Preparing video file' : ready ? save.downloadStarted ? 'Video download started' : 'Video file ready' : 'Could not prepare video';
   const share = () => {
@@ -44,17 +45,18 @@ export default function AnimeDeviceSaveBanner() {
     <div role="status" aria-live="polite" aria-atomic="true"><h2>{heading}</h2></div>
     <p className="svs-title">{save.title}</p>
     {preparing ? <>
-      <p>Keep Sakura open while your MP4 is prepared. Your episode stays saved in Sakura.</p>
+      <p>Keep Sakura open while your video is prepared. Your episode stays saved in Sakura.</p>
       <progress value={progress} max={100} aria-label="Video file preparation" />
       <p className="svs-filename">{progress}%</p>
     </> : ready ? <>
-      <p>{save.downloadStarted ? 'Check your browser’s downloads. If the file did not appear, tap Download MP4.' : 'Download the MP4 to keep a video file on your device.'}</p>
+      <p>{save.downloadStarted ? `Check your browser’s downloads. If the file did not appear, tap Download ${videoFormat}.` : `Download the ${videoFormat} to keep a video file on your device.`}</p>
       <p className="svs-filename">{save.filename}</p>
       <div className="svs-actions">
-        <button className="svs-primary" onClick={startAnimeDeviceDownload}>Download MP4</button>
+        <button className="svs-primary" onClick={startAnimeDeviceDownload}>Download {videoFormat}</button>
         {save.canShare && <button onClick={share} disabled={sharingKey === save.key}>{sharingKey === save.key ? 'Opening…' : 'Save / share'}</button>}
         {save.subtitle && <a href={save.subtitle.url} download={save.subtitle.filename}>Download subtitles ({save.subtitle.label})</a>}
       </div>
+      {save.canShare && <p>Use Save / share to choose a media app, or Save Video if your device offers it.</p>}
       {(save.error || shareError?.key === save.key) && <p className="svs-error" role="alert">{save.error || shareError?.text}</p>}
     </> : <>
       <p className="svs-error">{save.error || 'The video file could not be created.'}</p>
