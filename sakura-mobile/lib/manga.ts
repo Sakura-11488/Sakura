@@ -391,7 +391,20 @@ export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
 }
 
 export function toPageUrl(imagePath: string): string {
-  return absUrl(imagePath);
+  const resolved = absUrl(imagePath);
+  try {
+    const url = new URL(resolved);
+    // The website's old /static/pages route now returns 410. Chapter images
+    // are served at their original resolution by ATSU's public image CDN.
+    if (url.hostname === 'atsu.moe' && url.pathname.startsWith('/static/pages/')) {
+      url.protocol = 'https:';
+      url.hostname = 'cdn.atsu.moe';
+      return url.href;
+    }
+  } catch {
+    // Retain the existing resolution for unrecognized image paths.
+  }
+  return resolved;
 }
 
 /** Page image URLs for a manga chapter (atsu). */

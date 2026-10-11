@@ -117,6 +117,18 @@ The check uses installed Google Chrome on macOS. Elsewhere, set
 `SAKURA_BROWSER_EXECUTABLE` to a Chromium executable or install Playwright's
 Chromium. Optional browser tooling is kept outside application dependencies.
 
+## Manga page delivery
+
+ATSU chapter paths resolve to `https://cdn.atsu.moe/static/pages/`. The old
+website host returns 410, and the CDN's same-site image policy prevents direct
+browser embedding. Web readers therefore use the website's `/api/reader-image/`
+endpoint for these public images. Deploy that endpoint with the web export.
+It preserves image bytes and dimensions, permits only canonical ATSU page URLs,
+and bounds each download to 16 MiB and 20 seconds. Failed responses are not cached.
+Manhwa pages continue through their existing media endpoint; native readers use
+the CDN directly. Visible web pages and manual retries load eagerly while
+offscreen pages remain lazy.
+
 ## Notes
 
 - Use the same Supabase project and edge functions as mobile.

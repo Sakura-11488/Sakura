@@ -101,7 +101,7 @@ function imageHarness(initialProps = {}) {
     require(id) {
       if (id === 'react') return react;
       if (id === 'react/jsx-runtime') return { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }) };
-      if (id === 'expo-image') return { Image: 'Image' };
+      if (id === './ReaderImage') return { __esModule: true, default: 'Image' };
       if (id === 'react-native') return {
         ActivityIndicator: 'Spinner', Text: 'Text', TouchableOpacity: 'Button', View: 'View',
         StyleSheet: { create: (styles) => styles, absoluteFill: { position: 'absolute' } },
@@ -128,6 +128,7 @@ function text(tree) { return nodes(tree).filter((node) => node.type === 'Text').
 test('one failed mounted page shows retry and back without waiting for other chapter pages', () => {
   const h = imageHarness();
   let tree = h.render();
+  assert.equal(nodes(tree).find((node) => node.type === 'Image').props.accessibilityLabel, 'Page 1');
   nodes(tree).find((node) => node.type === 'Image').props.onError();
   tree = h.render();
   assert.match(text(tree), /Page 1 could not load/);
@@ -147,6 +148,8 @@ test('retry remounts only that page and ignores callbacks from the previous requ
   tree = h.render();
   const newImage = nodes(tree).find((node) => node.type === 'Image');
   assert.notEqual(oldImage.key, newImage.key);
+  assert.equal(oldImage.props.retryAttempt, 0);
+  assert.equal(newImage.props.retryAttempt, 1);
   oldImage.props.onLoad({ source: { width: 500, height: 800 } });
   assert.equal(h.loads, 0);
   newImage.props.onLoad({ source: { width: 500, height: 800 } });
@@ -157,13 +160,17 @@ test('retry remounts only that page and ignores callbacks from the previous requ
 
 test('a stalled image exposes recovery after 15 seconds without retrying automatically', () => {
   const h = imageHarness();
-  h.render();
+  const firstImage = nodes(h.render()).find((node) => node.type === 'Image');
   const timer = [...h.timers.values()][0];
   assert.equal(timer.ms, 15000);
   timer.callback();
   const tree = h.render();
   assert.match(text(tree), /Page 1 could not load/);
   assert.equal(nodes(tree).filter((node) => node.type === 'Image').length, 1);
+  assert.equal(nodes(tree).find((node) => node.type === 'Image').key, firstImage.key);
+  assert.equal(nodes(tree).find((node) => node.type === 'Image').props.retryAttempt, 0);
+  firstImage.props.onLoad({ source: { width: 1200, height: 1800 } });
+  assert.doesNotMatch(text(h.render()), /could not load|Loading page/);
 });
 
 test('an immediately cached image stays ready when its loading effect runs later', () => {
