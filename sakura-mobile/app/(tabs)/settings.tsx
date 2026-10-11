@@ -29,7 +29,9 @@ import { getProfile, upsertProfile } from '@/lib/supabase';
 import { useWallet } from '@/lib/wallet/context';
 import { clearApiCache, getApiCacheSizeBytes } from '@/lib/cache';
 import { clearAnimeSessionCache } from '@/lib/anime';
-import InstallGuideModal, { isStandaloneWebApp } from '@/components/InstallGuideModal';
+import InstallGuideModal, { detectInstallFlavor } from '@/components/InstallGuideModal';
+import { usePwaInstall } from '@/lib/use-pwa-install';
+import { requestInstall } from '@/lib/pwa-install';
 import { clearAllWatchProgress } from '@/lib/watch-progress';
 import { clearAllReadingProgress } from '@/lib/reader-progress';
 import { clearAllOfflineEpisodes } from '@/lib/anime-offline';
@@ -269,10 +271,16 @@ export default function SettingsScreen() {
   // ── Storage ──
   const [cacheSize, setCacheSize] = useState('');
   const [clearingCache, setClearingCache] = useState(false);
-  // Web-only: lets users re-open the "add to home screen" tutorial any time,
-  // even after dismissing the install banner.
+  // Explicit installs remain available after dismissing the optional banner.
   const [showInstallGuide, setShowInstallGuide] = useState(false);
-  const canShowInstallRow = Platform.OS === 'web' && !isStandaloneWebApp();
+  const installState = usePwaInstall();
+  const canShowInstallRow = Platform.OS === 'web' && !installState.installed;
+  const installFlavor = useMemo(detectInstallFlavor, []);
+  const handleInstall = useCallback(async () => {
+    const result = await requestInstall();
+    if (result === 'unavailable') setShowInstallGuide(true);
+  }, []);
+  useEffect(() => { if (installState.installed) setShowInstallGuide(false); }, [installState.installed]);
 
   // ── Wallet export ──
   const [exportLoading, setExportLoading] = useState(false);
@@ -764,9 +772,9 @@ export default function SettingsScreen() {
                 <Divider colors={colors} />
                 <TapRow
                   badge={<Badge bg={colors.primary}><I.Download c="#fff" /></Badge>}
-                  label="Install as App"
-                  sub="Add Sakura to your home screen"
-                  onPress={() => setShowInstallGuide(true)}
+                  label={installState.busy ? "Opening install…" : "Install Sakura"}
+                  sub={installState.canPrompt ? "Confirm in your browser to install" : installFlavor === "ios" ? "Add to Home Screen from the Share menu" : "Add Sakura to your home screen"}
+                  onPress={installState.busy ? undefined : handleInstall}
                   colors={colors}
                 />
               </>

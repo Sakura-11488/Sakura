@@ -1,14 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform, useWindowDimensions } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Radius, FontSize, FontWeight } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
-import InstallGuideModal, {
-  detectInstallFlavor,
-  isStandaloneWebApp,
-} from '@/components/InstallGuideModal';
+import InstallGuideModal, { detectInstallFlavor } from '@/components/InstallGuideModal';
+import { usePwaInstall } from '@/lib/use-pwa-install';
+import { requestInstall } from '@/lib/pwa-install';
 
-const ACCENT = '#E84545';
 const DISMISS_KEY = 'sakura_install_banner_dismissed';
 
 /**
@@ -19,68 +17,36 @@ const DISMISS_KEY = 'sakura_install_banner_dismissed';
  */
 export default function InstallAppBanner() {
   const { colors } = useTheme();
-  const [visible, setVisible] = useState(false);
+  const { width } = useWindowDimensions();
+  const { installed, canPrompt, busy } = usePwaInstall();
   const [showGuide, setShowGuide] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [iosReady, setIosReady] = useState(false);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return typeof window !== 'undefined' && window.localStorage?.getItem(DISMISS_KEY) === '1'; }
+    catch { return false; }
+  });
   const flavor = useMemo(detectInstallFlavor, []);
+  const visible = !installed && !dismissed && (canPrompt || iosReady);
+  const ACCENT = colors.primary;
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    if (isStandaloneWebApp()) return; // already installed
-    let dismissed = false;
-    try {
-      dismissed = window.localStorage?.getItem(DISMISS_KEY) === '1';
-    } catch {
-      // storage blocked (private mode) — just show it
-    }
-    if (dismissed) return;
+    if (Platform.OS !== 'web' || flavor !== 'ios' || installed || dismissed) return;
+    const timer = setTimeout(() => setIosReady(true), 2500);
+    return () => clearTimeout(timer);
+  }, [flavor, installed, dismissed]);
 
-    // Chrome fires this once the app meets the install criteria.
-    const onBeforeInstallPrompt = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-      setVisible(true);
-    };
-    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
-
-    // iOS never fires that event, so surface the tutorial on its own.
-    const t = setTimeout(() => {
-      if (flavor === 'ios') setVisible(true);
-    }, 2500);
-
-    const onInstalled = () => setVisible(false);
-    window.addEventListener('appinstalled', onInstalled);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', onInstalled);
-      clearTimeout(t);
-    };
-  }, [flavor]);
+  useEffect(() => { if (installed) setShowGuide(false); }, [installed]);
 
   const dismiss = useCallback(() => {
-    setVisible(false);
-    try {
-      window.localStorage?.setItem(DISMISS_KEY, '1');
-    } catch {
-      // ignore
-    }
+    setDismissed(true);
+    try { window.localStorage?.setItem(DISMISS_KEY, '1'); } catch { /* Optional preference. */ }
   }, []);
 
   const handleInstall = useCallback(async () => {
-    if (deferredPrompt) {
-      try {
-        deferredPrompt.prompt();
-        const choice = await deferredPrompt.userChoice;
-        setDeferredPrompt(null);
-        if (choice?.outcome === 'accepted') setVisible(false);
-        return;
-      } catch {
-        // fall through to the manual tutorial
-      }
-    }
-    setShowGuide(true);
-  }, [deferredPrompt]);
+    const result = await requestInstall();
+    if (result === 'accepted' || result === 'installed') setDismissed(true);
+    else if (result === 'unavailable') setShowGuide(true);
+  }, []);
 
   const s = useMemo(
     () =>
@@ -89,7 +55,7 @@ export default function InstallAppBanner() {
           position: Platform.OS === 'web' ? ('fixed' as any) : 'absolute',
           left: 12,
           right: 12,
-          bottom: 12,
+          bottom: Platform.OS === 'web' && width < 1000 ? ('calc(78px + env(safe-area-inset-bottom, 0px))' as any) : 12,
           zIndex: 9998,
           flexDirection: 'row',
           alignItems: 'center',
@@ -132,7 +98,7 @@ export default function InstallAppBanner() {
         close: { paddingHorizontal: 6, paddingVertical: 4 },
         closeText: { color: colors.textTertiary, fontSize: 16, fontWeight: FontWeight.bold },
       }),
-    [colors],
+    [colors, width],
   );
 
   if (Platform.OS !== 'web') return null;
@@ -154,10 +120,10 @@ export default function InstallAppBanner() {
                 : 'Get the full-screen app experience'}
             </Text>
           </View>
-          <TouchableOpacity style={s.cta} activeOpacity={0.85} onPress={handleInstall}>
-            <Text style={s.ctaText}>{flavor === 'ios' ? 'How' : 'Install'}</Text>
+          <TouchableOpacity style={s.cta} activeOpacity={0.85} onPress={handleInstall} disabled={busy} accessibilityRole="button" accessibilityLabel={flavor === 'ios' ? 'How to add Sakura to Home Screen' : 'Install Sakura'} accessibilityState={{ busy, disabled: busy }}>
+            <Text style={s.ctaText}>{busy ? 'Opening…' : flavor === 'ios' ? 'How' : 'Install'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.close} onPress={dismiss} accessibilityLabel="Dismiss">
+          <TouchableOpacity style={s.close} onPress={dismiss} accessibilityRole="button" accessibilityLabel="Dismiss install suggestion">
             <Text style={s.closeText}>✕</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -168,7 +134,7 @@ export default function InstallAppBanner() {
         flavor={flavor}
         onClose={() => {
           setShowGuide(false);
-          dismiss();
+          setDismissed(true);
         }}
       />
     </>

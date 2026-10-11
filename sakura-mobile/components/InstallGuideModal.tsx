@@ -4,19 +4,17 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 
-const ACCENT = '#E84545';
-
 export type InstallFlavor = 'ios' | 'android' | 'desktop';
 
 const STEPS: Record<InstallFlavor, { title: string; steps: string[]; tip?: string }> = {
   ios: {
     title: 'Add Sakura to your Home Screen',
     steps: [
-      'Tap the Share button in the browser toolbar — the square with an arrow pointing up.',
-      'Scroll down the share sheet and tap "Add to Home Screen".',
+      'Open the browser’s Share menu (the square with an up arrow). In Safari’s compact layout, open the page menu first.',
+      'Tap "Add to Home Screen". Leave "Open as Web App" on if shown.',
       'Tap "Add" in the top-right. Sakura now opens full-screen, just like an app.',
     ],
-    tip: 'On iPhone and iPad this works best in Safari. Chrome on iOS works too — the Share button sits in the address bar.',
+    tip: 'iPhone requires this confirmation in the browser. If the option is missing, open Sakura in Safari.',
   },
   android: {
     title: 'Install Sakura',
@@ -25,7 +23,7 @@ const STEPS: Record<InstallFlavor, { title: string; steps: string[]; tip?: strin
       'Tap "Install app" (or "Add to Home screen").',
       'Confirm, and Sakura appears with your other apps.',
     ],
-    tip: 'Chrome usually offers an "Install" banner too — either way works.',
+    tip: 'When Chrome or Edge makes direct installation available, Sakura’s Install button opens its confirmation. If you are inside another app, open this page in your browser first.',
   },
   desktop: {
     title: 'Install Sakura',
@@ -73,6 +71,7 @@ export default function InstallGuideModal({
   flavor?: InstallFlavor;
 }) {
   const { colors } = useTheme();
+  const ACCENT = colors.primary;
   const resolved = flavor ?? detectInstallFlavor();
   const guide = STEPS[resolved];
 
@@ -164,7 +163,7 @@ export default function InstallGuideModal({
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
       <View style={s.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" />
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close install instructions" />
         <Animated.View entering={FadeInDown.duration(240)} style={s.card}>
           <View style={s.badge}>
             <Text style={s.badgeText}>🌸</Text>
@@ -188,7 +187,7 @@ export default function InstallGuideModal({
               </View>
             ) : null}
           </ScrollView>
-          <TouchableOpacity style={s.done} activeOpacity={0.85} onPress={onClose}>
+          <TouchableOpacity style={s.done} activeOpacity={0.85} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close install instructions">
             <Text style={s.doneText}>Got it</Text>
           </TouchableOpacity>
         </Animated.View>
