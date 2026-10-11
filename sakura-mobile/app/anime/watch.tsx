@@ -104,6 +104,7 @@ export default function AnimeWatch() {
   const progressRef = useRef(0);
   const pendingResumeRef = useRef(0);
   const pendingResumeSecondsRef = useRef(0);
+  const playbackEpisodeKeyRef = useRef<string | null>(null);
   const resumeSeekDoneRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -198,14 +199,19 @@ export default function AnimeWatch() {
       const p = Math.min(1, Math.max(0, progress));
       if (p < 0.01) return;
       progressRef.current = p;
+      // Estimated/embed updates may not carry a clock. Keep the last measured
+      // position instead of replacing a usable bookmark with undefined.
+      const savedPosition = positionSeconds ?? (
+        pendingResumeSecondsRef.current > 0 ? pendingResumeSecondsRef.current : undefined
+      );
       if (p >= 0.98 || immediate) {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-        await flushProgress(p, info, episode, positionSeconds);
+        await flushProgress(p, info, episode, savedPosition);
         return;
       }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
-        void flushProgress(p, info, episode, positionSeconds);
+        void flushProgress(p, info, episode, savedPosition);
       }, 400);
     },
     [id, ep, flushProgress],
@@ -268,6 +274,17 @@ export default function AnimeWatch() {
   useEffect(() => {
     if (!id || !ep) return;
     let cancelled = false;
+    const episodeKey = JSON.stringify([id, ep]);
+    const episodeChanged = playbackEpisodeKeyRef.current !== episodeKey;
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (episodeChanged) {
+      progressRef.current = 0;
+      pendingResumeRef.current = 0;
+      pendingResumeSecondsRef.current = 0;
+    }
 
     setLoading(true);
     setError(null);
@@ -281,19 +298,21 @@ export default function AnimeWatch() {
     setSubtitleMode('off');
     playbackHeadersRef.current = undefined;
     setSkipMarkers({});
-    setCurrentTimeSec(0);
+    setCurrentTimeSec(pendingResumeSecondsRef.current);
     setWebReady(false);
     setResumeSeconds(0);
-    progressRef.current = 0;
-    pendingResumeRef.current = 0;
-    pendingResumeSecondsRef.current = 0;
     resumeSeekDoneRef.current = false;
     nativeFailedRef.current = false;
     watchStartedAtRef.current = null;
 
     (async () => {
-      const saved = await getAnimeWatchProgress(String(id)).catch(() => null);
+      // Category switches and retries stay in the current episode. Their
+      // in-memory clock is newer than the throttled persisted bookmark.
+      const saved = episodeChanged
+        ? await getAnimeWatchProgress(String(id)).catch(() => null)
+        : null;
       if (cancelled) return;
+      playbackEpisodeKeyRef.current = episodeKey;
       if (
         saved?.episodeId === ep &&
         saved.progress >= RESUME_MIN &&
@@ -376,7 +395,7 @@ export default function AnimeWatch() {
       let src = await fetchEpisodeSources(ep, category, id, {
         force: retryCount > 0 || !!playbackHint?.forceFreshSource,
       }).catch(() => null);
-      if (!src?.embedUrl && !src?.url && retryCount === 0) {
+      if (!src?.unavailableCategory && !src?.embedUrl && !src?.url && retryCount === 0) {
         src = await fetchEpisodeSources(
           ep,
           category === 'sub' ? 'dub' : 'sub',
@@ -386,7 +405,12 @@ export default function AnimeWatch() {
       }
       if (cancelled) return;
 
-      if (src?.embedUrl || src?.url) {
+      if (src?.unavailableCategory) {
+        setAvailableCategories(src.availableCategories ?? ['sub', 'dub']);
+        const unavailable = src.unavailableCategory.toUpperCase();
+        const alternative = src.unavailableCategory === 'sub' ? 'DUB' : 'SUB';
+        setError(`Episode ${epNum} is not available in ${unavailable} from the current source. Try ${alternative}.`);
+      } else if (src?.embedUrl || src?.url) {
         if (src.availableCategories?.length) {
           setAvailableCategories(src.availableCategories);
         }
@@ -491,9 +515,10 @@ export default function AnimeWatch() {
       const duration = nativePlayer.duration;
       if (duration <= 0) return;
       const next = Math.min(1, Math.max(0, currentTime / duration));
+      pendingResumeRef.current = next;
+      pendingResumeSecondsRef.current = currentTime;
       if (Math.abs(next - progressRef.current) < 0.008 && next < 0.98) return;
       progressRef.current = next;
-      pendingResumeSecondsRef.current = currentTime;
       void persistProgress(next, anime, progressEpisode, false, currentTime);
     });
     return () => sub.remove();
@@ -507,6 +532,7 @@ export default function AnimeWatch() {
 
       const next = allSources[sourceIndex + 1];
       if (next?.url) {
+        resumeSeekDoneRef.current = false;
         setSourceIndex((i) => i + 1);
         setStreamSource({
           uri: next.url,
@@ -527,6 +553,7 @@ export default function AnimeWatch() {
   const tryNextAlternateSource = useCallback((): boolean => {
     const next = allSources[sourceIndex + 1];
     if (!next?.url) return false;
+    resumeSeekDoneRef.current = false;
     setSourceIndex((i) => i + 1);
     setStreamSource({
       uri: next.url,
@@ -578,7 +605,8 @@ export default function AnimeWatch() {
   }, [webReady, nativeSource]);
 
   useEffect(() => {
-    if ((!webReady && !nativeSource) || !anime || !progressEpisode) return;
+    // Direct players report an exact clock; estimates are only for embeds.
+    if (!webReady || nativeSource || !anime || !progressEpisode) return;
     void persistProgress(getEstimatedProgress(), anime, progressEpisode);
   }, [webReady, nativeSource, anime, progressEpisode, getEstimatedProgress, persistProgress]);
 
@@ -626,9 +654,11 @@ export default function AnimeWatch() {
       const data = JSON.parse(raw) as { type?: string; progress?: number; duration?: number };
       if (data.type !== 'progress' || !data.duration || data.duration <= 0) return;
       const next = Math.min(1, Math.max(0, (data.progress || 0) / data.duration));
+      pendingResumeRef.current = next;
+      pendingResumeSecondsRef.current = Math.max(0, data.progress || 0);
       if (Math.abs(next - progressRef.current) < 0.008 && next < 0.98) return;
       progressRef.current = next;
-      if (anime && progressEpisode) void persistProgress(next, anime, progressEpisode);
+      if (anime && progressEpisode) void persistProgress(next, anime, progressEpisode, false, pendingResumeSecondsRef.current);
     } catch {
       // ignore malformed messages
     }
@@ -801,9 +831,10 @@ export default function AnimeWatch() {
             setCurrentTimeSec(currentTime);
             if (duration <= 0 || !anime || !progressEpisode) return;
             const next = Math.min(1, Math.max(0, currentTime / duration));
+            pendingResumeRef.current = next;
+            pendingResumeSecondsRef.current = currentTime;
             if (Math.abs(next - progressRef.current) < 0.008 && next < 0.98) return;
             progressRef.current = next;
-            pendingResumeSecondsRef.current = currentTime;
             void persistProgress(next, anime, progressEpisode, false, currentTime);
           }}
         />

@@ -6,6 +6,17 @@ export type EpisodeInput = {
   force?: boolean;
 };
 
+/** Only a provider page explicitly declaring a missing episode uses this code. */
+export class EpisodeUnavailableError extends Error {
+  readonly code = 'EPISODE_UNAVAILABLE';
+  readonly category: 'sub' | 'dub';
+  constructor(category: 'sub' | 'dub') {
+    super('Episode is unavailable from the provider.');
+    this.name = 'EpisodeUnavailableError';
+    this.category = category;
+  }
+}
+
 export type ResolvedEpisode = {
   url: string;
   isM3U8: true;
@@ -88,6 +99,17 @@ async function getText(raw: string, options: ProviderOptions, referer = ORIGIN +
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
+}
+
+function isMissingEpisodePage(html: string): boolean {
+  // MegaPlay serves its explicit not-found page with HTTP 200. Missing data-id
+  // alone is insufficient: challenges and changed player markup also omit it.
+  const title = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim();
+  if (title !== 'Error - MegaPlay') return false;
+  const visible = html.replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ').replace(/&#(?:39|x27);|&apos;/gi, "'").replace(/\s+/g, ' ');
+  return /\bError Code:\s*404\b/i.test(visible) &&
+    /\bThe page you're looking for doesn't exist or has been moved\b/i.test(visible);
 }
 
 function findFile(value: unknown, depth = 0): string | null {
@@ -197,7 +219,10 @@ export async function resolveEpisode(input: EpisodeInput, options: ProviderOptio
       dataId = html.match(/\bdata-id\s*=\s*["'](\d{1,12})["']/i)?.[1];
     }
   }
-  if (!dataId) throw new Error('Episode is unavailable from the provider.');
+  if (!dataId) {
+    if (isMissingEpisodePage(html)) throw new EpisodeUnavailableError(input.category);
+    throw new Error('Provider player format has changed or is unavailable.');
+  }
 
   let payload: Record<string, unknown> | null = null;
   for (const endpoint of ['getSourcesNew', 'getSources']) {

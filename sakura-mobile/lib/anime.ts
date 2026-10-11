@@ -129,6 +129,8 @@ export interface StreamingSource {
   outro?: { start: number; end: number };
   category?: string;
   availableCategories?: string[];
+  /** The provider has explicitly reported no episode in this language. */
+  unavailableCategory?: 'sub' | 'dub';
   allSources?: Array<{ url: string; quality: string; isM3U8: boolean }>;
   /** Browser-safe subtitle URLs returned by the signed stream resolver. */
   subtitles?: Array<{ url: string; lang: string; label: string }>;
@@ -1375,6 +1377,7 @@ export async function fetchEpisodeSources(
       malId: streamMalId, episode: streamEpisode, category, force: opts?.force,
     });
     const embedUrl = buildStreamEmbedUrl(streamMalId, String(streamEpisode), category);
+    if (browserSource?.unavailableCategory) return browserSource;
     if (browserSource) return { ...browserSource, embedUrl: browserSource.embedUrl || embedUrl };
     browserFallback = { url: '', isM3U8: false, embedUrl, category, availableCategories: [category] };
   }

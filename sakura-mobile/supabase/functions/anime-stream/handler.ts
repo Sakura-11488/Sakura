@@ -196,7 +196,8 @@ export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (reques
       return fail(502, 'Unsupported media URL.');
     }
     const providerMedia = url.hostname === 'fetch.nexabloom.top' ||
-      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon)\.space$/.test(url.hostname);
+      /^[a-z0-9]+\.(?:eclipseharbor|stellarfrontier|twilightharbor|oakhorizon)\.space$/.test(url.hostname) ||
+      /^[a-z0-9]+\.(?:laggedduringcutscene|questforwifi|onehpanddreaming)\.site$/.test(url.hostname);
     const providerSubtitle = /^[a-z0-9]+\.broforgotsave\.online$/.test(url.hostname) && /\/subtitles\/[a-zA-Z0-9_.-]+$/.test(url.pathname);
     const providerPath = /^\/anime\/[a-f0-9]{32}\/[a-f0-9]{32}\//i.test(url.pathname);
     if (!(providerMedia && providerPath) && !(providerSubtitle && providerPath) && !extraHosts.has(url.hostname)) {
@@ -440,6 +441,13 @@ export function createAnimeStreamHandler(deps: AnimeStreamDependencies): (reques
       });
       return new Response(responseBody, { status: upstream.status, headers: outputHeaders });
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'EPISODE_UNAVAILABLE' &&
+          'category' in error && (error.category === 'sub' || error.category === 'dub')) {
+        const category = error.category.toUpperCase();
+        const other = error.category === 'sub' ? 'DUB' : 'SUB';
+        return json({ code: 'EPISODE_UNAVAILABLE',
+          error: `This episode is unavailable in ${category} from the provider. Try ${other} or check back later.` }, 404);
+      }
       return json({ error: error instanceof RelayError ? error.message : controller.signal.aborted
         ? 'The stream request timed out or was cancelled.' : 'The stream is temporarily unavailable.' },
       error instanceof RelayError ? error.status : controller.signal.aborted ? 504 : 502);

@@ -97,6 +97,26 @@ test('configuration fails closed; resolver accepts numeric episode inputs only a
   assert.match(preflight.headers.get('access-control-allow-headers'),/range/);
 });
 
+test('known provider unavailability returns a language-specific404 while unexpected failures stay502', async () => {
+  for (const category of ['sub','dub']) {
+    const h = fixture({deps:{resolveEpisode:async()=>{
+      throw Object.assign(new Error('Private provider diagnostic must not be exposed'),{code:'EPISODE_UNAVAILABLE',category});
+    }}});
+    const response = await h.post({...input,category});
+    assert.equal(response.status,404);
+    const body = await response.json();
+    assert.equal(body.code,'EPISODE_UNAVAILABLE');
+    assert.match(body.error,new RegExp(`unavailable in ${category.toUpperCase()}`));
+    assert.match(body.error,new RegExp(`Try ${category==='sub'?'DUB':'SUB'}`));
+    assert.doesNotMatch(body.error,/Private provider/);
+    assert.equal(h.calls.length,0);
+  }
+  const h = fixture({deps:{resolveEpisode:async()=>{throw new Error('Provider player format has changed.');}}});
+  const response = await h.post();
+  assert.equal(response.status,502);
+  assert.equal((await response.json()).code,undefined);
+});
+
 test('signed capabilities reject forgery, missing tokens, and expiry before fetching upstream', async () => {
   const h = fixture();
   const source = await resolveSource(h);
@@ -239,7 +259,8 @@ test('disguised TS streams preserve bytes and ignored Range status without leaki
 });
 
 test('verified sub and dub segment families remain constrained to the episode hash directory', async () => {
-  for (const host of ['7v8gl.eclipseharbor.space','iwlhp.stellarfrontier.space','7o819.twilightharbor.space','c6bk0.oakhorizon.space']) {
+  for (const host of ['7v8gl.eclipseharbor.space','iwlhp.stellarfrontier.space','7o819.twilightharbor.space','c6bk0.oakhorizon.space',
+    'qoiz0.laggedduringcutscene.site','gu3aq.questforwifi.site','4driv.onehpanddreaming.site']) {
     const h = fixture({variantText:`#EXTM3U\n#EXTINF:8,\nhttps://${host}${scope}seg-1.js\n`});
     const url = await segmentCapability(h);
     assert.equal(new URL(payload(url).u).hostname,host);

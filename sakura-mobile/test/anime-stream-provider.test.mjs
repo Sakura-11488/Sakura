@@ -189,6 +189,24 @@ test('removed episodes and HTTP failure stop without looking up a source', async
   }
 });
 
+test('explicit MegaPlay not-found pages identify the unavailable language without misclassifying parser failures', async () => {
+  const notFound = '<title>Error - MegaPlay</title><h1>Oops! Something went wrong</h1><p>The page you\'re looking for doesn\'t exist or has been moved.</p><p>Error Code: 404</p>';
+  for (const category of ['sub', 'dub']) {
+    const player = `${ORIGIN}/stream/mal/21/1/${category}`;
+    const f = fixture({[player]: () => new Response(notFound)});
+    await assert.rejects(f.resolve({...INPUT,category}), error =>
+      error.code === 'EPISODE_UNAVAILABLE' && error.category === category && error instanceof f.EpisodeUnavailableError);
+    assert.equal(f.requests.length,1);
+  }
+  for (const html of ['<title>Just a moment...</title><p>Verify you are human</p>',
+    '<title>New player</title><div data-source-id="123"></div>',
+    '<title>Error - MegaPlay</title><script>const message="Error Code: 404 The page you\'re looking for doesn\'t exist or has been moved";</script>']) {
+    const f = fixture({[EMBED]: () => new Response(html)});
+    await assert.rejects(f.resolve(), error => error.code === undefined && /format has changed/.test(error.message));
+    assert.equal(f.requests.length,1);
+  }
+});
+
 test('encoding format changes and malformed ciphertext fail without evaluating provider code', async () => {
   for (const text of [
     "const DOMAINS_ENC_KEY='single-quoted',DOMAINS_ENC_IV='changed-format';",

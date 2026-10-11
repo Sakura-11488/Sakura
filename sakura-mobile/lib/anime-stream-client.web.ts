@@ -90,7 +90,20 @@ export async function fetchBrowserAnimeStream(request: AnimeStreamRequest): Prom
         body: { malId: request.malId, episode: request.episode, category: request.category, ...(request.force ? { force: true } : {}) },
         signal,
       });
-      if (error) return null;
+      if (error) {
+        const response = error.context;
+        if (response?.status === 404 && typeof response.json === 'function') {
+          const failure = await response.json().catch(() => null);
+          if (failure?.code === 'EPISODE_UNAVAILABLE') {
+            return {
+              url: '', isM3U8: false, category: request.category,
+              unavailableCategory: request.category,
+              availableCategories: ['sub', 'dub'],
+            };
+          }
+        }
+        return null;
+      }
       return readSource(data, endpoint);
     }, 20_000);
   } catch {

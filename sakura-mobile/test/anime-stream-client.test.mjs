@@ -92,6 +92,31 @@ test('a missing server deployment retains an explicit external-player source', a
   assert.deepEqual(h.legacy, []);
 });
 
+test('an unavailable language stays explicit without opening its missing provider player or using legacy extraction', async () => {
+  const h = animeHarness({ configured: true, invoke: async () => ({
+    data: null,
+    error: { context: { status: 404, json: async () => ({ code: 'EPISODE_UNAVAILABLE' }) } },
+  }) });
+  const source = await h.anime.fetchEpisodeSources('mal-61967-1', 'dub', '61967');
+  assert.equal(source.unavailableCategory, 'dub');
+  assert.equal(source.category, 'dub');
+  assert.equal(source.url, '');
+  assert.equal(source.embedUrl, undefined);
+  assert.deepEqual(Array.from(source.availableCategories), ['sub', 'dub']);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(h.legacy, []);
+  assert.deepEqual(h.upstream, []);
+});
+
+test('a gateway 404 is not mistaken for an unavailable episode', async () => {
+  const h = animeHarness({ invoke: async () => ({
+    data: null, error: { context: { status: 404, json: async () => ({ code: 'NOT_FOUND' }) } },
+  }) });
+  const source = await h.anime.fetchEpisodeSources('mal-20-1', 'sub');
+  assert.equal(source.unavailableCategory, undefined);
+  assert.equal(source.embedUrl, embed);
+});
+
 test('resolver validates its own signed function URL and drops malformed optional metadata', async () => {
   const api = client(async () => ({ data: {
     url: signed, isM3U8: true, category: 'sub', embedUrl: 'javascript:alert(1)',
