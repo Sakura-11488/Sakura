@@ -15,10 +15,20 @@ import test from 'node:test';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const dependencyRoot=process.env.SAKURA_BROWSER_TEST_NODE_MODULES || resolve(root,'web/node_modules');
 const require=createRequire(resolve(dependencyRoot,'__controls_test__.cjs'));
+const renderedCueBounds=async page=>{
+  const session=await page.context().newCDPSession(page);
+  try { const {root}=await session.send('DOM.getDocument',{depth:-1,pierce:true});
+    const find=node=>(node.attributes||[]).includes('-webkit-media-text-track-display')?node:[...node.children||[],...node.shadowRoots||[]].map(find).find(Boolean);
+    const node=find(root);assert.ok(node,'Chromium rendered a real text-track cue');
+    const {model}=await session.send('DOM.getBoxModel',{nodeId:node.nodeId});return {top:Math.min(...model.border.filter((_,i)=>i%2)),bottom:Math.max(...model.border.filter((_,i)=>i%2)),left:Math.min(...model.border.filter((_,i)=>!(i%2))),right:Math.max(...model.border.filter((_,i)=>!(i%2)))};
+  } finally {await session.detach();}
+};
 const screenshotPath=name=>resolve(tmpdir(),`sakura-premium-player-${name}.png`);
 const {build}=require('esbuild');
 const {chromium}=require('playwright');
 const mediaFixture=`
+const nativePlay=HTMLMediaElement.prototype.play;
+const nativeMedia=Object.getOwnPropertyDescriptors(HTMLMediaElement.prototype);
 const state=new WeakMap(); const get=v=>{if(!state.has(v))state.set(v,{time:0,duration:1478,paused:true,ready:0,ended:false});return state.get(v)};
 for(const [prop,key] of Object.entries({duration:'duration',paused:'paused',readyState:'ready',ended:'ended'}))Object.defineProperty(HTMLMediaElement.prototype,prop,{get(){return get(this)[key]},configurable:true});
 Object.defineProperty(HTMLMediaElement.prototype,'currentTime',{get(){return get(this).time},set(value){get(this).time=value;get(this).ended=false;this.dispatchEvent(new Event('seeking'));this.dispatchEvent(new Event('timeupdate'));this.dispatchEvent(new Event('seeked'));},configurable:true});
@@ -28,6 +38,22 @@ HTMLMediaElement.prototype.pause=function(){window.__pauses++;get(this).paused=t
 HTMLMediaElement.prototype.load=function(){get(this).ended=false;get(this).paused=true;get(this).time=0;get(this).ready=0;};
 window.__plays=0;window.__pauses=0;window.__checkpoints=[];window.__backs=0;window.__next=0;window.__category=0;
 window.__loadMedia=v=>{get(v).ready=4; if(!v.textTracks.length)v.addTextTrack('subtitles','English','en');v.dispatchEvent(new Event('loadedmetadata'));};
+window.__addCaption=(label,language)=>document.querySelector('video').addTextTrack('subtitles',label,language);
+window.__renderCue=async()=>{
+  const v=document.querySelector('video'),canvas=document.createElement('canvas');canvas.width=640;canvas.height=360;
+  const c=canvas.getContext('2d');c.fillStyle='#324050';c.fillRect(0,0,640,360);
+  const stream=canvas.captureStream(10),chunks=[];const recording=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
+  recording.addEventListener('dataavailable',event=>chunks.push(event.data));
+  const stopped=new Promise(resolve=>recording.addEventListener('stop',resolve,{once:true}));
+  recording.start();const frames=setInterval(()=>c.fillRect(0,0,640,360),50);
+  await new Promise(resolve=>setTimeout(resolve,4500));recording.stop();await stopped;clearInterval(frames);stream.getTracks().forEach(track=>track.stop());
+  // Restore actual media properties on this element so cues use a decoded file,
+  // not the deterministic clock or MediaStream path used by other cases.
+  for(const name of ['duration','paused','readyState','ended','currentTime','buffered','play','pause','load'])Object.defineProperty(v,name,nativeMedia[name]);
+  v.loop=true;v.muted=true;v.src=URL.createObjectURL(new Blob(chunks,{type:recording.mimeType}));
+  await nativePlay.call(v);const track=v.textTracks[0];track.mode='showing';track.addCue(new VTTCue(0,600,'Every story begins with one step.'));
+};
+if(new URLSearchParams(location.search).has('native'))Object.defineProperty(HTMLMediaElement.prototype,'src',{set(){queueMicrotask(()=>window.__loadMedia(this))},get(){return 'fixture://native'}});
 window.__time=t=>{const v=document.querySelector('video');v.currentTime=t;};
 window.__end=()=>{const v=document.querySelector('video');Object.assign(get(v),{time:get(v).duration,paused:true,ended:true});for(const event of ['timeupdate','pause','ended'])v.dispatchEvent(new Event(event));};
 window.__repeatEnd=()=>document.querySelector('video').dispatchEvent(new Event('ended'));
@@ -36,7 +62,13 @@ Object.defineProperty(document,'visibilityState',{get:()=>visibility,configurabl
 Object.defineProperty(document,'hidden',{get:()=>visibility==='hidden',configurable:true});
 window.__visibility=value=>{visibility=value;document.dispatchEvent(new Event('visibilitychange'));};
 `;
-const hlsFixture=`export default class Hls{static Events={SUBTITLE_TRACKS_UPDATED:'subtitles',ERROR:'error'};static ErrorTypes={MEDIA_ERROR:'media'};static isSupported(){return true} levels=[{height:720,bitrate:1000000},{height:1080,bitrate:2000000}];currentLevel=-1;get autoLevelEnabled(){return this.currentLevel<0};subtitleDisplay=false;constructor(){window.__hls=this}on(){}loadSource(){}attachMedia(v){queueMicrotask(()=>window.__loadMedia(v))}destroy(){}recoverMediaError(){}}`;
+const hlsFixture=`export default class Hls{
+static Events={SUBTITLE_TRACKS_UPDATED:'subtitles',ERROR:'error',MANIFEST_PARSED:'manifest',LEVELS_UPDATED:'levels'};static ErrorTypes={MEDIA_ERROR:'media'};
+static isSupported(){return !new URLSearchParams(location.search).has('native')}
+levels=[];_currentLevel=-1;autoLevelCapping=-1;nextAutoLevel=-1;subtitleTracks=[];subtitleTrack=-1;subtitleDisplay=false;handlers=new Map();
+get currentLevel(){return this._currentLevel}set currentLevel(n){this._currentLevel=n}get autoLevelEnabled(){return this._currentLevel<0}set loadLevel(n){this._currentLevel=n}
+constructor(config){window.__hls=this;this.startLevel=config.startLevel??-1;this.levels=(new URLSearchParams(location.search).get('levels')||'720,1080').split(',').map(n=>({height:Number(n),bitrate:Number(n)*2000}));window.__setLevels=heights=>{this.levels=heights.map(height=>({height,bitrate:height*2000}));this.emit('levels')}}
+on(event,callback){if(!this.handlers.has(event))this.handlers.set(event,[]);this.handlers.get(event).push(callback)}emit(event){for(const callback of this.handlers.get(event)||[])callback(event,{})}loadSource(){}attachMedia(v){queueMicrotask(()=>{this.emit('manifest');window.__loadMedia(v)})}destroy(){this.handlers.clear()}recoverMediaError(){}}`;
 const nativeFixture=`import React from 'react';const flatten=v=>Array.isArray(v)?Object.assign({},...v.map(flatten)):v||{};export const StyleSheet={create:v=>v};export const View=({children,style})=><div style={{display:'flex',minHeight:0,...flatten(style)}}>{children}</div>;`;
 async function bundlePlayer(){
 const result=await build({stdin:{contents:`import React,{useState} from 'react';import{createRoot}from'react-dom/client';import Player from ${JSON.stringify(resolve(root,'sakura-mobile/components/anime/WebVideoPlayer.web.tsx'))};import Viewport from ${JSON.stringify(resolve(root,'sakura-mobile/components/anime/WatchViewport.web.tsx'))};${mediaFixture}function App(){const[uri,setUri]=useState('fixture://episode1.m3u8');const[hasNext,setHasNext]=useState(true);const[mounted,setMounted]=useState(true);const[,renderAgain]=useState(0);window.__rerender=()=>renderAgain(value=>value+1);window.__changeSource=()=>setUri(previous=>previous==='fixture://episode1.m3u8'?'fixture://episode2.m3u8':'fixture://episode1.m3u8');window.__setNext=setHasNext;window.__unmount=()=>setMounted(false);return <Viewport>{mounted&&<Player uri={uri} isM3U8 startAt={63} subtitleMode="off" onCheckpoint={(...p)=>window.__checkpoints.push(p)} chrome={{title:'Demon Slayer: Kimetsu no Yaiba — Infinity Castle',episodeLabel:'Episode 1 · The beginning',episodeNumber:1,category:'sub',availableCategories:['sub','dub'],onToggleCategory:()=>window.__category++,onBack:()=>window.__backs++,intro:{start:60,end:90},outro:{start:1400,end:1470},nextEpisode:hasNext?{label:'Episode 2',number:2,title:'The next journey',onPlay:()=>window.__next++}:undefined}}/>}</Viewport>}createRoot(document.getElementById('root')).render(<App/>);`,resolveDir:root,loader:'jsx'},bundle:true,write:false,format:'iife',platform:'browser',jsx:'automatic',tsconfigRaw:{compilerOptions:{}},nodePaths:[root+'/web/node_modules'],define:{'process.env.NODE_ENV':'"test"'},plugins:[{name:'fixtures',setup(p){p.onResolve({filter:/^(react-native|hls\.js)$/},a=>({path:a.path,namespace:'fixture'}));p.onLoad({filter:/.*/,namespace:'fixture'},a=>({contents:a.path==='hls.js'?hlsFixture:nativeFixture,loader:'jsx',resolveDir:root}))}}]});
@@ -221,4 +253,78 @@ test('Up next autoplay honors real completion, user choice, visibility and sourc
     },{mobile:true});
     t.diagnostic('Autoplay coverage uses actual React/DOM controls with deterministic media and clock fixtures; it does not contact a streaming provider.');
   } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}
+});
+
+test('viewing preferences persist and control tracks, renditions and real cue styling', {timeout:90000}, async t => {
+  const {server,url}=await servePlayer();
+  const browser=await chromium.launch({headless:true,executablePath:process.env.SAKURA_BROWSER_EXECUTABLE || (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':undefined)});
+  const run=(name,body,mobile=false)=>t.test(name,{timeout:25000},async()=>{
+    const context=await browser.newContext(mobile?{viewport:{width:320,height:568},isMobile:true,hasTouch:true}:{viewport:{width:1280,height:720}});
+    const page=await context.newPage();page.setDefaultTimeout(6000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const ready=()=>page.waitForFunction(()=>document.querySelector('video')?.currentTime===63);
+    const settings=async tab=>{await page.getByRole('button',{name:'Playback settings',exact:true}).click();if(tab)await page.getByRole('button',{name:tab,exact:true}).last().click();};
+    try{await body({page,ready,settings});assert.deepEqual(errors,[]);}finally{await context.close();}
+  });
+  try{
+    await run('a chosen language is restored on late tracks after reload and saved Off remains off',async({page,ready,settings})=>{
+      await page.goto(url);await ready();await page.evaluate(()=>window.__addCaption('Español','es-MX'));
+      await settings('Captions');await page.getByRole('button',{name:'Español',exact:true}).click();
+      assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sakura.player.preferences.v1')).subtitleLanguage.code),'es-MX');
+      await page.reload();await ready();assert.equal(await page.evaluate(()=>document.querySelector('video').textTracks[0].mode),'showing','English fallback is readable before preferred language arrives');
+      await page.evaluate(()=>window.__addCaption('Spanish','spa'));await page.waitForFunction(()=>document.querySelector('video').textTracks[1].mode==='showing');
+      assert.equal(await page.evaluate(()=>document.querySelector('video').textTracks[0].mode),'disabled');
+      await settings('Captions');await page.getByRole('button',{name:'Off',exact:true}).click();
+      await page.reload();await ready();await page.evaluate(()=>window.__addCaption('Spanish','es'));await page.waitForFunction(()=>document.querySelector('video').textTracks.length===2);
+      assert.ok(await page.evaluate(()=>Array.from(document.querySelector('video').textTracks).every(track=>track.mode==='disabled')));
+      assert.equal(await page.evaluate(()=>window.__hls.subtitleDisplay),false);
+      assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sakura.player.preferences.v1')).subtitleLanguage.code),'es-MX','Off retains the preferred language for re-enabling captions');
+    });
+    await run('saved caps apply initially and after discovery while a manual rendition overrides this episode',async({page,ready,settings})=>{
+      await page.goto(url+'/?levels=360,480,720,1080');await ready();await settings();
+      await page.getByRole('button',{name:/^Balanced/}).click();assert.equal(await page.evaluate(()=>window.__hls.autoLevelCapping),2);assert.equal(await page.evaluate(()=>window.__hls.autoLevelEnabled),true);
+      await page.evaluate(()=>window.__setLevels([360,480,1080]));assert.equal(await page.evaluate(()=>window.__hls.autoLevelCapping),1);
+      await page.getByRole('button',{name:'1080p',exact:true}).click();assert.equal(await page.evaluate(()=>window.__hls.currentLevel),2);assert.equal(await page.evaluate(()=>window.__hls.autoLevelCapping),-1);
+      await page.getByRole('button',{name:/^Data saver/}).click();assert.equal(await page.evaluate(()=>window.__hls.autoLevelCapping),1);assert.equal(await page.evaluate(()=>window.__hls.autoLevelEnabled),true);
+      await page.reload();await ready();assert.deepEqual(await page.evaluate(()=>[window.__hls.autoLevelCapping,window.__hls.startLevel]),[1,0]);
+      await settings();await page.getByRole('button',{name:/^Auto/}).click();assert.equal(await page.evaluate(()=>window.__hls.autoLevelCapping),-1);
+    });
+    await run('native playback describes quality as browser managed while remembering a future preference',async({page,ready,settings})=>{
+      await page.goto(url+'/?native=1');await ready();await settings();await page.getByRole('button',{name:/^Balanced/}).click();
+      await page.getByText('Your browser manages this stream’s quality. Your preference is saved for supported streams.',{exact:true}).waitFor();
+      assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sakura.player.preferences.v1')).qualityPreference),'balanced');
+      assert.equal(await page.getByRole('button',{name:'1080p',exact:true}).count(),0);
+    });
+    await run('caption appearance survives reload, uses real cue rules, and stays keyboard accessible',async({page,ready,settings})=>{
+      await page.goto(url);await ready();await settings('Captions');await page.getByRole('button',{name:'English',exact:true}).click();
+      const large=page.getByRole('button',{name:'large captions',exact:true});await large.focus();const plays=await page.evaluate(()=>window.__plays);await page.keyboard.press('Space');assert.equal(await page.evaluate(()=>window.__plays),plays);
+      await page.getByRole('button',{name:'solid caption background',exact:true}).click();
+      await page.reload();await ready();assert.deepEqual(await page.locator('video').evaluate(v=>[v.dataset.captionSize,v.dataset.captionBackground]),['large','solid']);
+      const cueRules=await page.evaluate(()=>Array.from(document.styleSheets).flatMap(sheet=>{try{return Array.from(sheet.cssRules).map(rule=>rule.cssText)}catch{return[]}}).filter(rule=>rule.includes('::cue')).join('\n'));
+      assert.match(cueRules,/data-caption-size="?large/);assert.match(cueRules,/font-size: clamp/);assert.match(cueRules,/data-caption-background="?solid/);
+      await page.evaluate(()=>window.__renderCue());await page.mouse.move(100,100);await page.waitForFunction(()=>document.querySelector('video').currentTime>.5&&document.querySelector('video').videoWidth===640&&document.querySelector('video').getVideoPlaybackQuality().totalVideoFrames>2&&document.querySelector('video').textTracks[0].cues[0].line===72);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await page.screenshot({path:screenshotPath('real-caption-appearance')});
+      const cueBounds=await renderedCueBounds(page);const controls=await page.locator('.sc-bottom').boundingBox();assert.ok(cueBounds.bottom<controls.y-20,JSON.stringify({cueBounds,controls}));
+      assert.equal(await page.evaluate(()=>document.querySelector('video').textTracks[0].cues[0].line),72,'default cue clears visible custom controls');
+      await page.evaluate(()=>{const cue=new VTTCue(0,600,'Authored position');cue.line=3;window.__authoredCue=cue;document.querySelector('video').textTracks[0].addCue(cue);});
+      await page.waitForFunction(()=>document.querySelector('[data-sakura-player]').dataset.chromeVisible==='false'&&document.querySelector('video').textTracks[0].cues[0].line==='auto');
+      assert.equal(await page.evaluate(()=>document.querySelector('video').textTracks[0].cues[0].line),'auto','default position returns when chrome hides');
+      assert.equal(await page.evaluate(()=>window.__authoredCue.line),3,'authored placement is retained');
+      assert.equal(await page.evaluate(()=>document.querySelector('video').textTracks[0].cues[0].snapToLines),true,'native cue positioning fields are restored');
+    });
+    await run('caption settings scroll inside the rotated phone without clipping the selected control',async({page,ready,settings})=>{
+      await page.goto(url);await ready();await page.waitForFunction(()=>document.querySelector('[data-watch-viewport]').dataset.rotated==='true');await settings('Captions');
+      const solid=page.getByRole('button',{name:'solid caption background',exact:true});await solid.click();
+      assert.equal(await solid.getAttribute('aria-pressed'),'true');
+      const bounds=await page.locator('.sc-menu').evaluate(menu=>{const r=menu.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth+.1&&r.bottom<=innerHeight+.1});assert.equal(bounds,true);
+      assert.equal(await solid.evaluate(button=>{const r=button.getBoundingClientRect();return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true);
+      assert.ok(await page.locator('.sc-menu-options').evaluate(menu=>menu.scrollHeight>menu.clientHeight),'long options scroll inside the menu');
+      await page.screenshot({path:screenshotPath('phone-caption-settings')});
+      await page.getByRole('button',{name:'small captions',exact:true}).click();await page.getByRole('button',{name:'Close playback settings',exact:true}).click();
+      await page.evaluate(()=>window.__renderCue());await page.mouse.move(280,100);
+      await page.waitForFunction(()=>document.querySelector('video').currentTime>.5&&document.querySelector('video').textTracks[0].cues[0].line===60);
+      const smallBounds=await renderedCueBounds(page),controls=await page.locator('.sc-bottom').boundingBox();assert.ok(smallBounds.left>controls.x+controls.width+10,JSON.stringify({smallBounds,controls}));
+      await settings('Captions');await page.getByRole('button',{name:'large captions',exact:true}).click();await page.getByRole('button',{name:'Close playback settings',exact:true}).click();
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));const largeBounds=await renderedCueBounds(page);assert.ok(largeBounds.left>controls.x+controls.width+10,JSON.stringify({largeBounds,controls}));
+      await page.screenshot({path:screenshotPath('phone-real-caption-appearance')});
+    },true);
+  }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

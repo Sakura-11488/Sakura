@@ -17,6 +17,7 @@ import { getContinueReading, subscribeReadingProgress, type ContinueReadingItem 
 import { playTap, onTap } from '@/lib/sound';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { contentWidth } from '@/constants/layout';
+import LibraryWeb from '@/components/ui/LibraryWeb';
 
 const TABS: Array<'All' | 'Anime' | 'Manga' | 'Novel'> = ['All', 'Anime', 'Manga', 'Novel'];
 
@@ -229,6 +230,16 @@ export default function LibraryScreen() {
       justifyContent: 'center',
     },
   }), [colors, isWeb]);
+
+  if (isWeb) {
+    return <LibraryWeb items={items} refreshing={refreshing} onRefresh={onRefresh}
+      onOpen={navigate} onBrowse={() => router.push('/anime' as any)}
+      onSchedule={() => router.push('/anime/schedule' as any)}
+      continueSection={<>
+        {continueAnime.length > 0 && <ContinueWatchingRow items={continueAnime} />}
+        {continueReading.length > 0 && <ContinueReadingRow items={continueReading} />}
+      </>} />;
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}

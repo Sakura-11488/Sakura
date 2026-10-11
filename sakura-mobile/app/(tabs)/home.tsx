@@ -6,6 +6,7 @@ import {
   ScrollView,
   RefreshControl,  TouchableOpacity,
   useWindowDimensions,
+  Platform,
 } from 'react-native';
 import { useScrollToTop, useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,6 +23,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle } from 'react-native-svg';
 
 import Header from '@/components/layout/Header';
+import MangaHomeWeb from '@/components/discovery/MangaHomeWeb';
 import CategoryTabs from '@/components/ui/CategoryTabs';
 import ContentCard, { ContentItem } from '@/components/ui/ContentCard';
 import SectionHeader from '@/components/ui/SectionHeader';
@@ -259,10 +261,13 @@ export default function HomeScreen() {
     if (!categories.includes(category)) setCategory('Manga');
   }, [categories, category]);
 
+  const loadVersion = useRef(0);
   const loadData = useCallback(async () => {
+    const version = ++loadVersion.current;
     try {
       if (adapter) {
         const list = await adapter.trending(40);
+        if (version !== loadVersion.current) return;
         const toCarousel = (c: ContentItem): CarouselItem => ({
           id: c.id,
           title: c.title,
@@ -282,6 +287,7 @@ export default function HomeScreen() {
           fetchPopularManga(20),
         ]);
 
+        if (version !== loadVersion.current) return;
         setFeatured(trend.slice(0, 20).map(toCarouselItem));
         setTrending(trend.slice(7, 15).map((i) => toContentItem(i)));
         setPopularSeries(pop.slice(0, 10).map((i) => toContentItem(i, 'HOT')));
@@ -289,11 +295,16 @@ export default function HomeScreen() {
         setTrendingPicks(trend.slice(16, 24).map((i) => toContentItem(i)));
       }
     } catch {
-      // keep previous data / fallback to empty
+      if (version === loadVersion.current) {
+        setFeatured([]); setTrending([]); setPopularSeries([]);
+        setMoreToExplore([]); setTrendingPicks([]);
+      }
     } finally {
-      hasLoadedOnce.current = true;
-      setLoading(false);
-      setRefreshing(false);
+      if (version === loadVersion.current) {
+        hasLoadedOnce.current = true;
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [adapter]);
 
@@ -303,10 +314,13 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadData();
+    return () => { loadVersion.current += 1; };
   }, [loadData]);
 
   useEffect(() => {
     if (loading) return;
+    let cancelled = false;
+    setActionPacked([]); setRomance([]); setBoredmBusters([]); setComedy([]);
     (async () => {
       const [first, second, third, fourth] = homeRows;
       if (adapter) {
@@ -316,6 +330,7 @@ export default function HomeScreen() {
           adapter.search(third.query, 12),
           adapter.search(fourth.query, 12),
         ]);
+        if (cancelled) return;
         setActionPacked(a);
         setRomance(b);
         setBoredmBusters(c);
@@ -328,11 +343,13 @@ export default function HomeScreen() {
         searchManga(third.query, 12),
         searchManga(fourth.query, 12),
       ]);
+      if (cancelled) return;
       setActionPacked(a.map((i) => toContentItem(i)));
       setRomance(b.map((i) => toContentItem(i)));
       setBoredmBusters(c.map((i) => toContentItem(i)));
       setComedy(d.map((i) => toContentItem(i)));
-    })();
+    })().catch(() => { /* A failed optional shelf does not block discovery. */ });
+    return () => { cancelled = true; };
   }, [loading, adapter, homeRows]);
 
   const refreshContinueWatching = useCallback(() => {
@@ -407,6 +424,18 @@ export default function HomeScreen() {
       marginTop: Spacing.md,
     },
   }), [colors]);
+
+  if (Platform.OS === 'web') return <MangaHomeWeb
+    category={category} categories={categories} onCategory={setCategory}
+    featured={featured} trending={trending} popular={popularSeries}
+    more={moreToExplore} picks={trendingPicks}
+    genres={[actionPacked, romance, boredmBusters, comedy].map((items, index) => ({ ...homeRows[index], items }))}
+    loading={loading} onRefresh={onRefresh} onBrowse={goBrowse}
+    continueReading={continueReading.length > 0 ? <ContinueReadingRow items={continueReading} /> : null}
+    continueWatching={continueAnime.length > 0 ? <ContinueWatchingRow items={continueAnime} /> : null}
+    community={!adapter ? <><CreatorWorksRow kind="novel" title="Creator Novels" /><CreatorWorksRow kind="manga" title="Creator Manga" /><CreatorWorksRow kind="anime" title="Creator Anime" /></> : null}
+    streak={<StreakLevelCard />} scrollRef={scrollRef}
+  />;
 
   if (loading && !hasLoadedOnce.current) return <HomeScreenSkeleton />;
 

@@ -33,6 +33,7 @@ import { searchManhwa } from '@/lib/manhwa';
 import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
 import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
 import { useContentPrefs } from '@/lib/content-prefs';
+import MangaCatalogWeb from '@/components/discovery/MangaCatalogWeb';
 
 const BASE_FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
 type Filter = (typeof BASE_FILTERS)[number] | '18+';
@@ -82,6 +83,7 @@ export default function SearchTabScreen() {
     [allowAdult],
   );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestRef = useRef(0);
   const scrollRef = useRef<any>(null);
   const inputRef = useRef<TextInput>(null);
   useScrollToTop(scrollRef);
@@ -94,20 +96,31 @@ export default function SearchTabScreen() {
   const [failedSources, setFailedSources] = useState<string[]>([]);
   const [messagingUser, setMessagingUser] = useState<string | null>(null);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
+  const [discoverLoading, setDiscoverLoading] = useState(true);
+  const [discoverError, setDiscoverError] = useState(false);
+  const [discoverAttempt, setDiscoverAttempt] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
+    setDiscoverLoading(true);
+    setDiscoverError(false);
     fetchTrendingManga(12)
       .then((items) => {
+        if (cancelled) return;
         setDiscoverCards(items.slice(0, 10).map((m) => ({ id: m.id, title: m.title, cover: toContentItem(m).cover })));
       })
-      .catch(() => setDiscoverCards([]));
-  }, []);
+      .catch(() => { if (!cancelled) { setDiscoverCards([]); setDiscoverError(true); } })
+      .finally(() => { if (!cancelled) setDiscoverLoading(false); });
+    return () => { cancelled = true; };
+  }, [discoverAttempt]);
 
   const runSearch = useCallback(async (raw: string) => {
+    const requestId = ++searchRequestRef.current;
     const q = raw.trim();
     if (q.length < 2) {
       setResults([]);
       setLoading(false);
+      setFailedSources([]);
       return;
     }
     setLoading(true);
@@ -123,6 +136,7 @@ export default function SearchTabScreen() {
           searchManhwa(q, 12),
           allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
         ]);
+      if (requestId !== searchRequestRef.current) return;
 
       const merged: SearchResult[] = [];
 
@@ -219,16 +233,19 @@ export default function SearchTabScreen() {
 
       setResults(merged);
     } catch {
+      if (requestId !== searchRequestRef.current) return;
       setResults([]);
       setFailedSources(['Search']);
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestRef.current) setLoading(false);
     }
   }, [address, allowAdult]);
 
   const onChangeQuery = useCallback(
     (text: string) => {
+      searchRequestRef.current += 1;
       setQuery(text);
+      setFailedSources([]);
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (text.trim().length < 2) {
         setResults([]);
@@ -244,12 +261,14 @@ export default function SearchTabScreen() {
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      searchRequestRef.current += 1;
     };
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       return () => {
+        searchRequestRef.current += 1;
         setQuery('');
         setFilter('All');
         setResults([]);
@@ -263,10 +282,10 @@ export default function SearchTabScreen() {
   const filteredResults = useMemo(() => {
     // 18+ results are quarantined behind their own chip — never mixed into All.
     if (filter === 'All') return results.filter((r) => r.type !== 'hentai');
-    if (filter === '18+') return results.filter((r) => r.type === 'hentai');
+    if (filter === '18+') return allowAdult ? results.filter((r) => r.type === 'hentai') : [];
     if (filter === 'Users') return results.filter((r) => r.type === 'user');
     return results.filter((r) => r.type === filter.toLowerCase());
-  }, [filter, results]);
+  }, [allowAdult, filter, results]);
 
   // If the adult toggle flips off while 18+ is the active chip, snap back to All.
   useEffect(() => {
@@ -437,6 +456,28 @@ export default function SearchTabScreen() {
       }),
     [colors, catCardW],
   );
+
+  if (Platform.OS === 'web') {
+    return <MangaCatalogWeb
+      query={query}
+      onQueryChange={onChangeQuery}
+      filter={filter}
+      filters={filters}
+      onFilterChange={setFilter}
+      results={filteredResults}
+      loading={loading}
+      failedSources={failedSources}
+      discoverCards={discoverCards}
+      discoverLoading={discoverLoading}
+      discoverError={discoverError}
+      messagingUser={messagingUser}
+      suggestions={categoryCards}
+      onResultPress={handleResultPress}
+      onDiscoverPress={id => router.push(`/manga/${encodeURIComponent(id)}` as never)}
+      onRetry={() => void runSearch(query)}
+      onRetryDiscover={() => setDiscoverAttempt(attempt => attempt + 1)}
+    />;
+  }
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>

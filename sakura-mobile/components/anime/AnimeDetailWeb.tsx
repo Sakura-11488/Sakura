@@ -23,6 +23,7 @@ export interface AnimeDetailWebProps {
   onShare: () => void;
   onPlay: (episode: AnimeEpisode, restart?: boolean) => void;
   onDownload: (episode: AnimeEpisode) => void;
+  onMarkWatched?: (episode: AnimeEpisode, watched: boolean) => void;
   discussion: ReactNode;
   creator?: ReactNode;
 }

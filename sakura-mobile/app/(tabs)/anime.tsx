@@ -42,6 +42,8 @@ import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
 import * as Haptics from 'expo-haptics';
 import ContinueWatchingRow from '@/components/ui/ContinueWatchingRow';
+import AnimeDiscoveryWeb from '@/components/discovery/AnimeDiscoveryWeb';
+import AnimeDiscoveryPanels from '@/components/anime/AnimeDiscoveryPanels';
 import EmptyState from '@/components/ui/EmptyState';
 import { getContinueWatching, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 
@@ -584,14 +586,21 @@ export default function AnimeScreen() {
   const [airingLoading, setAiringLoading] = useState(true);
   const [popularLoading, setPopularLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [catalogError, setCatalogError] = useState(false);
+  const catalogRequest = useRef(0);
+  const genreRequest = useRef(0);
 
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<AnimeResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [searchResultsQuery, setSearchResultsQuery] = useState('');
+  const [searchAttempt, setSearchAttempt] = useState(0);
 
   const [selectedGenre, setSelectedGenre] = useState<number | null>(null);
   const [genreResults, setGenreResults] = useState<AnimeResult[]>([]);
   const [genreLoading, setGenreLoading] = useState(false);
+  const [genreError, setGenreError] = useState(false);
   const [originalIndex, setOriginalIndex] = useState(0);
   const [continueAnime, setContinueAnime] = useState<AnimeWatchProgress[]>([]);
 
@@ -612,19 +621,34 @@ export default function AnimeScreen() {
   }, [refreshContinue]);
 
   const loadData = useCallback(() => {
+    const request = ++catalogRequest.current;
     setAiringLoading(true);
     setPopularLoading(true);
+    setCatalogError(false);
     fetchAiringAnime()
-      .then(setAiring)
-      .catch(() => {})
-      .finally(() => setAiringLoading(false));
+      .then(results => {
+        if (request !== catalogRequest.current) return;
+        setAiring(results);
+        if (results.length === 0) setCatalogError(true);
+      })
+      .catch(() => { if (request === catalogRequest.current) setCatalogError(true); })
+      .finally(() => { if (request === catalogRequest.current) setAiringLoading(false); });
     fetchPopularAnime()
-      .then(setPopular)
-      .catch(() => {})
-      .finally(() => { setPopularLoading(false); setRefreshing(false); });
+      .then(results => {
+        if (request !== catalogRequest.current) return;
+        setPopular(results);
+        if (results.length === 0) setCatalogError(true);
+      })
+      .catch(() => { if (request === catalogRequest.current) setCatalogError(true); })
+      .finally(() => {
+        if (request === catalogRequest.current) { setPopularLoading(false); setRefreshing(false); }
+      });
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    loadData();
+    return () => { catalogRequest.current += 1; genreRequest.current += 1; };
+  }, [loadData]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -632,15 +656,21 @@ export default function AnimeScreen() {
   }, [loadData]);
 
   useEffect(() => {
-    if (!debouncedSearch.trim()) { setSearchResults([]); return; }
+    let cancelled = false;
+    const query = debouncedSearch.trim();
+    if (!query) { setSearchResults([]); setSearchResultsQuery(''); setSearchLoading(false); setSearchError(false); return; }
     setSearchLoading(true);
-    searchAnime(debouncedSearch)
-      .then(setSearchResults)
-      .catch(() => {})
-      .finally(() => setSearchLoading(false));
-  }, [debouncedSearch]);
+    setSearchError(false);
+    searchAnime(query)
+      .then(results => { if (!cancelled) { setSearchResults(results); setSearchResultsQuery(query); } })
+      .catch(() => { if (!cancelled) { setSearchResults([]); setSearchError(true); setSearchResultsQuery(query); } })
+      .finally(() => { if (!cancelled) setSearchLoading(false); });
+    return () => { cancelled = true; };
+  }, [debouncedSearch, searchAttempt]);
 
   useEffect(() => {
+    // The web spotlight has explicit selectors so it never changes under focus.
+    if (Platform.OS === 'web' || ANIME_ORIGINALS.length < 2) return;
     const timer = setInterval(() => {
       setOriginalIndex((prev) => (prev + 1) % ANIME_ORIGINALS.length);
     }, 3500);
@@ -649,13 +679,15 @@ export default function AnimeScreen() {
 
   const handleGenreSelect = useCallback((id: number | null) => {
     playTap();
+    const request = ++genreRequest.current;
     setSelectedGenre(id);
-    if (!id) { setGenreResults([]); return; }
+    setGenreError(false);
+    if (id === null) { setGenreResults([]); setGenreLoading(false); return; }
     setGenreLoading(true);
     fetchAnimeByGenre(id)
-      .then(setGenreResults)
-      .catch(() => {})
-      .finally(() => setGenreLoading(false));
+      .then(results => { if (request === genreRequest.current) setGenreResults(results); })
+      .catch(() => { if (request === genreRequest.current) { setGenreResults([]); setGenreError(true); } })
+      .finally(() => { if (request === genreRequest.current) setGenreLoading(false); });
   }, []);
 
   const handleAnimePress = (a: AnimeResult) => {
@@ -665,6 +697,39 @@ export default function AnimeScreen() {
 
   const isSearching = search.trim().length > 0;
   const activeOriginal = ANIME_ORIGINALS[originalIndex % ANIME_ORIGINALS.length];
+
+  if (Platform.OS === 'web') {
+    return <AnimeDiscoveryWeb
+      originals={ANIME_ORIGINALS}
+      activeOriginalIndex={originalIndex}
+      onOriginalSelect={setOriginalIndex}
+      onOriginalPress={original => { playTap(); router.push({ pathname: '/anime/[id]', params: { id: original.id } }); }}
+      airing={airing}
+      popular={popular}
+      airingLoading={airingLoading}
+      popularLoading={popularLoading}
+      catalogError={catalogError}
+      search={search}
+      onSearch={setSearch}
+      searchResults={searchResults}
+      searchLoading={searchLoading || (isSearching && searchResultsQuery !== search.trim())}
+      searchError={searchError}
+      selectedGenre={selectedGenre}
+      onGenreSelect={handleGenreSelect}
+      genreResults={genreResults}
+      genreLoading={genreLoading}
+      genreError={genreError}
+      onAnimePress={handleAnimePress}
+      onLibrary={() => router.push('/library')}
+      onSchedule={() => router.push('/anime/schedule')}
+      onRefresh={onRefresh}
+      onRetrySearch={() => { setSearchLoading(true); setSearchAttempt(value => value + 1); }}
+      history={continueAnime.length > 0 ? <ContinueWatchingRow items={continueAnime} /> : null}
+      personal={<AnimeDiscoveryPanels mode="personal" />}
+      creator={<CreatorWorksRow kind="anime" />}
+      scrollRef={scrollRef}
+    />;
+  }
 
   return (
     <View style={s.root}>

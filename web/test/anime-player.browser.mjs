@@ -68,6 +68,8 @@ const fixtures = {
       window.__sourceCalls.push({ep,category,id,options});
       const embedUrl=window.__providerOrigin+'/player?episode='+encodeURIComponent(ep)+'&category='+category;
       if(window.__mode==='none') return null;
+      if(window.__mode==='empty') return {url:'',isM3U8:false};
+      if(window.__mode==='failed') throw new Error('Fixture source lookup failed');
       if(window.__mode==='unavailable') return {url:'',isM3U8:false,unavailableCategory:category,availableCategories:[category==='sub'?'dub':'sub']};
       if(window.__mode==='direct'||window.__mode==='progress') {
         const suffix=window.__mode==='progress'?'?episode='+ep+'&category='+category+'&attempt='+window.__sourceCalls.length:'';
@@ -369,6 +371,32 @@ test('web watch only leaves Sakura after an explicit external-player choice', {t
         await page.getByRole('button',{name:'Open external player',exact:true}).waitFor();
         await assertNoProvider(context,page,before);
         await openExternal(context,page,'/original?episode=original-1');
+        assert.deepEqual(pageErrors,[]);
+      } finally {await context.close();}
+    });
+
+    for (const mode of ['none', 'empty', 'failed']) await t.test(`${mode} sources keep the chosen audio until an explicit switch`,async()=>{
+      const before=providerRequests.length;
+      const {context,page,pageErrors}=await openCase(mode);
+      try {
+        await page.getByRole('button',{name:'Try DUB',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>window.__sourceCalls.map(call=>call.category)),['sub']);
+        assert.equal(await page.locator('[data-direct-stream]').count(),0);
+        await page.getByRole('button',{name:'Retry',exact:true}).click();
+        await page.waitForFunction(()=>window.__sourceCalls.length===2);
+        await page.getByRole('button',{name:'Try DUB',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>window.__sourceCalls.map(call=>call.category)),['sub','sub']);
+        assert.equal(await page.evaluate(()=>window.__sourceCalls.at(-1).options.force),true);
+        await page.getByRole('button',{name:'Try DUB',exact:true}).click();
+        await page.getByRole('button',{name:'Try SUB',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>window.__sourceCalls.map(call=>call.category)),['sub','sub','dub']);
+        await page.getByRole('button',{name:'Retry',exact:true}).click();
+        await page.waitForFunction(()=>window.__sourceCalls.length===4);
+        await page.getByRole('button',{name:'Try SUB',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>window.__sourceCalls.map(call=>call.category)),['sub','sub','dub','dub']);
+        assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('sakura.player.preferences.v1')).audio),'dub');
+        assert.equal(await page.getByRole('button',{name:'Open external player',exact:true}).count(),0);
+        await assertNoProvider(context,page,before);
         assert.deepEqual(pageErrors,[]);
       } finally {await context.close();}
     });
