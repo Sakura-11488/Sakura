@@ -72,6 +72,10 @@ verify_jwt = false
 [functions.web-media-proxy]
 verify_jwt = false
 
+# HLS media requests authenticate with expiring HMAC capabilities, not JWTs.
+[functions.anime-stream]
+verify_jwt = false
+
 [functions.upload-work-media]
 verify_jwt = false
 

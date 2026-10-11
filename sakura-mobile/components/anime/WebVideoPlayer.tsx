@@ -11,6 +11,7 @@ type Props = {
   headers?: Record<string, string>;
   isM3U8?: boolean;
   subtitleMode?: SubtitleMode;
+  subtitles?: Array<{ url: string; lang: string; label: string }>;
   style?: StyleProp<ViewStyle>;
   onReady?: () => void;
   onError?: () => void;

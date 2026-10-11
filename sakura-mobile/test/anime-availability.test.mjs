@@ -51,6 +51,7 @@ function animeHarness(options = {}) {
       fetchUpstreamJson: async () => ({ enc: 'provider-owned-format', intro: { start: 0, end: 25 } }),
     },
     './sakura-originals': { isSakuraOriginal: () => false, resolveSakuraOriginalStreamUrl: async () => null },
+    './anime-stream-client': { usesBrowserAnimeStream: false, fetchBrowserAnimeStream: async () => null },
   }, {
     fetch: options.fetch ?? (() => new Promise(() => {})),
   });

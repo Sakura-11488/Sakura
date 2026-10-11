@@ -8,7 +8,6 @@ import {
   StatusBar,
   Platform,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import EmbedPlayer from '@/components/anime/EmbedPlayer';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as NavigationBar from 'expo-navigation-bar';
@@ -91,6 +90,7 @@ export default function AnimeWatch() {
   const [allSources, setAllSources] = useState<NonNullable<StreamingSource['allSources']>>([]);
   const [sourceIndex, setSourceIndex] = useState(0);
   const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>('off');
+  const [webSubtitles, setWebSubtitles] = useState<StreamingSource['subtitles']>([]);
   const playbackHeadersRef = useRef<Record<string, string> | undefined>(undefined);
   const webVideoRef = useRef<WebVideoPlayerHandle | null>(null);
   const [embedFallbackUrl, setEmbedFallbackUrl] = useState<string | null>(null);
@@ -277,6 +277,8 @@ export default function AnimeWatch() {
     setEmbedFallbackUrl(null);
     setAllSources([]);
     setSourceIndex(0);
+    setWebSubtitles([]);
+    setSubtitleMode('off');
     playbackHeadersRef.current = undefined;
     setSkipMarkers({});
     setCurrentTimeSec(0);
@@ -354,8 +356,8 @@ export default function AnimeWatch() {
         }
 
         if (embed) {
-          setEmbedFallbackUrl(null);
-          setEmbedUrl(embed);
+          setEmbedFallbackUrl(embed);
+          setError('Direct playback is unavailable for this episode. You can retry or choose the external player.');
           setLoading(false);
           return;
         }
@@ -392,9 +394,8 @@ export default function AnimeWatch() {
         playbackHeadersRef.current = src.requestHeaders;
         setAllSources(src.allSources ?? []);
         setSourceIndex(0);
-        if (playbackHint?.subtitleMode) {
-          setSubtitleMode(playbackHint.subtitleMode);
-        }
+        setWebSubtitles(src.subtitles ?? []);
+        setSubtitleMode(playbackHint?.subtitleMode ?? (isWeb && src.subtitles?.length ? 'auto' : 'off'));
 
         const preferDirect = shouldPreferDirectPlayback(playbackHint, isWeb);
         const canNative =
@@ -408,8 +409,13 @@ export default function AnimeWatch() {
             isM3U8: src.isM3U8,
           });
         } else if (src.embedUrl) {
-          setEmbedFallbackUrl(null);
-          setEmbedUrl(src.embedUrl);
+          if (isWeb) {
+            setEmbedFallbackUrl(src.embedUrl);
+            setError('Direct playback is unavailable for this episode. You can retry, switch sub/dub, or choose the external player.');
+          } else {
+            setEmbedFallbackUrl(null);
+            setEmbedUrl(src.embedUrl);
+          }
         } else if (src.url) {
           setEmbedFallbackUrl(null);
           setStreamSource({
@@ -534,14 +540,21 @@ export default function AnimeWatch() {
 
   const handleDirectPlaybackFailure = useCallback(() => {
     if (tryNextAlternateSource()) return;
-    if (embedFallbackUrl) {
-      setLocalUri(null);
-      setStreamSource(null);
-      setEmbedUrl(embedFallbackUrl);
-      return;
-    }
-    setError('Playback failed. Try Retry or switch sub/dub.');
+    setLocalUri(null);
+    setStreamSource(null);
+    setWebReady(false);
+    setError(embedFallbackUrl
+      ? 'Direct playback failed. You can retry, switch sub/dub, or choose the external player.'
+      : 'Playback failed. Try Retry or switch sub/dub.');
   }, [tryNextAlternateSource, embedFallbackUrl]);
+
+  const openExternalPlayer = () => {
+    if (!isWeb || !embedFallbackUrl || typeof window === 'undefined') return;
+    playTap();
+    // This provider rejects popup-blocking sandboxes. Keep it outside Sakura
+    // and open it only after an explicit click, without access to our window.
+    window.open(embedFallbackUrl, '_blank', 'noopener');
+  };
 
   useEffect(() => {
     if (!nativeSource || !anime || !progressEpisode) return;
@@ -747,13 +760,13 @@ export default function AnimeWatch() {
   };
 
   const embedSource = { uri: embedUrl || '', headers: playbackHeadersRef.current };
-  const showWebEmbedPlayer = !!embedUrl && !nativeSource && !error;
+  const showNativeEmbedPlayer = !isWeb && !!embedUrl && !nativeSource && !error;
   const showWebDirectPlayer = isWeb && !!nativeSource && !error;
   const showNativePlayer = !!nativeSource && !error && !isWeb;
-  const showPlayer = showWebEmbedPlayer || showWebDirectPlayer || showNativePlayer;
-  const showLoader = loading || (showWebEmbedPlayer && !webReady);
+  const showPlayer = showNativeEmbedPlayer || showWebDirectPlayer || showNativePlayer;
+  const showLoader = loading || (showNativeEmbedPlayer && !webReady);
   const showCategoryToggle =
-    (showWebEmbedPlayer || showWebDirectPlayer || !!streamSource) && availableCategories.length > 1;
+    (showNativeEmbedPlayer || showWebDirectPlayer || !!streamSource) && availableCategories.length > 1;
 
   const canShowSkipButtons = showNativePlayer || showWebDirectPlayer;
   const introActive =
@@ -779,6 +792,7 @@ export default function AnimeWatch() {
           headers={webStreamHeaders}
           isM3U8={streamSource?.isM3U8}
           subtitleMode={subtitleMode}
+          subtitles={webSubtitles}
           style={s.player}
           startAt={pendingResumeSecondsRef.current > 1 ? pendingResumeSecondsRef.current : undefined}
           onReady={() => setWebReady(true)}
@@ -850,7 +864,7 @@ export default function AnimeWatch() {
         </View>
       )}
 
-      {showWebEmbedPlayer && (
+      {showNativeEmbedPlayer && (
         <EmbedPlayer
           key={`${embedUrl}-${category}`}
           source={embedSource}
@@ -909,7 +923,7 @@ export default function AnimeWatch() {
       {error && !loading && (
         <View style={s.errorOverlay}>
           <View style={s.errorCard}>
-            <Text style={s.errorTitle}>Playback Error</Text>
+            <Text style={s.errorTitle}>{isWeb && embedFallbackUrl ? 'Choose how to continue' : 'Playback Error'}</Text>
             <Text style={s.errorText}>{error}</Text>
             <View style={s.errorBtnRow}>
               <TouchableOpacity
@@ -919,10 +933,33 @@ export default function AnimeWatch() {
               >
                 <Text style={[s.errorBtnText, s.errorBtnTextOutline]}>Retry</Text>
               </TouchableOpacity>
+              {isWeb && availableCategories.includes(category === 'sub' ? 'dub' : 'sub') && (
+                <TouchableOpacity
+                  onPress={onTap(toggleCategory)}
+                  style={[s.errorBtn, s.errorBtnOutline]}
+                  accessibilityRole="button"
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.errorBtnText, s.errorBtnTextOutline]}>Try {category === 'sub' ? 'DUB' : 'SUB'}</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity onPress={onTap(() => router.back())} style={s.errorBtn} activeOpacity={0.8}>
                 <Text style={s.errorBtnText}>Go Back</Text>
               </TouchableOpacity>
             </View>
+            {isWeb && embedFallbackUrl && (
+              <>
+                <TouchableOpacity
+                  onPress={openExternalPlayer}
+                  style={[s.errorBtn, s.errorBtnOutline]}
+                  accessibilityRole="button"
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.errorBtnText, s.errorBtnTextOutline]}>Open external player</Text>
+                </TouchableOpacity>
+                <Text style={s.errorText}>Opens a new tab. The provider may show ads.</Text>
+              </>
+            )}
           </View>
         </View>
       )}
@@ -1019,6 +1056,8 @@ const s = StyleSheet.create({
   },
   errorBtnRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
     gap: 10,
     marginTop: 8,
   },

@@ -58,7 +58,40 @@ Output goes to `dist/` for static hosting.
 | Push notifications | Disabled |
 | iOS widgets / Live Activity | Disabled |
 | Save photo to gallery | Browser download |
-| Native HLS player (Android) | iframe embed player |
+| Native HLS player (Android) | Built-in HTML video / HLS player |
+
+Web playback resolves signed HLS streams through the `anime-stream` Edge
+Function first, including captions and skip markers. See
+[`anime-stream` setup and verification](../sakura-mobile/supabase/functions/anime-stream/README.md).
+If server resolution fails or the provider only
+returns an embed, viewers can retry, switch sub/dub, or explicitly open the
+external player in a separate tab. Provider embeds never load inside the web
+watch screen: the current provider rejects a sandbox that blocks ad popups.
+External players may still show ads. The external tab has no opener access.
+
+The server supplies required provider headers and rewrites media URLs for the
+browser. Its signing secret stays on the server; the client uses the existing
+Supabase URL. Without the function deployed, the external-player fallback stays
+available.
+
+## Browser playback regression
+
+The opt-in browser check bundles the actual watch screen with React, while
+replacing native adapters, source responses, and video playback with local
+fixtures. It checks source fallback, recovery controls, absence of embedded
+players, and explicit external tabs with no opener. It does not verify live
+provider availability or actual media decoding. With web dependencies installed,
+run from the repository root:
+
+```bash
+npm install --prefix /tmp/sakura-anime-player-tests esbuild playwright
+SAKURA_BROWSER_TEST_NODE_MODULES=/tmp/sakura-anime-player-tests/node_modules \
+  node --test web/test/anime-player.browser.mjs
+```
+
+The check uses installed Google Chrome on macOS. Elsewhere, set
+`SAKURA_BROWSER_EXECUTABLE` to a Chromium executable or install Playwright's
+Chromium. Optional browser tooling is kept outside application dependencies.
 
 ## Notes
 

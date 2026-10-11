@@ -1,4 +1,5 @@
 import { withAnimeTimeout } from './anime-network';
+import { fetchBrowserAnimeStream, usesBrowserAnimeStream } from './anime-stream-client';
 import { getCachedValue, setCachedValue } from '@/lib/cache';
 import {
   consuGet,
@@ -122,13 +123,15 @@ export interface StreamingSource {
   referer?: string;
   /** Headers from Consumet/CDN (Referer, Origin, etc.) — required for native download */
   requestHeaders?: Record<string, string>;
-  /** Web embed player — required because CDN HLS URLs return 403 on native iOS players */
+  /** Provider player URL; web exposes it only as an explicit external fallback. */
   embedUrl?: string;
   intro?: { start: number; end: number };
   outro?: { start: number; end: number };
   category?: string;
   availableCategories?: string[];
   allSources?: Array<{ url: string; quality: string; isM3U8: boolean }>;
+  /** Browser-safe subtitle URLs returned by the signed stream resolver. */
+  subtitles?: Array<{ url: string; lang: string; label: string }>;
 }
 
 const MOBILE_SAFARI_UA =
@@ -1362,10 +1365,23 @@ export async function fetchEpisodeSources(
     return { url: origUrl, isM3U8: false };
   }
 
-  if (!getActiveConsumetUrl() && consumetCandidates().length === 0) return null;
-
   const parts = episodeId.match(/^hi-(\d+)-(\d+)$/);
   const malParts = episodeId.match(/^mal-(\d+)-(\d+)$/);
+  const streamMalId = malParts?.[1] || (parts && malId && /^[1-9]\d*$/.test(malId) ? malId : undefined);
+  const streamEpisode = Number(malParts?.[2] || parts?.[2]);
+  let browserFallback: StreamingSource | null = null;
+  if (usesBrowserAnimeStream && streamMalId && Number.isSafeInteger(streamEpisode) && streamEpisode > 0) {
+    const browserSource = await fetchBrowserAnimeStream({
+      malId: streamMalId, episode: streamEpisode, category, force: opts?.force,
+    });
+    const embedUrl = buildStreamEmbedUrl(streamMalId, String(streamEpisode), category);
+    if (browserSource) return { ...browserSource, embedUrl: browserSource.embedUrl || embedUrl };
+    browserFallback = { url: '', isM3U8: false, embedUrl, category, availableCategories: [category] };
+  }
+
+  // The browser resolver does not depend on the legacy Consumet server being set.
+  if (!getActiveConsumetUrl() && consumetCandidates().length === 0) return browserFallback;
+
   if (!parts) {
     if (malParts) {
       const [, directMalId, directEpNum] = malParts;
@@ -1391,20 +1407,23 @@ export async function fetchEpisodeSources(
         if (src?.url || src?.embedUrl) return src;
       }
     }
-    return null;
+    return browserFallback;
   }
 
   const [, animeId, epNum] = parts;
-  if (animeId === '0') return null;
+  if (animeId === '0') return browserFallback;
 
   let slug = await resolveSlugForPlayback(animeId, malId);
   if (!slug && malId) {
-    const resolved = await resolveStreamingByMalId(malId);
+    const resolved = await resolveStreamingByMalId(malId).catch((error: unknown) => {
+      if (!usesBrowserAnimeStream) throw error;
+      return null;
+    });
     if (resolved) slug = resolved.slug;
   }
   if (!slug) {
     console.warn(`[anime] fetchEpisodeSources: no slug for animeId=${animeId}.`);
-    return null;
+    return browserFallback;
   }
 
   const categories: Array<'sub' | 'dub'> = category === 'dub' ? ['dub', 'sub'] : ['sub', 'dub'];
@@ -1425,5 +1444,5 @@ export async function fetchEpisodeSources(
     }
   }
 
-  return null;
+  return browserFallback;
 }
