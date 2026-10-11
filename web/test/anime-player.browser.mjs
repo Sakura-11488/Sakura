@@ -57,7 +57,7 @@ const fixtures = {
   'expo-router': `
     import {useEffect,useState} from 'react';
     export function useLocalSearchParams(){const [params,setParams]=useState(window.__params); useEffect(()=>{const update=()=>setParams(window.__params); window.addEventListener('fixture-route',update); return ()=>window.removeEventListener('fixture-route',update);},[]); return params;}
-    const router={back(){window.__backCalls++;}, replace({params}){window.__navigate(params);}};
+    const router={back(){window.__backCalls++;}, dismissTo(destination){window.__backCalls++;window.__detailDestination=destination;}, replace({params}){window.__navigate(params);}};
     export const useRouter=()=>router;
   `,
   '@/constants/theme': `export const Fonts={body:'sans-serif',bodyBold:'sans-serif'}; export const FontSize={xs:12,sm:14,md:16,lg:20}; export const Radius={full:999};`,
@@ -81,6 +81,7 @@ const fixtures = {
   '@/lib/anime-player-shield': `export const buildAnimePlayerShieldScript=()=>''; export const shouldAllowAnimePlayerNavigation=()=>true;`,
   '@/lib/anime-media-session': `export const buildAnimeMediaSessionScript=()=>'';`,
   '@/lib/sound': `export const playTap=()=>{}; export const onTap=callback=>callback;`,
+  '@/lib/anime-skip-times': `export const fetchAnimeSkipTimes=async()=>({}); export const mergeAnimeSkipMarkers=(primary)=>primary;`,
   '@/lib/anime-offline': `export const getOfflinePlaybackUri=async()=>null;`,
   '@/lib/sakura-originals': `
     export const isSakuraOriginal=()=>window.__mode==='original';
@@ -90,12 +91,12 @@ const fixtures = {
   `,
   '@/components/anime/WebVideoPlayer': `
     import React from 'react';
-    export default React.forwardRef(function FixtureVideo({uri,startAt,onError,onReady,onTimeUpdate},ref){
+    export default React.forwardRef(function FixtureVideo({uri,startAt,onError,onReady,onTimeUpdate,onCheckpoint,chrome},ref){
       const [position,setPosition]=React.useState(startAt||0);
       React.useImperativeHandle(ref,()=>({seekTo(seconds){setPosition(seconds);onTimeUpdate?.(seconds,1478);}}));
       React.useEffect(()=>{setPosition(startAt||0);onReady?.();},[uri]);
-      const advance=seconds=>{setPosition(seconds);onTimeUpdate?.(seconds,1478);};
-      return <div data-direct-stream={uri} data-position={position}><span>Direct stream: {uri}</span><button onClick={onError}>Fail direct stream</button><button onClick={()=>advance(60)}>Set playback to 60 seconds</button><button onClick={()=>advance(63)}>Set playback to 63 seconds</button></div>;
+      const advance=(seconds,checkpoint=false,ended=false)=>{setPosition(seconds);onTimeUpdate?.(seconds,1478);if(checkpoint)onCheckpoint?.(seconds,1478,ended);};
+      return <div data-direct-stream={uri} data-position={position}><span>Direct stream: {uri}</span><button onClick={chrome?.onToggleCategory}>{chrome?.category?.toUpperCase()}</button><button onClick={chrome?.onBack}>Back to series</button><button onClick={()=>advance(5,true)}>Pause at 5 seconds</button><button onClick={()=>advance(0,true)}>Restart episode</button><button onClick={()=>advance(1470,true)}>Pause during credits</button><button onClick={()=>advance(1478,true,true)}>Finish episode</button><button onClick={onError}>Fail direct stream</button><button onClick={()=>advance(60)}>Set playback to 60 seconds</button><button onClick={()=>advance(63)}>Set playback to 63 seconds</button></div>;
     });
   `,
 };
@@ -281,6 +282,34 @@ test('web watch only leaves Sakura after an explicit external-player choice', {t
       } finally {await context.close();}
     });
 
+    await t.test('exact early bookmarks resume, restart clears position, and only the actual end advances',async()=>{
+      const {context,page,pageErrors}=await openCase('progress');
+      try {
+        await page.locator('[data-direct-stream]').waitFor();
+        await page.getByRole('button',{name:'Pause at 5 seconds',exact:true}).click();
+        const early=await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'));
+        assert.equal(early.positionSeconds,5);
+        assert.equal(early.durationSeconds,1478);
+        assert.equal(early.completed,false);
+        await page.evaluate(()=>window.__navigate({ep:'mal-20-2'}));
+        await page.locator('[data-direct-stream*="episode=mal-20-2"]').waitFor();
+        await page.evaluate(()=>window.__navigate({ep:'mal-20-1'}));
+        await page.waitForFunction(()=>document.querySelector('[data-direct-stream]')?.getAttribute('data-position')==='5');
+        await page.getByRole('button',{name:'Restart episode',exact:true}).click();
+        assert.equal((await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'))).positionSeconds,0);
+        await page.getByRole('button',{name:'Pause during credits',exact:true}).click();
+        const credits=await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'));
+        assert.equal(credits.episodeId,'mal-20-1');
+        assert.equal(credits.positionSeconds,1470);
+        assert.equal(await page.evaluate(()=>window.__progress.canResumeWatchProgress(window.__progressWrites.at(-1).anime['20'])),true);
+        await page.getByRole('button',{name:'Finish episode',exact:true}).click();
+        const finished=await page.evaluate(()=>window.__progress.getAnimeWatchProgress('20'));
+        assert.equal(finished.episodeId,'mal-20-2');
+        assert.equal(finished.progress,0);
+        assert.deepEqual(pageErrors,[]);
+      } finally {await context.close();}
+    });
+
     await t.test('an unavailable language stays explicit and never offers or loads the external player',async()=>{
       const before=providerRequests.length;
       const {context,page,pageErrors}=await openCase('unavailable');
@@ -322,6 +351,7 @@ test('web watch only leaves Sakura after an explicit external-player choice', {t
         await assertNoProvider(context,page,before);
         await page.getByRole('button',{name:'Go Back',exact:true}).click();
         assert.equal(await page.evaluate(()=>window.__backCalls),1);
+        assert.deepEqual(await page.evaluate(()=>window.__detailDestination),{pathname:'/anime/[id]',params:{id:'20'}});
         assert.deepEqual(pageErrors,[]);
       } finally {await context.close();}
     });

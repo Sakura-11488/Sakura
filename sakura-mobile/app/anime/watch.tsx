@@ -38,12 +38,16 @@ import { playTap, onTap } from '@/lib/sound';
 import {
   estimateProgressFromWatchTime,
   getAnimeWatchProgress,
+  setAnimeWatchProgress,
   setAnimeWatchProgressWithAdvance,
   RESUME_MIN,
+  canResumeWatchProgress,
+  type AnimeWatchProgress,
 } from '@/lib/watch-progress';
 import { getOfflinePlaybackUri } from '@/lib/anime-offline';
 import WebVideoPlayer, { type WebVideoPlayerHandle } from '@/components/anime/WebVideoPlayer';
 import WatchViewport from '@/components/anime/WatchViewport';
+import { fetchAnimeSkipTimes, mergeAnimeSkipMarkers } from '@/lib/anime-skip-times';
 
 const D = {
   bg: '#000000',
@@ -66,7 +70,7 @@ const ChevronRightIcon = () => (
 );
 
 export default function AnimeWatch() {
-  const { id, ep, offline } = useLocalSearchParams<{ id: string; ep: string; offline?: string }>();
+  const { id, ep, offline, restart } = useLocalSearchParams<{ id: string; ep: string; offline?: string; restart?: string }>();
   const router = useRouter();
   const safeAreaInsets = useSafeAreaInsets();
   // The web viewport maps its own safe-area edges when the player rotates.
@@ -103,12 +107,15 @@ export default function AnimeWatch() {
     outro?: { start: number; end: number };
   }>({});
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [fallbackSkipMarkers, setFallbackSkipMarkers] = useState<typeof skipMarkers>({});
   const nativeFailedRef = useRef(false);
   const [resumeSeconds, setResumeSeconds] = useState(0);
   const progressRef = useRef(0);
   const pendingResumeRef = useRef(0);
   const pendingResumeSecondsRef = useRef(0);
   const playbackEpisodeKeyRef = useRef<string | null>(null);
+  const restartRequestedRef = useRef(restart === '1');
   const resumeSeekDoneRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,6 +123,31 @@ export default function AnimeWatch() {
   const animeRef = useRef<AnimeInfo | null>(null);
   const episodeRef = useRef<AnimeEpisode | null>(null);
   const [controlsVisible, setControlsVisible] = useState(false);
+  const webBookmarkRef = useRef<{ entry: AnimeWatchProgress; episodes: AnimeEpisode[] } | null>(null);
+  const savedWebBookmarkRef = useRef<typeof webBookmarkRef.current>(null);
+  const lastWebSaveRef = useRef(0);
+
+  const saveWebBookmark = useCallback(() => {
+    const bookmark = webBookmarkRef.current;
+    if (!bookmark || bookmark === savedWebBookmarkRef.current) return;
+    savedWebBookmarkRef.current = bookmark;
+    lastWebSaveRef.current = Date.now();
+    void setAnimeWatchProgressWithAdvance(bookmark.entry, bookmark.episodes);
+  }, []);
+
+  useEffect(() => {
+    if (!isWeb) return;
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') saveWebBookmark();
+    };
+    window.addEventListener('pagehide', saveWebBookmark);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', saveWebBookmark);
+      document.removeEventListener('visibilitychange', onVisibility);
+      saveWebBookmark();
+    };
+  }, [isWeb, saveWebBookmark]);
 
   useEffect(() => {
     animeRef.current = anime;
@@ -147,6 +179,30 @@ export default function AnimeWatch() {
     const num = parseInt(epNum, 10) || 1;
     return { id: ep, number: num, title: `Episode ${num}` };
   }, [currentEpisode, ep, epNum]);
+
+  const recordWebProgress = useCallback((seconds: number, duration: number, checkpoint = false, ended = false) => {
+    if (!Number.isFinite(seconds) || !Number.isFinite(duration) || duration <= 0) return;
+    setDurationSeconds(duration);
+    const position = Math.max(0, Math.min(seconds, duration));
+    const progress = position / duration;
+    progressRef.current = progress;
+    pendingResumeRef.current = progress;
+    pendingResumeSecondsRef.current = position;
+    if (!anime || !progressEpisode) return;
+    webBookmarkRef.current = {
+      entry: {
+        animeId: String(id), title: anime.title, cover: anime.cover || anime.image || '',
+        episodeId: progressEpisode.id, episodeNumber: progressEpisode.number,
+        episodeTitle: progressEpisode.title, episodeThumbnail: progressEpisode.thumbnail,
+        progress, positionSeconds: position, durationSeconds: duration,
+        completed: ended, updatedAt: Date.now(),
+      },
+      episodes: anime.episodes || [],
+    };
+    // Record a real clock every three seconds, including the first few seconds
+    // of an episode; pause, scrubbing, restart, and exit save immediately.
+    if (checkpoint || Date.now() - lastWebSaveRef.current >= 3000) saveWebBookmark();
+  }, [id, anime, progressEpisode, saveWebBookmark]);
 
   useEffect(() => {
     episodeRef.current = progressEpisode;
@@ -241,6 +297,19 @@ export default function AnimeWatch() {
     return nativeSource.headers;
   }, [nativeSource]);
 
+  // Opening times vary by episode and cut. Only offer a skip when real timing
+  // data matches the duration of the stream that is actually playing.
+  useEffect(() => {
+    if (!isWeb || durationSeconds <= 0 || !webReady) return;
+    const validPrimary = mergeAnimeSkipMarkers(skipMarkers, undefined, durationSeconds);
+    if (validPrimary.intro && validPrimary.outro) return;
+    setFallbackSkipMarkers({});
+    const controller = new AbortController();
+    void fetchAnimeSkipTimes(String(id), epNumInt, durationSeconds, { signal: controller.signal, force: retryCount > 0 })
+      .then(markers => { if (!controller.signal.aborted) setFallbackSkipMarkers(markers); });
+    return () => controller.abort();
+  }, [isWeb, id, epNumInt, category, retryCount, webStreamUri, durationSeconds, webReady, skipMarkers.intro, skipMarkers.outro]);
+
   const nativePlayer = useVideoPlayer(isWeb ? '' : nativeSource, (player) => {
     player.loop = false;
     player.timeUpdateEventInterval = 1;
@@ -280,6 +349,11 @@ export default function AnimeWatch() {
   }, []);
 
   useEffect(() => {
+    // A Start over action is one-shot; a later reload resumes the new position.
+    if (isWeb && restart === '1') router.setParams?.({ restart: undefined });
+  }, [isWeb, restart, router]);
+
+  useEffect(() => {
     if (!id || !ep) return;
     let cancelled = false;
     const episodeKey = JSON.stringify([id, ep]);
@@ -289,6 +363,10 @@ export default function AnimeWatch() {
       saveTimerRef.current = null;
     }
     if (episodeChanged) {
+      if (isWeb) saveWebBookmark();
+      webBookmarkRef.current = null;
+      savedWebBookmarkRef.current = null;
+      lastWebSaveRef.current = 0;
       progressRef.current = 0;
       pendingResumeRef.current = 0;
       pendingResumeSecondsRef.current = 0;
@@ -306,6 +384,8 @@ export default function AnimeWatch() {
     setSubtitleMode('off');
     playbackHeadersRef.current = undefined;
     setSkipMarkers({});
+    setFallbackSkipMarkers({});
+    setDurationSeconds(0);
     setCurrentTimeSec(pendingResumeSecondsRef.current);
     setWebReady(false);
     setResumeSeconds(0);
@@ -321,17 +401,23 @@ export default function AnimeWatch() {
         : null;
       if (cancelled) return;
       playbackEpisodeKeyRef.current = episodeKey;
+      if (restartRequestedRef.current && saved?.episodeId === ep) {
+        await setAnimeWatchProgress({ ...saved, progress: 0, positionSeconds: 0, completed: false });
+        if (cancelled) return;
+      }
       if (
         saved?.episodeId === ep &&
-        saved.progress >= RESUME_MIN &&
-        saved.progress < 0.98
+        !restartRequestedRef.current &&
+        canResumeWatchProgress(saved)
       ) {
         progressRef.current = saved.progress;
         pendingResumeRef.current = saved.progress;
-        if (saved.positionSeconds && saved.positionSeconds > 1) {
+        if (saved.positionSeconds && saved.positionSeconds > 0) {
           pendingResumeSecondsRef.current = saved.positionSeconds;
         }
       }
+
+      restartRequestedRef.current = false;
 
       const {
         fetchSakuraOriginalInfo,
@@ -468,10 +554,10 @@ export default function AnimeWatch() {
     return () => {
       cancelled = true;
     };
-  }, [id, ep, category, retryCount, forceOffline, isAndroid, isWeb, playbackHint]);
+  }, [id, ep, category, retryCount, forceOffline, isAndroid, isWeb, playbackHint, saveWebBookmark]);
 
   useEffect(() => {
-    if (!nativeSource || !anime || !progressEpisode) return;
+    if (isWeb || !nativeSource || !anime || !progressEpisode) return;
     if (!watchStartedAtRef.current) watchStartedAtRef.current = Date.now();
 
     const applyResumeSeek = (duration: number) => {
@@ -514,10 +600,10 @@ export default function AnimeWatch() {
       loadSub.remove();
       statusSub.remove();
     };
-  }, [nativeSource, anime, progressEpisode, nativePlayer]);
+  }, [nativeSource, anime, progressEpisode, nativePlayer, isWeb]);
 
   useEffect(() => {
-    if (!nativeSource || !anime || !progressEpisode) return;
+    if (isWeb || !nativeSource || !anime || !progressEpisode) return;
     const sub = nativePlayer.addListener('timeUpdate', ({ currentTime }) => {
       setCurrentTimeSec(currentTime);
       const duration = nativePlayer.duration;
@@ -530,7 +616,7 @@ export default function AnimeWatch() {
       void persistProgress(next, anime, progressEpisode, false, currentTime);
     });
     return () => sub.remove();
-  }, [nativeSource, anime, progressEpisode, nativePlayer, persistProgress]);
+  }, [nativeSource, anime, progressEpisode, nativePlayer, persistProgress, isWeb]);
 
   // Fall back to the web embed if native HLS playback errors (e.g. CDN 403).
   useEffect(() => {
@@ -562,6 +648,8 @@ export default function AnimeWatch() {
     const next = allSources[sourceIndex + 1];
     if (!next?.url) return false;
     resumeSeekDoneRef.current = false;
+    setFallbackSkipMarkers({});
+    setDurationSeconds(0);
     setSourceIndex((i) => i + 1);
     setStreamSource({
       uri: next.url,
@@ -592,13 +680,13 @@ export default function AnimeWatch() {
   };
 
   useEffect(() => {
-    if (!nativeSource || !anime || !progressEpisode) return;
+    if (isWeb || !nativeSource || !anime || !progressEpisode) return;
     const tick = setInterval(() => {
       if (progressRef.current >= RESUME_MIN) return;
       void persistProgress(getEstimatedProgress(), anime, progressEpisode);
     }, 10_000);
     return () => clearInterval(tick);
-  }, [nativeSource, anime, progressEpisode, getEstimatedProgress, persistProgress]);
+  }, [nativeSource, anime, progressEpisode, getEstimatedProgress, persistProgress, isWeb]);
 
   useEffect(() => {
     if (!webReady || !anime || !progressEpisode || resumeSeconds > 0 || nativeSource) return;
@@ -627,6 +715,7 @@ export default function AnimeWatch() {
   }, [webReady, nativeSource, anime, progressEpisode, getEstimatedProgress, persistProgress]);
 
   useEffect(() => {
+    if (isWeb) return;
     return () => {
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
@@ -655,7 +744,7 @@ export default function AnimeWatch() {
       if (p < 0.01) return;
       void flushProgress(p, info, episode);
     };
-  }, [flushProgress]);
+  }, [flushProgress, isWeb]);
 
   const handleWebMessage = (raw: string) => {
     try {
@@ -751,6 +840,10 @@ export default function AnimeWatch() {
   const goToNext = () => {
     if (!nextEpisode || !anime) return;
     playTap();
+    if (isWeb) {
+      saveWebBookmark();
+      webBookmarkRef.current = null;
+    }
     void setAnimeWatchProgressWithAdvance({
       animeId: String(id),
       title: anime.title,
@@ -799,7 +892,8 @@ export default function AnimeWatch() {
 
   const embedSource = { uri: embedUrl || '', headers: playbackHeadersRef.current };
   const showNativeEmbedPlayer = !isWeb && !!embedUrl && !nativeSource && !error;
-  const showWebDirectPlayer = isWeb && !!nativeSource && !error;
+  const showWebDirectPlayer = isWeb && !!nativeSource && !error &&
+    playbackEpisodeKeyRef.current === JSON.stringify([id, ep]);
   const showNativePlayer = !!nativeSource && !error && !isWeb;
   const showPlayer = showNativeEmbedPlayer || showWebDirectPlayer || showNativePlayer;
   const showLoader = loading || (showNativeEmbedPlayer && !webReady);
@@ -807,6 +901,23 @@ export default function AnimeWatch() {
     (showNativeEmbedPlayer || showWebDirectPlayer || !!streamSource) && availableCategories.length > 1;
 
   const canShowSkipButtons = showNativePlayer || showWebDirectPlayer;
+  const webSkipMarkers = mergeAnimeSkipMarkers(skipMarkers, fallbackSkipMarkers, durationSeconds);
+  const leavePlayer = () => {
+    playTap();
+    if (isWeb) {
+      saveWebBookmark();
+      // After a hard reload Expo can have Home behind this route. The player
+      // promises the episode list, so return to the series explicitly.
+      router.dismissTo({ pathname: '/anime/[id]', params: { id: String(id) } });
+      return;
+    }
+    if (animeRef.current && episodeRef.current && progressRef.current >= 0.01) {
+      void flushProgress(progressRef.current, animeRef.current, episodeRef.current,
+        pendingResumeSecondsRef.current > 0 ? pendingResumeSecondsRef.current : undefined);
+    }
+    if (router.canGoBack?.() !== false) router.back();
+    else router.replace({ pathname: '/anime/[id]', params: { id: String(id) } });
+  };
   const introActive =
     canShowSkipButtons &&
     !!skipMarkers.intro &&
@@ -823,29 +934,35 @@ export default function AnimeWatch() {
     <View style={s.root}>
       <StatusBar hidden barStyle="light-content" backgroundColor={D.bg} />
 
-      <View style={s.playerWrap} onTouchStart={revealControls}>
+      <View style={s.playerWrap} onTouchStart={showWebDirectPlayer ? undefined : revealControls}>
       {showWebDirectPlayer && (
         <WebVideoPlayer
+          key={`${id}:${ep}`}
           ref={webVideoRef}
           uri={webStreamUri}
           headers={webStreamHeaders}
           isM3U8={streamSource?.isM3U8}
           subtitleMode={subtitleMode}
           subtitles={webSubtitles}
-          style={s.player}
-          startAt={pendingResumeSecondsRef.current > 1 ? pendingResumeSecondsRef.current : undefined}
+          style={s.webPlayer}
+          startAt={pendingResumeSecondsRef.current > 0 ? pendingResumeSecondsRef.current : undefined}
+          startProgress={pendingResumeRef.current}
+          chrome={{
+            title: anime?.title || 'Sakura',
+            episodeLabel: currentEpisode?.title || `Episode ${epNum}`,
+            episodeNumber: epNumInt,
+            onBack: leavePlayer,
+            category,
+            availableCategories,
+            onToggleCategory: toggleCategory,
+            intro: webSkipMarkers.intro,
+            outro: webSkipMarkers.outro,
+            nextEpisode: nextEpisode ? { label: `Episode ${nextEpisode.number}`, onPlay: goToNext } : undefined,
+          }}
           onReady={() => setWebReady(true)}
           onError={handleDirectPlaybackFailure}
-          onTimeUpdate={(currentTime, duration) => {
-            setCurrentTimeSec(currentTime);
-            if (duration <= 0 || !anime || !progressEpisode) return;
-            const next = Math.min(1, Math.max(0, currentTime / duration));
-            pendingResumeRef.current = next;
-            pendingResumeSecondsRef.current = currentTime;
-            if (Math.abs(next - progressRef.current) < 0.008 && next < 0.98) return;
-            progressRef.current = next;
-            void persistProgress(next, anime, progressEpisode, false, currentTime);
-          }}
+          onTimeUpdate={(currentTime, duration) => recordWebProgress(currentTime, duration)}
+          onCheckpoint={(currentTime, duration, ended) => recordWebProgress(currentTime, duration, true, ended)}
         />
       )}
 
@@ -861,23 +978,10 @@ export default function AnimeWatch() {
         />
       )}
 
-      {(controlsVisible || error) && (
+      {!showWebDirectPlayer && (controlsVisible || error || (isWeb && loading)) && (
         <View style={[s.topBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
           <TouchableOpacity
-            onPress={() => {
-              playTap();
-              const info = animeRef.current;
-              const episode = episodeRef.current;
-              if (info && episode && progressRef.current >= 0.01) {
-                void flushProgress(
-                  progressRef.current,
-                  info,
-                  episode,
-                  pendingResumeSecondsRef.current > 0 ? pendingResumeSecondsRef.current : undefined,
-                );
-              }
-              router.back();
-            }}
+            onPress={leavePlayer}
             style={s.circleBtn}
           >
             <BackIcon />
@@ -956,7 +1060,8 @@ export default function AnimeWatch() {
 
       {showLoader && (
         <View style={s.loaderOverlay} pointerEvents="none">
-          <ActivityIndicator size="large" color={D.pink} />
+          <ActivityIndicator size={isWeb ? 'small' : 'large'} color={D.pink} />
+          {isWeb && <Text style={s.loadingLabel}>Preparing your episode</Text>}
         </View>
       )}
 
@@ -983,7 +1088,7 @@ export default function AnimeWatch() {
                   <Text style={[s.errorBtnText, s.errorBtnTextOutline]}>Try {category === 'sub' ? 'DUB' : 'SUB'}</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity onPress={onTap(() => router.back())} style={s.errorBtn} activeOpacity={0.8}>
+              <TouchableOpacity onPress={leavePlayer} style={s.errorBtn} activeOpacity={0.8}>
                 <Text style={s.errorBtnText}>Go Back</Text>
               </TouchableOpacity>
             </View>
@@ -1004,7 +1109,7 @@ export default function AnimeWatch() {
         </View>
       )}
 
-      {(introActive || outroActive) && (
+      {!isWeb && (introActive || outroActive) && (
         <View
           style={[s.skipWrap, { bottom: insets.bottom + (canShowSkipButtons ? 104 : 70) }]}
           pointerEvents="box-none"
@@ -1020,7 +1125,7 @@ export default function AnimeWatch() {
         </View>
       )}
 
-      {controlsVisible && nextEpisode && showPlayer && (nativeSource || (webReady && !error)) && !error && (
+      {!isWeb && controlsVisible && nextEpisode && showPlayer && (nativeSource || (webReady && !error)) && !error && (
         <View
           style={[s.nextWrap, { bottom: insets.bottom + (showNativePlayer ? 58 : 24) }]}
           pointerEvents="box-none"
@@ -1058,13 +1163,19 @@ const s = StyleSheet.create({
     maxHeight: '100%',
     backgroundColor: D.bg,
   },
+  webPlayer: {
+    position: 'absolute', top: 0, right: 0, bottom: 0, left: 0,
+    width: '100%', height: '100%', backgroundColor: D.bg,
+  },
   loaderOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.82)',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 20,
+    gap: 14,
   },
+  loadingLabel: { color: D.muted, fontFamily: Fonts.body, fontSize: 12, letterSpacing: 0.4 },
   errorOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -1074,18 +1185,19 @@ const s = StyleSheet.create({
     zIndex: 20,
   },
   errorCard: {
-    backgroundColor: '#1A1A26',
+    backgroundColor: Platform.OS === 'web' ? '#111116' : '#1A1A26',
     borderRadius: 16,
-    padding: 28,
+    padding: Platform.OS === 'web' ? 20 : 28,
+    maxWidth: Platform.OS === 'web' ? 480 : undefined,
     marginHorizontal: 32,
     alignItems: 'center',
     gap: 10,
     borderWidth: 1,
-    borderColor: 'rgba(232,69,69,0.2)',
+    borderColor: Platform.OS === 'web' ? 'rgba(255,255,255,0.12)' : 'rgba(232,69,69,0.2)',
   },
   errorTitle: {
     color: D.text,
-    fontSize: FontSize.lg,
+    fontSize: Platform.OS === 'web' ? 19 : FontSize.lg,
     fontFamily: Fonts.bodyBold,
   },
   errorText: {
@@ -1104,7 +1216,7 @@ const s = StyleSheet.create({
   },
   errorBtn: {
     backgroundColor: D.pink,
-    borderRadius: Radius.full,
+    borderRadius: Platform.OS === 'web' ? 8 : Radius.full,
     paddingHorizontal: 22,
     paddingVertical: 12,
   },

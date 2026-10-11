@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { usePathname } from 'expo-router';
 import { StyleSheet, Dimensions, Platform } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -156,6 +157,9 @@ function Leaf({ config }: { config: LeafConfig }) {
 }
 
 export default function FallingLeaves() {
+  const pathname = usePathname();
+  // Keep the web cinema clear and stop decorative animation during playback.
+  if (Platform.OS === 'web' && pathname.startsWith('/anime/watch')) return null;
   return (
     <Animated.View style={styles.container} pointerEvents="none">
       {VISIBLE_LEAVES.map((cfg, i) => (

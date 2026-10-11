@@ -1,25 +1,9 @@
 import React, { forwardRef, useImperativeHandle } from 'react';
-import { StyleSheet, View, type ViewStyle, type StyleProp } from 'react-native';
-import type { SubtitleMode } from '@/lib/anime-playback-overrides';
+import { StyleSheet, View } from 'react-native';
+import type { WebVideoPlayerHandle, WebVideoPlayerProps } from './player-types';
+export type { WebVideoPlayerHandle } from './player-types';
 
-export type WebVideoPlayerHandle = {
-  seekTo: (seconds: number) => void;
-};
-
-type Props = {
-  uri: string;
-  headers?: Record<string, string>;
-  isM3U8?: boolean;
-  subtitleMode?: SubtitleMode;
-  subtitles?: Array<{ url: string; lang: string; label: string }>;
-  style?: StyleProp<ViewStyle>;
-  onReady?: () => void;
-  onError?: () => void;
-  onTimeUpdate?: (currentTime: number, duration: number) => void;
-  startAt?: number;
-};
-
-const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideoPlayer(
+const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(function WebVideoPlayer(
   _props,
   ref,
 ) {

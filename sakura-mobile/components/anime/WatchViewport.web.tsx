@@ -31,9 +31,10 @@ const MOBILE_POINTER = '(pointer: coarse) and (hover: none)';
 
 function hasEditableFocus(): boolean {
   const active = document.activeElement;
-  return active instanceof HTMLElement && (
-    active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)
-  );
+  if (!(active instanceof HTMLElement)) return false;
+  if (active.isContentEditable || /^(TEXTAREA|SELECT)$/.test(active.tagName)) return true;
+  // Timeline/volume ranges keep focus after scrubbing but never open a keyboard.
+  return active instanceof HTMLInputElement && /^(text|search|email|url|tel|password|number)$/.test(active.type);
 }
 
 function readViewport(): Viewport {

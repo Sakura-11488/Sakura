@@ -4,26 +4,13 @@ import React, {
   useImperativeHandle,
   useRef,
 } from 'react';
-import { StyleSheet, View, type ViewStyle, type StyleProp } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import Hls from 'hls.js';
 import type { SubtitleMode } from '@/lib/anime-playback-overrides';
-
-export type WebVideoPlayerHandle = {
-  seekTo: (seconds: number) => void;
-};
-
-type Props = {
-  uri: string;
-  headers?: Record<string, string>;
-  isM3U8?: boolean;
-  subtitleMode?: SubtitleMode;
-  subtitles?: Array<{ url: string; lang: string; label: string }>;
-  style?: StyleProp<ViewStyle>;
-  onReady?: () => void;
-  onError?: () => void;
-  onTimeUpdate?: (currentTime: number, duration: number) => void;
-  startAt?: number;
-};
+import type { WebVideoPlayerHandle, WebVideoPlayerProps } from './player-types';
+import PlayerChrome from './PlayerChrome.web';
+import { readPlayerPreferences } from './player-preferences';
+export type { WebVideoPlayerHandle } from './player-types';
 
 function applySubtitleMode(video: HTMLVideoElement, mode: SubtitleMode): void {
   const tracks = video.textTracks;
@@ -59,7 +46,7 @@ function browserHeadersKey(headers: Record<string, string> | undefined): string 
     .sort(([a], [b]) => a.localeCompare(b)));
 }
 
-const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideoPlayer(
+const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(function WebVideoPlayer(
   {
     uri,
     headers,
@@ -71,22 +58,30 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
     onError,
     onTimeUpdate,
     startAt = 0,
+    startProgress = 0,
+    onCheckpoint,
+    chrome,
   },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const startAtRef = useRef(startAt);
+  const startProgressRef = useRef(startProgress);
+  const onCheckpointRef = useRef(onCheckpoint);
   const onReadyRef = useRef(onReady);
   const onErrorRef = useRef(onError);
   const onTimeUpdateRef = useRef(onTimeUpdate);
-  const subtitleModeRef = useRef(subtitleMode);
+  const subtitleModeRef = useRef(chrome ? readPlayerPreferences().captions ?? subtitleMode : subtitleMode);
   // Equivalent header objects must not tear down a playing stream on rerender.
   const headersKey = browserHeadersKey(headers);
 
   useEffect(() => {
     startAtRef.current = startAt;
   }, [startAt]);
+
+  useEffect(() => { startProgressRef.current = startProgress; }, [startProgress]);
+  useEffect(() => { onCheckpointRef.current = onCheckpoint; }, [onCheckpoint]);
 
   useEffect(() => {
     onReadyRef.current = onReady;
@@ -101,10 +96,11 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
   }, [onTimeUpdate]);
 
   useEffect(() => {
-    subtitleModeRef.current = subtitleMode;
-    if (hlsRef.current) hlsRef.current.subtitleDisplay = subtitleMode !== 'off';
-    if (videoRef.current) applySubtitleMode(videoRef.current, subtitleMode);
-  }, [subtitleMode]);
+    const mode = chrome ? readPlayerPreferences().captions ?? subtitleMode : subtitleMode;
+    subtitleModeRef.current = mode;
+    if (hlsRef.current) hlsRef.current.subtitleDisplay = mode !== 'off';
+    if (videoRef.current) applySubtitleMode(videoRef.current, mode);
+  }, [subtitleMode, !!chrome]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (seconds: number) => {
@@ -120,6 +116,7 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
 
     let cancelled = false;
     let ready = false;
+    let metadataLoaded = false;
     let failed = false;
     let recoveryAttempted = false;
     let hls: Hls | null = null;
@@ -163,19 +160,25 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
       applySubtitles();
       // HLS manifests arrive before duration/seekability. Restore only after
       // real media metadata, and never rewind when recovery attaches it again.
-      if (ready) return;
+      metadataLoaded = true;
+      if (ready || !Number.isFinite(video.duration) || video.duration <= 0) return;
       ready = true;
-      const position = startAtRef.current;
+      const ratio = startProgressRef.current;
+      const position = startAtRef.current > 0 ? startAtRef.current
+        : Number.isFinite(ratio) && ratio > 0 && ratio < 1 && Number.isFinite(video.duration) ? video.duration * ratio : 0;
       if (Number.isFinite(position) && position > 0 && video.duration > 0) {
         const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.1) : position;
         video.currentTime = Math.min(position, end);
       }
       void video.play().catch(() => undefined);
+      onTimeUpdateRef.current?.(video.currentTime, Number.isFinite(video.duration) ? video.duration : 0);
       onReadyRef.current?.();
     };
 
+    const onDurationChange = () => { if (metadataLoaded) onMetadata(); };
+
     const onTime = () => {
-      if (cancelled || failed) return;
+      if (cancelled || failed || !ready) return;
       onTimeUpdateRef.current?.(video.currentTime, Number.isFinite(video.duration) ? video.duration : 0);
     };
 
@@ -196,7 +199,18 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
       }, 0);
     };
 
+    const checkpoint = () => {
+      if (!cancelled && ready && Number.isFinite(video.duration) && video.duration > 0) onCheckpointRef.current?.(video.currentTime, video.duration, video.ended === true);
+    };
+    const hiddenCheckpoint = () => { if (document.visibilityState === 'hidden') checkpoint(); };
+    video.addEventListener('pause', checkpoint);
+    video.addEventListener('seeked', checkpoint);
+    video.addEventListener('ended', checkpoint);
+    if (typeof window !== 'undefined') window.addEventListener('pagehide', checkpoint);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', hiddenCheckpoint);
+
     video.addEventListener('loadedmetadata', onMetadata);
+    video.addEventListener('durationchange', onDurationChange);
     video.addEventListener('timeupdate', onTime);
     video.addEventListener('error', onVideoError);
     video.textTracks?.addEventListener('addtrack', applySubtitles);
@@ -231,7 +245,13 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
     return () => {
       cancelled = true;
       clearVideoError();
+      video.removeEventListener('pause', checkpoint);
+      video.removeEventListener('seeked', checkpoint);
+      video.removeEventListener('ended', checkpoint);
+      if (typeof window !== 'undefined') window.removeEventListener('pagehide', checkpoint);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', hiddenCheckpoint);
       video.removeEventListener('loadedmetadata', onMetadata);
+      video.removeEventListener('durationchange', onDurationChange);
       video.removeEventListener('timeupdate', onTime);
       video.removeEventListener('error', onVideoError);
       video.textTracks?.removeEventListener('addtrack', applySubtitles);
@@ -242,20 +262,19 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
     };
   }, [uri, isM3U8, headersKey]);
 
+  const video = (
+    <video ref={videoRef} style={styles.video} controls={!chrome} playsInline
+      crossOrigin={subtitles?.length ? 'anonymous' : undefined} preload="auto">
+      {subtitles?.map((track) => <track key={track.url} kind="subtitles" src={track.url} srcLang={track.lang} label={track.label} />)}
+    </video>
+  );
   return (
     <View style={[styles.fill, style]}>
-      <video
-        ref={videoRef}
-        style={styles.video}
-        controls
-        playsInline
-        crossOrigin={subtitles?.length ? 'anonymous' : undefined}
-        preload="auto"
-      >
-        {subtitles?.map((track) => (
-          <track key={track.url} kind="subtitles" src={track.url} srcLang={track.lang} label={track.label} />
-        ))}
-      </video>
+      {chrome ? <>
+        {video}
+        <PlayerChrome videoRef={videoRef} hlsRef={hlsRef} uri={uri} options={chrome}
+          onCaptionModeChange={(mode) => { subtitleModeRef.current = mode; }} />
+      </> : video}
     </View>
   );
 });
@@ -263,7 +282,7 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, Props>(function WebVideo
 export default WebVideoPlayer;
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, width: '100%', height: '100%', backgroundColor: '#000' },
+  fill: { flex: 1, width: '100%', height: '100%', backgroundColor: '#000', position: 'relative' },
   video: {
     width: '100%',
     height: '100%',

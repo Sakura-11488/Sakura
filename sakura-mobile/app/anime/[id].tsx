@@ -49,6 +49,7 @@ import { shareContentLink } from '@/lib/share-link';
 import { contentWidth, isWideWeb, MAX_CONTENT_WIDTH } from '@/constants/layout';
 import CreatorTab from '@/components/ui/CreatorTab';
 import { getSakuraOriginalAuthor, isSakuraOriginal } from '@/lib/sakura-originals';
+import AnimeDetailWeb, { AnimeDetailWebPlaceholder } from '@/components/anime/AnimeDetailWeb';
 
 /**
  * Hero height.
@@ -684,16 +685,20 @@ export default function AnimeDetail() {
   useFocusEffect(
     React.useCallback(() => {
       if (!id) return;
-      getAnimeWatchProgress(String(id)).then(setWatchProgress);
+      let active = true;
+      getAnimeWatchProgress(String(id)).then(value => { if (active) setWatchProgress(value); });
       refreshOffline();
+      return () => { active = false; };
     }, [id, refreshOffline]),
   );
 
   useEffect(() => {
-    return subscribeWatchProgress(() => {
+    let active = true;
+    const unsubscribe = subscribeWatchProgress(() => {
       if (!id) return;
-      getAnimeWatchProgress(String(id)).then(setWatchProgress);
+      getAnimeWatchProgress(String(id)).then(value => { if (active) setWatchProgress(value); });
     });
+    return () => { active = false; unsubscribe(); };
   }, [id]);
 
   useEffect(() => {
@@ -711,6 +716,10 @@ export default function AnimeDetail() {
 
   useEffect(() => {
     if (!id) return;
+    let active = true;
+    setLoading(true);
+    setAnime(null);
+    setSaved(false);
     setLoadError(null);
     (async () => {
       try {
@@ -725,6 +734,7 @@ export default function AnimeDetail() {
           const retried = await fetchAnimeInfo(id, { force: true }).catch(() => null);
           if (retried && retried.episodes.length > 0) data = retried;
         }
+        if (!active) return;
         if (data) {
           setAnime(data);
         } else {
@@ -742,12 +752,13 @@ export default function AnimeDetail() {
         //
         // Now the reason reaches the screen. Whatever the cause turns out to be,
         // the next report will name it instead of requiring another theory.
-        setLoadError(err instanceof Error ? err.message : String(err));
+        if (active) setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     })();
-    Library.isSaved(String(id), 'anime').then(setSaved);
+    Library.isSaved(String(id), 'anime').then(value => { if (active) setSaved(value); });
+    return () => { active = false; };
   }, [id, reloadKey]);
 
   const handleSave = async () => {
@@ -799,6 +810,14 @@ export default function AnimeDetail() {
       Extrapolation.CLAMP,
     ),
   }));
+
+  if (Platform.OS === 'web' && (loading || !anime)) {
+    return <AnimeDetailWebPlaceholder
+      onBack={onTap(() => router.back())}
+      error={loading ? undefined : loadError || 'No data returned for this title.'}
+      onRetry={() => { setLoading(true); setReloadKey(key => key + 1); }}
+    />;
+  }
 
   if (loading) return <DetailSkeleton onBack={onTap(() => router.back())} />;
 
@@ -907,6 +926,38 @@ export default function AnimeDetail() {
       setToast(e instanceof Error ? e.message : 'Download failed');
     }
   };
+
+  if (Platform.OS === 'web') {
+    return <>
+      <AnimeDetailWeb
+        key={String(id)}
+        anime={anime}
+        progress={watchProgress?.animeId === String(id) ? watchProgress : null}
+        saved={saved}
+        offline={offlineMap}
+        downloadable={isSakuraOriginal(String(id))}
+        onBack={onTap(() => router.back())}
+        onSave={handleSave}
+        onShare={handleShare}
+        onPlay={(episode, restart) => {
+          playTap();
+          router.push({
+            pathname: '/anime/watch',
+            params: {
+              id,
+              ep: episode.id,
+              ...(restart ? { restart: '1' } : {}),
+              ...(offlineMap[episode.id]?.status === 'ready' ? { offline: '1' } : {}),
+            },
+          });
+        }}
+        onDownload={handleDownloadEpisode}
+        discussion={<CommentsSection contentId={`anime:${id}`} title="Discussion" />}
+        creator={originalAuthor ? <CreatorTab creatorWallet={originalAuthor.wallet} displayName={originalAuthor.name} avatarImage={originalAuthor.avatarImage} tipLabel="Donate" showPass={false} /> : undefined}
+      />
+      <Toast message={toast} visible={!!toast} onHide={() => setToast('')} bottomOffset={insets.bottom + 80} />
+    </>;
+  }
 
   return (
     <View style={s.root}>

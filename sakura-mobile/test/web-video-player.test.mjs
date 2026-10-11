@@ -29,8 +29,10 @@ function harness(initialProps = {}, { hlsSupported = true } = {}) {
   const slots = [], effects = [], instances = [], timers = new Map();
   let cursor = 0, nextTimer = 0, ready = 0, errors = 0, plays = 0;
   const track = { kind: 'subtitles', mode: 'disabled' };
+  const window = events();
+  const document = events({ visibilityState: 'visible' });
   const video = events({
-    duration: NaN, currentTime: 0, error: null, src: '', textTracks: events([track]),
+    duration: NaN, currentTime: 0, error: null, src: '', ended: false, textTracks: events([track]),
     play() { plays++; return Promise.resolve(); },
     load() { this.currentTime = 0; this.duration = NaN; this.error = null; },
     removeAttribute(name) { if (name === 'src') this.src = ''; },
@@ -61,7 +63,7 @@ function harness(initialProps = {}, { hlsSupported = true } = {}) {
   };
   const exports = {};
   vm.runInNewContext(source, {
-    exports,
+    exports, window, document,
     setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
     require(id) {
@@ -69,18 +71,25 @@ function harness(initialProps = {}, { hlsSupported = true } = {}) {
       if (id === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
       if (id === 'react-native') return { View: 'View', StyleSheet: { create: styles => styles } };
       if (id === 'hls.js') return Hls;
+      if (id === './PlayerChrome.web') return 'PlayerChrome';
+      if (id === './player-preferences') return { readPlayerPreferences: () => ({ volume: 1, muted: false, speed: 1 }) };
       throw new Error(id);
     },
   });
   const props = { uri: 'https://media.example/episode-1.m3u8', startAt: 80, onReady: () => { ready++; }, onError: () => { errors++; }, ...initialProps };
   const ref = { current: null };
   return {
-    instances, video, track, timers, ref,
+    instances, video, track, timers, ref, window, document,
     get ready() { return ready; }, get errors() { return errors; }, get plays() { return plays; },
     render(next = {}) {
       Object.assign(props, next); cursor = 0;
       const tree = exports.default(props, ref);
-      tree.props.children.props.ref.current = video;
+      const findVideo = node => {
+        if (node?.type === 'video') return node;
+        const children = node?.props?.children;
+        return (Array.isArray(children) ? children : [children]).map(child => child && findVideo(child)).find(Boolean);
+      };
+      findVideo(tree).props.ref.current = video;
       effects.splice(0).forEach(effect => effect());
       return tree;
     },
@@ -233,4 +242,85 @@ test('native playback clamps resume safely and reports one terminal error', () =
   assert.equal(h.errors, 1);
   h.unmount();
   assert.equal(h.video.listeners.get('loadedmetadata').size, 0);
+});
+
+test('legacy ratio resumes after metadata while exact fractional seconds take priority', () => {
+  const ratio = harness({ startAt: 0, startProgress: 0.25 });
+  ratio.render();
+  ratio.instances[0].emit('manifest');
+  assert.equal(ratio.video.currentTime, 0);
+  ratio.video.duration = 1440;
+  ratio.video.emit('loadedmetadata');
+  assert.equal(ratio.video.currentTime, 360);
+  ratio.video.currentTime = 420;
+  ratio.video.emit('loadedmetadata');
+  assert.equal(ratio.video.currentTime, 420, 'recovery never reapplies the ratio');
+
+  const exact = harness({ startAt: 0.25, startProgress: 0.75 });
+  exact.render(); exact.video.duration = 1440; exact.video.emit('loadedmetadata');
+  assert.equal(exact.video.currentTime, 0.25, 'early exact bookmarks do not jump to a percentage');
+  const zero = harness({ startAt: 0, startProgress: NaN });
+  zero.render(); zero.video.duration = 1440; zero.video.emit('loadedmetadata');
+  assert.equal(zero.video.currentTime, 0, 'restart remains at zero');
+});
+
+test('metadata with unknown duration retries once real duration arrives without seeking at manifest time', () => {
+  const times = [];
+  const h = harness({ startAt: 7.25, onTimeUpdate: (...args) => times.push(args) });
+  h.render();
+  h.video.duration = 1440;
+  h.video.emit('durationchange');
+  h.video.emit('timeupdate');
+  assert.equal(h.ready, 0, 'duration alone is not decoded metadata');
+  assert.equal(times.length, 0, 'pre-resume timeupdate cannot overwrite the bookmark with zero');
+  h.video.duration = NaN;
+  h.video.emit('loadedmetadata');
+  assert.equal(h.ready, 0);
+  assert.equal(h.video.currentTime, 0);
+  h.video.duration = 1440;
+  h.video.emit('durationchange');
+  assert.equal(h.ready, 1);
+  assert.equal(h.video.currentTime, 7.25);
+  assert.deepEqual(times, [[7.25, 1440]]);
+  h.video.currentTime = 30;
+  h.video.emit('durationchange');
+  assert.equal(h.video.currentTime, 30);
+  h.unmount();
+  assert.equal(h.video.listeners.get('durationchange').size, 0);
+});
+
+test('pause, seek, ended, pagehide and hidden checkpoints preserve exact zero and completion', () => {
+  const checkpoints = [], times = [];
+  const h = harness({ startAt: 0, onCheckpoint: (...args) => checkpoints.push(args), onTimeUpdate: (...args) => times.push(args) });
+  h.render();
+  h.video.emit('pause'); h.window.emit('pagehide');
+  assert.equal(checkpoints.length, 0, 'unloaded sources cannot erase a saved bookmark');
+  h.video.duration = 1440; h.video.emit('loadedmetadata');
+  assert.deepEqual(times[0], [0, 1440], 'initial metadata exposes the measured clock');
+  h.video.currentTime = 7.125; h.video.emit('pause');
+  h.video.currentTime = 0; h.video.emit('seeked');
+  h.video.currentTime = 12.5; h.window.emit('pagehide');
+  h.document.emit('visibilitychange');
+  assert.equal(checkpoints.length, 3, 'visible transitions do not checkpoint');
+  h.document.visibilityState = 'hidden'; h.document.emit('visibilitychange');
+  h.video.currentTime = 1440; h.video.ended = true; h.video.emit('ended');
+  assert.deepEqual(checkpoints, [[7.125, 1440, false], [0, 1440, false], [12.5, 1440, false], [12.5, 1440, false], [1440, 1440, true]]);
+  const stale = [...h.window.listeners.get('pagehide')][0];
+  h.unmount();
+  assert.equal(h.window.listeners.get('pagehide').size, 0);
+  assert.equal(h.document.listeners.get('visibilitychange').size, 0);
+  assert.equal(h.video.listeners.get('seeked').size, 0);
+  stale();
+  assert.equal(checkpoints.length, 5, 'queued old-source checkpoints are ignored after disposal');
+});
+
+test('checkpoint callback changes and custom chrome do not recreate the playback engine', () => {
+  const old = [], latest = [];
+  const h = harness({ onCheckpoint: (...args) => old.push(args) });
+  h.render(); h.video.duration = 1440; h.video.emit('loadedmetadata');
+  h.render({ onCheckpoint: (...args) => latest.push(args), chrome: { title: 'One Piece' } });
+  assert.equal(h.instances.length, 1);
+  h.video.currentTime = 25; h.video.emit('pause');
+  assert.equal(old.length, 0);
+  assert.deepEqual(latest, [[25, 1440, false]]);
 });

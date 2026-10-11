@@ -75,6 +75,22 @@ returns upright when the viewport becomes landscape, and restores the normal
 page on exit. Screen orientation locking is best effort; the rotated layout
 also works when the browser does not support it. Resizing keeps playback mounted.
 
+The web player has compact Sakura controls for seeking, captions, playback speed,
+available HLS quality levels, fullscreen, and the next episode. Volume, mute,
+speed, and caption visibility are remembered in this browser. Controls hide
+during playback and remain available by touch, mouse, or keyboard (Space/K,
+Left/Right, M, F). The series page shows the saved episode and measured time.
+
+Direct web playback saves its exact clock every three seconds and immediately
+on pause, seeking, hiding/leaving the page, or finishing. Reloads resume even
+early in an episode; Start over resets the bookmark, and actual completion
+queues the next episode. Existing native bookmarks keep their original behavior.
+Bookmarks/preferences use local browser storage; clearing site data removes them.
+
+Skip Opening/Ending uses valid provider timings first, with an optional public
+AniSkip lookup matched to the current episode and measured stream duration.
+Missing, invalid, or mismatched timings never block playback or guess a skip.
+
 The server supplies required provider headers and rewrites media URLs for the
 browser. Its signing secret stays on the server; the client uses the existing
 Supabase URL. Without the function deployed, the external-player fallback stays
@@ -93,6 +109,8 @@ run from the repository root:
 npm install --prefix /tmp/sakura-anime-player-tests esbuild playwright
 SAKURA_BROWSER_TEST_NODE_MODULES=/tmp/sakura-anime-player-tests/node_modules \
   node --test web/test/anime-player.browser.mjs
+SAKURA_BROWSER_TEST_NODE_MODULES=/tmp/sakura-anime-player-tests/node_modules \
+  node --test web/test/anime-player-controls.browser.mjs
 ```
 
 The check uses installed Google Chrome on macOS. Elsewhere, set
