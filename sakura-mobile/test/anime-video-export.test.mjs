@@ -34,6 +34,44 @@ async function exported(cache, current = episode, options) {
 }
 const ftyp = Buffer.from([0, 0, 0, 20, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115, 111, 109]);
 
+function durationFields(mp4) {
+  const fields = [];
+  function visit(start, end) {
+    for (let at = start; at < end;) {
+      const size = mp4.readUInt32BE(at);
+      assert.ok(size >= 8 && at + size <= end);
+      const type = mp4.toString('ascii', at + 4, at + 8);
+      if (['moov', 'trak', 'mdia'].includes(type)) visit(at + 8, at + size);
+      if (['mvhd', 'tkhd', 'mdhd'].includes(type)) {
+        const version = mp4[at + 8];
+        const offset = at + 8 + (type === 'tkhd' ? 20 : 16) + (version === 1 ? 8 : 0);
+        fields.push({ type, offset, version, value: version === 1 ? mp4.readBigUInt64BE(offset) : BigInt(mp4.readUInt32BE(offset)) });
+      }
+      at += size;
+    }
+  }
+  visit(0, mp4.length);
+  return fields;
+}
+
+function useVersionOneDurationHeaders(mp4) {
+  const parts = [];
+  for (let at = 0; at < mp4.length;) {
+    const size = mp4.readUInt32BE(at), type = mp4.toString('ascii', at + 4, at + 8);
+    let payload = mp4.subarray(at + 8, at + size);
+    if (['moov', 'trak', 'mdia'].includes(type)) payload = useVersionOneDurationHeaders(payload);
+    else if (['mvhd', 'tkhd', 'mdhd'].includes(type)) {
+      assert.equal(payload[0], 0);
+      const durationOffset = type === 'tkhd' ? 20 : 16;
+      const flags = Buffer.from(payload.subarray(0, 4)); flags[0] = 1;
+      payload = Buffer.concat([flags, Buffer.alloc(4), payload.subarray(4, 8), Buffer.alloc(4), payload.subarray(8, durationOffset), Buffer.alloc(8, 255), payload.subarray(durationOffset + 4)]);
+    }
+    const header = Buffer.alloc(8); header.writeUInt32BE(payload.length + 8); header.write(type, 4);
+    parts.push(header, payload); at += size;
+  }
+  return Buffer.concat(parts);
+}
+
 test('copies progressive video byte-exactly, awaits the sink, and reports its real MIME', async () => {
   const source = Buffer.concat([ftyp, Buffer.alloc(150_000, 71)]);
   const cache = cacheFor({ video: new Response(source, { headers: { 'content-type': 'video/quicktime', 'content-length': String(source.length) } }) });
@@ -102,6 +140,9 @@ test('real H.264/AAC TS, fMP4, AES, ranges, and timestamp resets export into ind
   const source = [0, 1, 2, 3].map(i => readFileSync(path.join(dir, 'ts', `seg${i}.ts`)));
   const plainFiles = { 'index.m3u8': readFileSync(path.join(dir, 'ts', 'media.m3u8'), 'utf8'), ...Object.fromEntries(source.map((b, i) => [`seg${i}.ts`, b])) };
   const baseline = (await exported(cacheFor(plainFiles))).bytes;
+  const durations = durationFields(baseline);
+  assert.equal(durations.length, 5, 'movie and both audio/video track/media duration fields are inspected');
+  assert.ok(durations.every(field => field.value === 0n), 'Safari must infer the real duration instead of interpreting mux.js unknown duration as 24.8 hours');
   const verify = (name, bytes, expectedFrames = 192) => {
     const file = path.join(dir, `${name}.mp4`); writeFileSync(file, bytes);
     const info = execFileSync(ffmpeg, ['-hide_banner', '-i', file, '-f', 'null', '-'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1024 * 1024 });
@@ -136,6 +177,13 @@ test('real H.264/AAC TS, fMP4, AES, ranges, and timestamp resets export into ind
   for (let i = 0; i < 4; i++) fmp4[`seg${i}.m4s`] = readFileSync(path.join(dir, 'fmp4', `seg${i}.m4s`));
   const fmp4Baseline = (await exported(cacheFor(fmp4))).bytes;
   verify('fmp4', fmp4Baseline);
+  const versionOne = (await exported(cacheFor({ ...fmp4, 'init.mp4': useVersionOneDurationHeaders(fmp4['init.mp4']) }))).bytes;
+  assert.ok(durationFields(versionOne).every(field => field.version === 1 && field.value === 0n), '64-bit unknown duration sentinels are also normalized');
+  verify('fmp4-version-one', versionOne);
+  const finiteInit = Buffer.from(fmp4['init.mp4']);
+  for (const field of durationFields(finiteInit)) finiteInit.writeUInt32BE(123, field.offset);
+  const finite = (await exported(cacheFor({ ...fmp4, 'init.mp4': finiteInit }))).bytes;
+  assert.ok(durationFields(finite).every(field => field.value === 123n), 'finite source duration metadata is preserved');
   const sharedParts = [fmp4['init.mp4'], ...[0, 1, 2, 3].map(i => fmp4[`seg${i}.m4s`])];
   const sharedLines = [`#EXT-X-MAP:URI="shared.mp4",BYTERANGE="${sharedParts[0].length}@0"`];
   sharedParts.slice(1).forEach((part, i) => sharedLines.push('#EXTINF:2,', `#EXT-X-BYTERANGE:${part.length}${i === 0 ? `@${sharedParts[0].length}` : ''}`, 'shared.mp4'));

@@ -178,6 +178,29 @@ function compatibleTracks(a: Map<number, Track>, b: Map<number, Track>) {
     throw unsupported('the audio or video format changes during the episode.');
   }
 }
+function normalizeUnknownDurations(init: Uint8Array): Uint8Array {
+  const normalized = init.slice();
+  const view = new DataView(normalized.buffer, normalized.byteOffset, normalized.byteLength);
+  const visit = (start: number, end: number) => {
+    for (const box of boxes(normalized, start, end)) {
+      if (['moov', 'trak', 'mdia'].includes(box.type)) visit(box.data, box.end);
+      else if (['mvhd', 'tkhd', 'mdhd'].includes(box.type)) {
+        const version = normalized[box.data];
+        if (version !== 0 && version !== 1) throw unsupported('an unsupported MP4 duration header.');
+        const offset = box.data + (box.type === 'tkhd' ? 20 : 16) + (version === 1 ? 8 : 0);
+        if (offset + (version === 1 ? 8 : 4) > box.end) throw unsupported('truncated MP4 duration data.');
+        // mux.js uses all-one bits for unknown duration. Safari treats that as
+        // a literal duration (24.8 hours for 48 kHz audio). Zero tells standalone
+        // fragmented-MP4 readers to derive duration from the actual fragments.
+        if (version === 1) {
+          if (view.getBigUint64(offset) === 0xffffffffffffffffn) view.setBigUint64(offset, 0n);
+        } else if (view.getUint32(offset) === 0xffffffff) view.setUint32(offset, 0);
+      }
+    }
+  };
+  visit(0, normalized.length);
+  return normalized;
+}
 interface Timeline { origin?: number; start: number; sequence: number; last: Map<number, number> }
 function normalizeFragment(bytes: Uint8Array, tracks: Map<number, Track>, timeline: Timeline): Uint8Array[] {
   const top = boxes(bytes);
@@ -287,7 +310,7 @@ export async function writeAnimeVideo(
   const initialize = async (init: Uint8Array) => {
     const next = tracksIn(init);
     if (tracks) compatibleTracks(tracks, next);
-    else { tracks = next; await emit(init); }
+    else { tracks = next; await emit(normalizeUnknownDurations(init)); }
   };
   let elapsed = 0, activePeriod = -1, mode: 'ts' | 'mp4' | undefined;
   let transmuxer: InstanceType<typeof muxjs.mp4.Transmuxer> | undefined;
