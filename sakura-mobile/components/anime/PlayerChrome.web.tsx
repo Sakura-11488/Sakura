@@ -5,6 +5,7 @@ import type { PlayerChromeOptions } from './player-types';
 import PlayerIcon, { type PlayerIconName } from './PlayerIcon.web';
 import { readPlayerPreferences, savePlayerPreferences } from './player-preferences';
 import { playerStyles } from './player-styles';
+import useUpNext from './useUpNext.web';
 
 type Props = {
   videoRef: RefObject<HTMLVideoElement | null>;
@@ -49,6 +50,9 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   const [fullscreen, setFullscreen] = useState(false);
   const [resumedAt, setResumedAt] = useState<number | null>(null);
   const [notice, setNotice] = useState('');
+  const { upNext, autoplay, toggleAutoplay, playNext, cancelNext, clearNext } = useUpNext(
+    videoRef, `${uri}|${options.episodeNumber ?? ''}|${options.title}`, options.nextEpisode,
+  );
   useEffect(() => { captionCallback.current = onCaptionModeChange; }, [onCaptionModeChange]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -72,18 +76,19 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   const seek = useCallback((seconds: number) => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    clearNext();
     const next = Math.min(Math.max(0, seconds), video.duration);
     video.currentTime = next;
     setMedia(previous => ({ ...previous, time: next }));
     reveal();
-  }, [videoRef, reveal]);
+  }, [videoRef, reveal, clearNext]);
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused || video.ended) void video.play().catch(() => { setVisible(true); });
+    if (video.paused || video.ended) { clearNext(); void video.play().catch(() => { setVisible(true); }); }
     else video.pause();
     reveal();
-  }, [videoRef, reveal]);
+  }, [videoRef, reveal, clearNext]);
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
     if (video) { video.muted = !video.muted; reveal(); }
@@ -250,8 +255,9 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   const skip = validMarker(options.intro) ? { label: 'Skip Opening', end: options.intro!.end }
     : validMarker(options.outro) ? { label: 'Skip Ending', end: options.outro!.end } : null;
   const showChrome = visible || media.paused || !!menu;
+  const countdownSeconds = Math.max(1, Math.ceil((upNext?.remainingMs ?? 0) / 1000));
 
-  return <div className="sc-player" ref={rootRef} data-sakura-player="" data-chrome-visible={showChrome ? 'true' : 'false'}
+  return <div className="sc-player" ref={rootRef} data-sakura-player="" data-up-next-visible={upNext && options.nextEpisode ? 'true' : 'false'} data-chrome-visible={showChrome ? 'true' : 'false'}
     onPointerMove={event => { if (event.pointerType !== 'touch') reveal(); }} onFocus={reveal}
     onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); closeMenu(); } }}>
     <style>{playerStyles}</style>
@@ -274,6 +280,19 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     {waiting && !media.paused && <div className="sc-buffering" role="status" aria-label="Buffering" />}
     {skip && <button type="button" className="sc-skip" onClick={() => seek(skip.end)}>{skip.label}<PlayerIcon name="next" /></button>}
     {resumedAt !== null && <div className="sc-resume" role="status"><span>Resumed at {playerTime(resumedAt)}</span><button type="button" onClick={() => { seek(0); setResumedAt(null); }}>Restart</button></div>}
+    {upNext && options.nextEpisode && <section className="sc-up-next" aria-label="Up next" data-up-next="">
+      <div className="sc-up-next-copy">
+        {options.nextEpisode.thumbnail && <img className="sc-up-next-image" src={options.nextEpisode.thumbnail} alt="" referrerPolicy="no-referrer" />}
+        <div><span className="sc-up-next-eyebrow">UP NEXT</span><strong>{options.nextEpisode.title || options.nextEpisode.label}</strong>
+          <span className="sc-up-next-detail">{options.nextEpisode.title && options.nextEpisode.title !== options.nextEpisode.label ? options.nextEpisode.label : options.title}</span></div>
+      </div>
+      <div className="sc-up-next-actions">
+        <span className="sc-up-next-status" role="status">{upNext.remainingMs === null ? 'Autoplay is off' : upNext.paused ? 'Countdown paused' : `Playing in ${countdownSeconds} ${countdownSeconds === 1 ? 'second' : 'seconds'}`}</span>
+        {upNext.remainingMs !== null && <button type="button" className="sc-up-next-cancel" onClick={() => { cancelNext(); rootRef.current?.querySelector<HTMLButtonElement>('.sc-main-play')?.focus(); }} aria-label="Cancel autoplay">Cancel</button>}
+        <button type="button" className="sc-up-next-play" onClick={playNext}><PlayerIcon name="play" />Play now</button>
+      </div>
+      {upNext.remainingMs !== null && <div className="sc-up-next-progress" aria-hidden="true"><span style={{ transform: `scaleX(${upNext.remainingMs / 5000})` }} /></div>}
+    </section>}
     {notice && <div className="sc-notice" role="status">{notice}</div>}
     <div className="sc-bottom sc-chrome" inert={!showChrome}>
       <input className="sc-timeline" type="range" min="0" max={media.duration || 1} step="0.1" value={Math.min(media.time, media.duration || 1)} disabled={!media.duration}
@@ -288,7 +307,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
         </div>
         <span className="sc-clock">{playerTime(media.time)}<span> / {playerTime(media.duration)}</span></span>
         <div className="sc-footer-space" />
-        {options.nextEpisode && <button type="button" className="sc-button sc-next" onClick={options.nextEpisode.onPlay} aria-label={`Next episode: ${options.nextEpisode.label}`} title={`Next episode: ${options.nextEpisode.label}`}><PlayerIcon name="next" /><span>{options.nextEpisode.label}</span></button>}
+        {options.nextEpisode && <button type="button" className="sc-button sc-next" onClick={playNext} aria-label={`Next episode: ${options.nextEpisode.label}`} title={`Next episode: ${options.nextEpisode.label}`}><PlayerIcon name="next" /><span>{options.nextEpisode.label}</span></button>}
         <button type="button" className="sc-button sc-speed" onClick={event => toggleMenu('speed', event.currentTarget)} aria-label="Playback speed" aria-expanded={menu === 'speed'}>{media.speed}×</button>
         <button type="button" className={`sc-button${captionsOn ? ' sc-active' : ''}`} onClick={event => toggleMenu('captions', event.currentTarget)} aria-label="Captions" aria-expanded={menu === 'captions'} disabled={!media.captions.length}><PlayerIcon name="captions" /></button>
         <button type="button" className="sc-button" onClick={event => toggleMenu('quality', event.currentTarget)} aria-label="Playback settings" aria-expanded={!!menu}><PlayerIcon name="settings" /></button>
@@ -311,6 +330,9 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
           {!media.captions.length && <p>No captions for this source.</p>}
         </>}
       </div>
+      <button type="button" className="sc-autoplay-toggle" role="switch" aria-label="Autoplay next episode" aria-checked={autoplay} onClick={toggleAutoplay}>
+        <span>Autoplay next episode</span><span className="sc-switch-track" aria-hidden="true"><span /></span>
+      </button>
       <div className="sc-menu-foot">{menu === 'quality' ? `${selectedQuality} quality` : 'Saved for your next episode'}</div>
     </div>}
   </div>;

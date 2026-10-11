@@ -81,6 +81,15 @@ speed, and caption visibility are remembered in this browser. Controls hide
 during playback and remain available by touch, mouse, or keyboard (Space/K,
 Left/Right, M, F). The series page shows the saved episode and measured time.
 
+When an episode finishes, a compact Up Next card counts down for five seconds
+before opening the next episode. Viewers can play immediately, cancel this
+countdown, or turn off Autoplay next episode in playback settings; the preference
+is remembered in this browser. The countdown pauses in background tabs and is
+cleared by seeking, replaying, changing sources, or leaving the player. It never
+starts during credits, never loops the last episode, and preserves the current
+fullscreen/landscape viewport and SUB/DUB choice between episodes. Explicit
+SUB/DUB selections are also remembered for later watching sessions.
+
 Direct web playback saves its exact clock every three seconds and immediately
 on pause, seeking, hiding/leaving the page, or finishing. Reloads resume even
 early in an episode; Start over resets the bookmark, and actual completion

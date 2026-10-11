@@ -172,6 +172,8 @@ export default function FallingLeaves() {
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFill,
+    // Decorations must not widen the page after resizing or rotating a device.
+    overflow: Platform.OS === 'web' ? 'hidden' : undefined,
     zIndex: 999,
   },
   leaf: {

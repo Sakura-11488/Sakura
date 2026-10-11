@@ -47,6 +47,7 @@ import {
 import { getOfflinePlaybackUri } from '@/lib/anime-offline';
 import WebVideoPlayer, { type WebVideoPlayerHandle } from '@/components/anime/WebVideoPlayer';
 import WatchViewport from '@/components/anime/WatchViewport';
+import { readPlayerPreferences, savePlayerPreferences } from '@/components/anime/player-preferences';
 import { fetchAnimeSkipTimes, mergeAnimeSkipMarkers } from '@/lib/anime-skip-times';
 
 const D = {
@@ -56,6 +57,7 @@ const D = {
   muted: 'rgba(255,255,255,0.55)',
 };
 const WEB_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
+const CATALOG_EPISODE_ID = /^(?:hi|mal)-\d+-\d+$/;
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -80,7 +82,9 @@ export default function AnimeWatch() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const [category, setCategory] = useState<'sub' | 'dub'>('sub');
+  const [category, setCategory] = useState<'sub' | 'dub'>(() =>
+    Platform.OS === 'web' ? readPlayerPreferences().audio ?? 'sub' : 'sub',
+  );
   const [availableCategories, setAvailableCategories] = useState<string[]>(['sub']);
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [localUri, setLocalUri] = useState<string | null>(null);
@@ -165,7 +169,17 @@ export default function AnimeWatch() {
   );
   const streamUA = useMemo(() => getAnimeStreamUserAgent(), []);
 
-  const currentEpisodeIndex = anime?.episodes.findIndex((e) => e.id === ep) ?? -1;
+  const currentEpisodeIndex = useMemo(() => {
+    if (!anime) return -1;
+    const exact = anime.episodes.findIndex((episode) => episode.id === ep);
+    if (exact >= 0) return exact;
+    // Shared MAL watch links and the source catalog can name the same episode
+    // differently. Match its number only inside this title's catalog.
+    if (anime.id === String(id) && CATALOG_EPISODE_ID.test(ep || '')) {
+      return anime.episodes.findIndex((episode) => episode.number === epNumInt);
+    }
+    return -1;
+  }, [anime, ep, id, epNumInt]);
   const currentEpisode: AnimeEpisode | null =
     currentEpisodeIndex >= 0 ? (anime?.episodes[currentEpisodeIndex] ?? null) : null;
   const nextEpisode: AnimeEpisode | null =
@@ -401,12 +415,15 @@ export default function AnimeWatch() {
         : null;
       if (cancelled) return;
       playbackEpisodeKeyRef.current = episodeKey;
-      if (restartRequestedRef.current && saved?.episodeId === ep) {
+      const matchingBookmark = saved && (saved.episodeId === ep || (
+        CATALOG_EPISODE_ID.test(ep || '') && CATALOG_EPISODE_ID.test(saved.episodeId) && saved.episodeNumber === epNumInt
+      ));
+      if (restartRequestedRef.current && matchingBookmark) {
         await setAnimeWatchProgress({ ...saved, progress: 0, positionSeconds: 0, completed: false });
         if (cancelled) return;
       }
       if (
-        saved?.episodeId === ep &&
+        matchingBookmark &&
         !restartRequestedRef.current &&
         canResumeWatchProgress(saved)
       ) {
@@ -834,6 +851,7 @@ export default function AnimeWatch() {
     const next = category === 'sub' ? 'dub' : 'sub';
     if (availableCategories.includes(next)) {
       setCategory(next);
+      if (isWeb) savePlayerPreferences({ audio: next });
     }
   };
 
@@ -855,6 +873,11 @@ export default function AnimeWatch() {
       progress: 0,
       updatedAt: Date.now(),
     }, anime.episodes || []);
+    if (isWeb) {
+      // Retain the viewport/fullscreen element and audio choice between episodes.
+      router.setParams({ ep: nextEpisode.id, restart: undefined, offline: undefined });
+      return;
+    }
     router.replace({
       pathname: '/anime/watch',
       params: {
@@ -957,7 +980,13 @@ export default function AnimeWatch() {
             onToggleCategory: toggleCategory,
             intro: webSkipMarkers.intro,
             outro: webSkipMarkers.outro,
-            nextEpisode: nextEpisode ? { label: `Episode ${nextEpisode.number}`, onPlay: goToNext } : undefined,
+            nextEpisode: nextEpisode ? {
+              label: `Episode ${nextEpisode.number}`,
+              title: nextEpisode.title,
+              number: nextEpisode.number,
+              thumbnail: nextEpisode.thumbnail,
+              onPlay: goToNext,
+            } : undefined,
           }}
           onReady={() => setWebReady(true)}
           onError={handleDirectPlaybackFailure}
