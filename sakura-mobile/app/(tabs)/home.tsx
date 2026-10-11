@@ -318,7 +318,7 @@ export default function HomeScreen() {
   }, [loadData]);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || Platform.OS === 'web') return;
     let cancelled = false;
     setActionPacked([]); setRomance([]); setBoredmBusters([]); setComedy([]);
     (async () => {

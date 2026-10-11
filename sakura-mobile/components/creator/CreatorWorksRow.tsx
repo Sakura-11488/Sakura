@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Image } from 'expo-image';
+import CoverImage from '@/components/ui/CoverImage';
 import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
@@ -98,7 +98,7 @@ export default function CreatorWorksRow({
             >
               <View style={s.card}>
                 {cover ? (
-                  <Image source={{ uri: cover }} style={s.cover} contentFit="cover" transition={250} />
+                  <CoverImage source={{ uri: cover }} style={s.cover} contentFit="cover" transition={250} accessibilityLabel={w.title} />
                 ) : (
                   <View style={[s.cover, s.fallback]}>
                     <Text style={s.fallbackText}>{(w.title || '?').slice(0, 1).toUpperCase()}</Text>

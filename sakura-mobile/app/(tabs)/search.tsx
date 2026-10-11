@@ -12,7 +12,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { useScrollToTop, useFocusEffect } from 'expo-router';
+import { useScrollToTop, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import CoverImage from '@/components/ui/CoverImage';
@@ -67,6 +67,7 @@ function SearchIcon({ color }: { color: string }) {
 export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const searchParams = useLocalSearchParams<{ q?: string; focus?: string; searchRequest?: string }>();
   const { address, unlockForAppSession } = useWallet();
   const { allowAdult } = useContentPrefs();
   // Size the category grid off the CONTENT column, not the raw window: on a
@@ -258,6 +259,15 @@ export default function SearchTabScreen() {
     [runSearch],
   );
 
+  const appliedSearch = useRef<string | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof searchParams.q !== 'string') return;
+    const request = JSON.stringify([searchParams.q, searchParams.searchRequest]);
+    if (appliedSearch.current === request) return;
+    appliedSearch.current = request;
+    onChangeQuery(searchParams.q);
+  }, [searchParams.q, searchParams.searchRequest, onChangeQuery]);
+
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -267,7 +277,9 @@ export default function SearchTabScreen() {
 
   useFocusEffect(
     useCallback(() => {
+
       return () => {
+        if (Platform.OS === 'web') return;
         searchRequestRef.current += 1;
         setQuery('');
         setFilter('All');
@@ -276,7 +288,7 @@ export default function SearchTabScreen() {
         if (debounceRef.current) clearTimeout(debounceRef.current);
         inputRef.current?.blur();
       };
-    }, []),
+    }, [onChangeQuery, searchParams.q]),
   );
 
   const filteredResults = useMemo(() => {
@@ -471,7 +483,7 @@ export default function SearchTabScreen() {
       discoverLoading={discoverLoading}
       discoverError={discoverError}
       messagingUser={messagingUser}
-      suggestions={categoryCards}
+      suggestions={discoverCards.slice(0, 6).map(card => ({ label: card.title, query: card.title, cover: card.cover }))}
       onResultPress={handleResultPress}
       onDiscoverPress={id => router.push(`/manga/${encodeURIComponent(id)}` as never)}
       onRetry={() => void runSearch(query)}

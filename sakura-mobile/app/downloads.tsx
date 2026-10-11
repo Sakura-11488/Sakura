@@ -8,8 +8,9 @@ import {
   StyleSheet,
   SectionList,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
-import { Image } from 'expo-image';
+import Image from '@/components/ui/CoverImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
@@ -91,6 +92,11 @@ export default function DownloadsScreen() {
   /** Row currently being written out, so its button can show progress. */
   const [saving, setSaving] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const refreshInFlight = React.useRef<Promise<void> | null>(null);
+  const hasActiveDownloads = React.useRef(false);
+  const lastRefreshAt = React.useRef(0);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -109,7 +115,8 @@ export default function DownloadsScreen() {
   }, []);
 
   const refresh = useCallback(() => {
-    Promise.all([
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const request = Promise.all([
       listOfflineEpisodes(),
       listOfflineMangaChapters(),
       listOfflineNovelChapters(),
@@ -153,7 +160,15 @@ export default function DownloadsScreen() {
         });
       }
       setSections(next);
+      hasActiveDownloads.current = next.some((section) => section.data.some((row) => row.data.status === 'downloading'));
+      lastRefreshAt.current = Date.now();
+      setLoadError('');
+    }).catch(() => setLoadError('Downloads could not be loaded. Your saved files have not been changed.')).finally(() => {
+      setLoading(false);
+      refreshInFlight.current = null;
     });
+    refreshInFlight.current = request;
+    return request;
   }, []);
 
   // Once per app run, flip any download left mid-flight by a previous session
@@ -165,13 +180,16 @@ export default function DownloadsScreen() {
       reconcileInterruptedMangaChapters(),
       reconcileInterruptedNovelChapters(),
       reconcileInterruptedScrapedChapters(),
-    ]).then(refresh);
+    ]).then(refresh).catch(() => { void refresh(); });
   }, [refresh]);
 
   useFocusEffect(
     useCallback(() => {
       refresh();
-      const t = setInterval(refresh, 2000);
+      const t = setInterval(() => {
+        if (Platform.OS === 'web' && document.visibilityState === 'hidden') return;
+        if (hasActiveDownloads.current || Date.now() - lastRefreshAt.current >= 15000) void refresh();
+      }, 2000);
       return () => clearInterval(t);
     }, [refresh]),
   );
@@ -213,15 +231,19 @@ export default function DownloadsScreen() {
         list: { paddingHorizontal: Spacing.md, paddingBottom: 120 },
         row: {
           flexDirection: 'row',
+          flexWrap: 'wrap',
           gap: Spacing.sm,
           padding: Spacing.sm,
           borderRadius: Radius.lg,
-          backgroundColor: colors.white,
+          backgroundColor: colors.surface,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.borderLight,
           marginBottom: Spacing.sm,
           alignItems: 'center',
         },
+        rowMain: { flex: 1, minWidth: 200, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
         thumb: { width: 72, height: 48, borderRadius: Radius.xs },
-        info: { flex: 1, gap: 4 },
+        info: { flex: 1, minWidth: 0, gap: 4 },
         name: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: colors.text },
         meta: { fontSize: FontSize.xs, color: colors.textSecondary },
         badge: {
@@ -230,8 +252,10 @@ export default function DownloadsScreen() {
           color: colors.primary,
           textTransform: 'uppercase',
         },
-        deleteBtn: { padding: 8 },
-        rowActions: { flexDirection: 'row', alignItems: 'center' },
+        deleteBtn: { minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' },
+        rowActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginLeft: 'auto' },
+        backBtn: { width: 44, height: 44, alignItems: 'flex-start', justifyContent: 'center' },
+        feedback: { padding: Spacing.lg, gap: Spacing.sm, alignItems: 'center' },
         deleteText: { color: colors.red, fontSize: FontSize.sm, fontWeight: FontWeight.semibold },
         empty: {
           flex: 1,
@@ -495,13 +519,17 @@ export default function DownloadsScreen() {
           : row.data.chapterTitle;
 
     return (
+      <View style={styles.row}>
       <TouchableOpacity
-        style={styles.row}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${name}, ${meta}`}
+        disabled={row.data.status !== 'ready'}
+        style={styles.rowMain}
         activeOpacity={row.data.status === 'ready' ? 0.85 : 1}
         onPress={() => openRow(row)}
       >
         {thumb ? (
-          <Image source={{ uri: thumb }} style={styles.thumb} contentFit="cover" />
+          <Image source={{ uri: thumb }} thumbnailWidth={256} style={styles.thumb} contentFit="cover" />
         ) : (
           <View style={[styles.thumb, { backgroundColor: colors.border }]} />
         )}
@@ -514,21 +542,22 @@ export default function DownloadsScreen() {
           </Text>
           <Text style={styles.badge}>{statusLabel}</Text>
         </View>
+      </TouchableOpacity>
         {/* Novels have no per-chapter pause and the Downloads screen lacks the
             chapter list needed to resume a batch, so their pause/resume lives on
             the novel page — here they show only Delete. */}
         {(row.data.status === 'downloading' || row.data.status === 'paused') && row.kind !== 'novel' ? (
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => handlePauseResume(row)}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${row.data.status === 'paused' ? 'Resume' : 'Pause'} download of ${name}`} style={styles.deleteBtn} onPress={() => handlePauseResume(row)}>
             <Text style={[styles.deleteText, { color: colors.primary }]}>
               {row.data.status === 'paused' ? 'Resume' : 'Pause'}
             </Text>
           </TouchableOpacity>
         ) : row.data.status === 'error' ? (
           <View style={styles.rowActions}>
-            <TouchableOpacity style={styles.deleteBtn} onPress={() => handleRetry(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Retry download of ${name}`} style={styles.deleteBtn} onPress={() => handleRetry(row)}>
               <Text style={[styles.deleteText, { color: colors.primary }]}>Retry</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${name}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
               <Text style={styles.deleteText}>Delete</Text>
             </TouchableOpacity>
           </View>
@@ -543,6 +572,8 @@ export default function DownloadsScreen() {
             {CAN_EXPORT_OFFLINE && row.data.status === 'ready' &&
             (row.kind === 'scraped' || row.kind === 'novel') ? (
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`Save a copy of ${name}, ${meta}`}
                 style={styles.deleteBtn}
                 onPress={() => saveCopy(row)}
                 disabled={saving === rowKey(row)}
@@ -552,12 +583,12 @@ export default function DownloadsScreen() {
                 </Text>
               </TouchableOpacity>
             ) : null}
-            <TouchableOpacity style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${name}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
               <Text style={styles.deleteText}>Delete</Text>
             </TouchableOpacity>
           </View>
         )}
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -566,7 +597,7 @@ export default function DownloadsScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={onTap(() => router.back())} hitSlop={12}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={styles.backBtn} onPress={onTap(() => router.back())}>
           <BackIcon color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.title}>Downloads</Text>
@@ -583,7 +614,7 @@ export default function DownloadsScreen() {
         and their chapter has quietly vanished.
       */}
       {notice ? (
-        <Text style={[styles.sub, { color: colors.primary }]} onPress={() => setNotice('')}>
+        <Text accessibilityLiveRegion="polite" style={[styles.sub, { color: colors.primary }]}>
           {notice}
         </Text>
       ) : null}
@@ -595,7 +626,11 @@ export default function DownloadsScreen() {
         </Text>
       ) : null}
 
-      {isEmpty ? (
+      {loadError ? <View style={styles.feedback}>
+        <Text accessibilityRole="alert" style={styles.meta}>{loadError}</Text>
+        <TouchableOpacity accessibilityRole="button" style={styles.deleteBtn} onPress={() => { void refresh(); }}><Text style={{ color: colors.primary, fontWeight: FontWeight.semibold }}>Try again</Text></TouchableOpacity>
+      </View> : null}
+      {loading ? <View style={styles.feedback}><ActivityIndicator accessibilityLabel="Loading downloads" color={colors.primary} /></View> : isEmpty && !loadError ? (
         <EmptyState
           style={styles.empty}
           title="No downloads yet"

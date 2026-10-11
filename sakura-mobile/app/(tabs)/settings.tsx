@@ -175,6 +175,7 @@ function ToggleRow({ badge, label, sub, value, onToggle, disabled, colors }: {
         {sub ? <Text style={{ fontSize: FontSize.xs, color: colors.textSecondary, marginTop: 1 }}>{sub}</Text> : null}
       </View>
       <Switch
+        accessibilityLabel={label}
         value={value} onValueChange={onToggle} disabled={disabled}
         trackColor={{ false: colors.border, true: `${colors.primary}80` }}
         thumbColor={value ? colors.primary : colors.textTertiary}
@@ -191,6 +192,7 @@ function TapRow({ badge, label, sub, right, onPress, destructive, colors }: {
 }) {
   return (
     <TouchableOpacity
+      accessibilityRole="button" accessibilityLabel={label}
       onPress={onPress} activeOpacity={0.7} disabled={!onPress}
       style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: 13, gap: 12 }}
     >
@@ -213,10 +215,11 @@ function PillPicker({ value, options, onChange, colors }: {
       {options.map((o) => (
         <TouchableOpacity
           key={o.key}
+          accessibilityRole="button" accessibilityLabel={o.label} accessibilityState={{ selected: value === o.key }}
           onPress={() => onChange(o.key)}
           activeOpacity={0.7}
           style={{
-            paddingHorizontal: 14, paddingVertical: 6, borderRadius: Radius.full,
+            paddingHorizontal: 14, paddingVertical: 10, minHeight: 40, justifyContent: 'center', borderRadius: Radius.full,
             backgroundColor: value === o.key ? colors.primary : colors.surfaceSecondary,
             borderWidth: 1, borderColor: value === o.key ? colors.primary : colors.border,
           }}
@@ -445,7 +448,7 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={Platform.OS === 'web' ? { width: '100%', maxWidth: 800, alignSelf: 'center', paddingTop: 24, paddingBottom: 100 } : undefined}>
 
           {/* ── Header ── */}
           <View style={s.headerRow}>

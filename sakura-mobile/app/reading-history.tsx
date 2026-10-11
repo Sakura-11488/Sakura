@@ -5,7 +5,8 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Alert,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
 import Image from '@/components/ui/CoverImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -54,9 +55,14 @@ export default function ReadingHistoryScreen() {
   const router = useRouter();
   const [tab, setTab] = useState<'All' | 'Anime' | 'Manga' | 'Novel'>('All');
   const [items, setItems] = useState<HistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const refresh = useCallback(() => {
-    getReadingHistory(100).then(setItems);
+    void getReadingHistory(100).then((history) => {
+      setItems(history);
+      setError('');
+    }).catch(() => setError('Your history could not be loaded.')).finally(() => setLoading(false));
   }, []);
 
   useFocusEffect(
@@ -120,7 +126,7 @@ export default function ReadingHistoryScreen() {
       'Clear history?',
       'This removes your watch and read progress on this device.',
     ).then((ok) => {
-      if (ok) clearReadingHistory().then(refresh).catch(() => {});
+      if (ok) clearReadingHistory().then(refresh).catch(() => setError('History could not be cleared. Please try again.'));
     });
   };
 
@@ -136,17 +142,18 @@ export default function ReadingHistoryScreen() {
           paddingTop: Spacing.sm,
           marginBottom: Spacing.md,
         },
-        backBtn: { width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'center' },
+        backBtn: { width: 44, height: 44, alignItems: 'flex-start', justifyContent: 'center' },
         heading: {
           fontFamily: Fonts.display,
           fontWeight: Fonts.displayWeight,
-          fontSize: 34,
+          fontSize: 28,
           color: colors.text,
           letterSpacing: 0.3,
         },
         clearBtn: {
           paddingHorizontal: 10,
-          paddingVertical: 6,
+          minHeight: 44,
+          justifyContent: 'center',
         },
         clearText: {
           fontSize: FontSize.sm,
@@ -160,10 +167,14 @@ export default function ReadingHistoryScreen() {
           marginBottom: Spacing.md,
         },
         tab: {
-          paddingHorizontal: 16,
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 44,
+          paddingHorizontal: 10,
           paddingVertical: 8,
           borderRadius: Radius.full,
-          backgroundColor: colors.white,
+          backgroundColor: colors.surfaceSecondary,
         },
         tabActive: { backgroundColor: colors.primary },
         tabText: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, color: colors.textSecondary },
@@ -224,20 +235,21 @@ export default function ReadingHistoryScreen() {
           borderRadius: 2,
         },
         empty: { flex: 1, justifyContent: 'center' },
+        feedback: { padding: Spacing.lg, gap: 12, alignItems: 'center' },
       }),
     [colors],
   );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <Animated.View entering={FadeInDown.duration(400)}>
+      <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.duration(400)}>
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={onTap(() => router.back())} style={styles.backBtn} activeOpacity={0.7}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" onPress={onTap(() => router.back())} style={styles.backBtn} activeOpacity={0.7}>
             <BackIcon color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.heading}>History</Text>
           {items.length > 0 ? (
-            <TouchableOpacity onPress={onTap(confirmClear)} style={styles.clearBtn} activeOpacity={0.7}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Clear reading and watch history" onPress={onTap(confirmClear)} style={styles.clearBtn} activeOpacity={0.7}>
               <Text style={styles.clearText}>Clear</Text>
             </TouchableOpacity>
           ) : (
@@ -246,10 +258,12 @@ export default function ReadingHistoryScreen() {
         </View>
       </Animated.View>
 
-      <Animated.View entering={FadeInDown.delay(80).duration(400)} style={styles.tabRow}>
+      <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(80).duration(400)} style={styles.tabRow}>
         {TABS.map((t) => (
           <TouchableOpacity
             key={t}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: tab === t }}
             onPress={() => setTab(t)}
             style={[styles.tab, tab === t && styles.tabActive]}
           >
@@ -258,11 +272,17 @@ export default function ReadingHistoryScreen() {
         ))}
       </Animated.View>
 
-      {filtered.length === 0 ? (
+      {error ? <View style={styles.feedback}>
+        <Text accessibilityRole="alert" style={styles.subtitle}>{error}</Text>
+        <TouchableOpacity accessibilityRole="button" onPress={refresh} style={styles.clearBtn}>
+          <Text style={styles.clearText}>Try again</Text>
+        </TouchableOpacity>
+      </View> : null}
+      {loading ? <View style={styles.feedback}><ActivityIndicator accessibilityLabel="Loading history" color={colors.primary} /></View> : filtered.length === 0 && !error ? (
         <EmptyState
           style={styles.empty}
-          title="No history yet"
-          subtitle="Anime, manga, and novels you watch or read will show up here."
+          title={tab === 'All' ? 'No history yet' : `No ${tab.toLowerCase()} history yet`}
+          subtitle={tab === 'All' ? 'Anime, manga, and novels you watch or read will show up here.' : `Your ${tab.toLowerCase()} progress will appear here when you start ${tab === 'Anime' ? 'watching' : 'reading'}.`}
         />
       ) : (
         <FlatList
@@ -275,10 +295,10 @@ export default function ReadingHistoryScreen() {
             const pct = Math.min(100, Math.max(0, Math.round(item.progress * 100)));
             const showBar = item.progress > 0 && item.progress < 0.98;
             return (
-              <Animated.View entering={FadeInDown.delay(index * 40).duration(350)}>
-                <TouchableOpacity style={styles.row} onPress={() => openItem(item)} activeOpacity={0.85}>
+              <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(Math.min(index, 5) * 40).duration(350)}>
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Continue ${item.title}, ${item.subtitle}`} style={styles.row} onPress={() => openItem(item)} activeOpacity={0.85}>
                   {item.cover ? (
-                    <Image source={{ uri: item.cover }} style={styles.thumb} contentFit="cover" />
+                    <Image source={{ uri: item.cover }} thumbnailWidth={256} style={styles.thumb} contentFit="cover" />
                   ) : (
                     <View style={styles.thumb} />
                   )}

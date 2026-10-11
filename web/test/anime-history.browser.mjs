@@ -28,7 +28,7 @@ const fixtures = {
   './AnimeDiscoveryPanels': `import React from 'react';export default function Panel(){return <aside aria-label="Related titles fixture"/>}`,
 };
 async function serve() {
-  const bundle = await build({ stdin: { resolveDir: root, loader: 'jsx', contents: `
+  const bundle = await build({ outfile: 'app.js', stdin: { resolveDir: root, loader: 'jsx', contents: `
 import React,{useState,useEffect} from 'react';import{createRoot}from'react-dom/client';
 import Detail from ${JSON.stringify(resolve(root, 'sakura-mobile/components/anime/AnimeDetailWeb.web.tsx'))};
 import Continue from ${JSON.stringify(resolve(root, 'sakura-mobile/components/ui/ContinueWatchingRow.tsx'))};
@@ -48,7 +48,12 @@ function App(){const[progress,setProgress]=useState(null);const[items,setItems]=
     });
     p.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: fixtures[args.path], loader: 'jsx', resolveDir: root }));
   } }] });
-  const server = createServer((req, res) => { res.setHeader('Content-Type', req.url === '/app.js' ? 'application/javascript' : 'text/html'); res.end(req.url === '/app.js' ? bundle.outputFiles[0].text : '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:#0b0b0f;color:#eee;font-family:system-ui}section[aria-label="Continue shelf"]{padding:20px}</style><div id="root"></div><script src="/app.js"></script>'); });
+  const code = bundle.outputFiles.find(file => file.path.endsWith('.js')).text;
+  const css = bundle.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', req.url === '/app.js' ? 'application/javascript' : req.url === '/app.css' ? 'text/css' : 'text/html');
+    res.end(req.url === '/app.js' ? code : req.url === '/app.css' ? css : '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/app.css"><style>html,body{margin:0;background:#0b0b0f;color:#eee;font-family:system-ui}section[aria-label="Continue shelf"]{padding:20px}</style><div id="root"></div><script src="/app.js"></script>');
+  });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { server, url: `http://127.0.0.1:${server.address().port}` };
 }

@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { chooseDiscoverySeeds, fetchAnimeDiscovery } from '@/lib/anime-discovery';
 import { getAllWatchHistory } from '@/lib/watch-progress';
@@ -12,9 +12,24 @@ type Shelf = { title: string; description: string; items: Array<AnimeResult & { 
 function ShelfRow({ shelf }: { shelf: Shelf }) {
   const router = useRouter();
   const rail = useRef<HTMLDivElement>(null);
+  const [bounds, setBounds] = useState({ previous: false, next: false });
+  useEffect(() => {
+    const element = rail.current;
+    if (!element) return;
+    const update = () => {
+      const previous = element.scrollLeft > 2;
+      const next = element.scrollLeft + element.clientWidth < element.scrollWidth - 2;
+      setBounds(current => current.previous === previous && current.next === next ? current : { previous, next });
+    };
+    update();
+    element.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => { observer.disconnect(); element.removeEventListener('scroll', update); };
+  }, [shelf.items]);
   return <section className="ad-shelf" aria-label={shelf.title}>
-    <div className="ad-section-heading"><div><h2>{shelf.title}</h2><p>{shelf.description}</p></div>
-      <div className="ad-arrows"><button aria-label={`Scroll ${shelf.title} left`} onClick={() => rail.current?.scrollBy({ left: -450, behavior: 'smooth' })}>←</button><button aria-label={`Scroll ${shelf.title} right`} onClick={() => rail.current?.scrollBy({ left: 450, behavior: 'smooth' })}>→</button></div>
+    <div className="ad-section-heading"><div><h2>{shelf.title}</h2>{shelf.description && <p>{shelf.description}</p>}</div>
+      <div className="ad-arrows"><button aria-label={`Scroll ${shelf.title} left`} disabled={!bounds.previous} onClick={() => rail.current?.scrollBy({ left: -450, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })}>←</button><button aria-label={`Scroll ${shelf.title} right`} disabled={!bounds.next} onClick={() => rail.current?.scrollBy({ left: 450, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })}>→</button></div>
     </div>
     <div className="ad-rail" ref={rail}>{shelf.items.map(item => <button className="ad-card" key={item.id} onClick={() => router.push({ pathname: '/anime/[id]', params: { id: item.id } })}>
       <span className="ad-cover">{item.image ? <CoverImage source={{ uri: item.image }} style={{ width: '100%', height: '100%' }} contentFit="cover" thumbnailWidth={256} /> : <span className="ad-cover-placeholder">SAKURA</span>}<span className="ad-card-play" aria-hidden="true">▶</span></span>
@@ -24,7 +39,6 @@ function ShelfRow({ shelf }: { shelf: Shelf }) {
 }
 
 export default function AnimeDiscoveryPanels({ mode, animeId }: AnimeDiscoveryPanelsProps) {
-  const router = useRouter();
   const [shelves, setShelves] = useState<Shelf[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -40,8 +54,8 @@ export default function AnimeDiscoveryPanels({ mode, animeId }: AnimeDiscoveryPa
         if (!animeId) return;
         const result = await fetchAnimeDiscovery(animeId, { signal: controller.signal });
         const next: Shelf[] = [];
-        if (result.relations.length) next.push({ title: 'Seasons & related stories', description: 'Explore this world in the order that suits you.', items: result.relations });
-        if (result.recommendations.length) next.push({ title: 'More like this', description: 'Recommendations from viewers of this series.', items: result.recommendations.filter(item => item.id !== animeId).slice(0, 16) });
+        if (result.relations.length) next.push({ title: 'Seasons & related titles', description: '', items: result.relations });
+        if (result.recommendations.length) next.push({ title: 'More like this', description: '', items: result.recommendations.filter(item => item.id !== animeId).slice(0, 16) });
         if (!disposed) setShelves(next);
         return;
       }
@@ -57,7 +71,7 @@ export default function AnimeDiscoveryPanels({ mode, animeId }: AnimeDiscoveryPa
         if (result.status !== 'fulfilled') return;
         const items = result.value.recommendations.filter(item => !excluded.has(item.id)).slice(0, 12);
         items.forEach(item => excluded.add(item.id));
-        if (items.length) next.push({ title: `${seeds[index].reason === 'watched' ? 'Because you watched' : 'Inspired by your list ·'} ${seeds[index].title}`, description: 'Picked from your viewing and saved titles. Updated as your tastes change.', items });
+        if (items.length) next.push({ title: `${seeds[index].reason === 'watched' ? 'Because you watched' : 'Inspired by your list ·'} ${seeds[index].title}`, description: '', items });
       });
       if (!next.length && results.every(result => result.status === 'rejected')) throw new Error('Recommendations are unavailable right now.');
       setShelves(next);
@@ -66,13 +80,10 @@ export default function AnimeDiscoveryPanels({ mode, animeId }: AnimeDiscoveryPa
     return () => { disposed = true; controller.abort(); };
   }, [mode, animeId, revision]));
 
-  if (mode === 'related' && !loading && !error && !shelves.length) return null;
+  if (!loading && !error && (seedless || !shelves.length)) return null;
   return <div className="anime-discovery-panels"><style>{discoveryStyles}</style>
-    {mode === 'personal' && <div className="ad-calendar-promo"><div><span className="ad-eyebrow">KEEP UP WITH YOUR FAVORITES</span><strong>A new week. A new episode.</strong><p>Explore the broadcast schedule in your time zone.</p></div><button className="ad-action" onClick={() => router.push('/anime/schedule' as any)}>Weekly schedule <span aria-hidden="true">↗</span></button></div>}
     {loading && <div className="ad-loading" role="status">Finding your next watch…</div>}
     {error && <div className="ad-message" role="status"><span>{error}</span><button onClick={() => setRevision(value => value + 1)}>Try again</button></div>}
-    {!loading && seedless && <div className="ad-message"><span><strong>Your next favorite starts here.</strong><br />Watch or save a series to get recommendations shaped by your taste.</span><button onClick={() => router.push('/anime' as any)}>Explore anime</button></div>}
-    {!loading && !error && !seedless && mode === 'personal' && !shelves.length && <div className="ad-message"><span><strong>No new suggestions yet.</strong><br />Watch or save another series to discover more titles.</span><button onClick={() => router.push('/anime' as any)}>Explore anime</button></div>}
     {shelves.map(shelf => <ShelfRow key={shelf.title} shelf={shelf} />)}
   </div>;
 }

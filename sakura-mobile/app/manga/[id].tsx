@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import CoverImage from '@/components/ui/CoverImage';
+import MangaDetailWeb from '@/components/discovery/MangaDetailWeb';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1138,6 +1139,18 @@ export default function MangaDetail() {
     (manga?.status || '').toLowerCase().includes('complet') ? '#3B82F6' :
     colors.textSecondary;
 
+  if (Platform.OS === 'web') return <MangaDetailWeb
+    manga={manga} loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
+    chapters={displayedChapters} sort={chapterSort} onSort={() => setChapterSort(value => value === 'oldest' ? 'newest' : 'oldest')}
+    saved={saved} canSave={!isAdult} onSave={handleSave} onShare={handleShare}
+    onBack={() => router.canGoBack() ? router.back() : router.replace('/home')}
+    onRetry={() => setReloadAttempt(value => value + 1)} onOpen={openMangaChapter}
+    playChapter={playChapter} resume={canContinueManga && !!resumeChapter} progress={mangaProgress}
+    offline={offlineMap} canDownload={!!adapter} onDownload={handleDownloadChapter} gated={gatedChapterIds}
+    discussion={<CommentsSection contentId={`manga:${mangaId}`} title="Discussion" />}
+    feedback={<Toast message={toast} visible={!!toast} onHide={() => { setToast(''); setToastDuration(undefined); }} durationMs={toastDuration} />}
+  />;
+
   if (loading) return <DetailSkeleton />;
 
   if (!manga) {
@@ -1419,7 +1432,7 @@ export default function MangaDetail() {
                 openMangaChapter(playChapter, canContinueManga && !!resumeChapter)
               }
             />
-            {chapters.length > 0 && !isExternal && Platform.OS !== 'web' && (
+            {chapters.length > 0 && !isExternal && (
               <TouchableOpacity
                 style={s.dlOutlineBtn}
                 activeOpacity={0.85}

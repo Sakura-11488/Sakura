@@ -56,6 +56,7 @@ import {
 } from '@/lib/reader-progress';
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import { isSakuraNovelPath } from '@/lib/sakura-novels';
+import NovelDetailWeb from '@/components/novel/NovelDetailWeb';
 
 /**
  * Window-dependent metrics, read reactively rather than frozen at bundle
@@ -380,12 +381,14 @@ const ChapterRow = memo(function ChapterRow({
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function NovelExtDetail() {
   const { W, HERO_H, HEADER_TRIGGER, CHAPTER_LIST_MAX_H } = useDetailMetrics();
-  const { path } = useLocalSearchParams<{ path: string }>();
+  const { path, id } = useLocalSearchParams<{ path?: string; id?: string }>();
   const router = useRouter();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [detail, setDetail] = useState<AllNovelDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [retry, setRetry] = useState(0);
   const [saved, setSaved] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [toast, setToast] = useState('');
@@ -397,7 +400,13 @@ export default function NovelExtDetail() {
   const [chapterSort, setChapterSort] = useState<ChapterSort>('oldest');
   const scrollY = useSharedValue(0);
 
-  const decodedPath = path ? decodeURIComponent(path) : '';
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !toast) return;
+    const timer = setTimeout(() => setToast(''), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const decodedPath = path ? decodeURIComponent(path) : id ? decodeURIComponent(id) : '';
 
   const loadNovelProgress = useCallback(() => {
     if (!decodedPath) return;
@@ -416,12 +425,20 @@ export default function NovelExtDetail() {
   );
 
   useEffect(() => {
-    if (!decodedPath) return;
+    let active = true;
+    setLoading(true);
+    setLoadError('');
+    if (!decodedPath) { setLoading(false); setLoadError('Choose a novel from the library to get started.'); return; }
     parseNovelDetail(decodedPath)
-      .then((d) => { setDetail(d); setLoading(false); })
-      .catch(() => setLoading(false));
-    Library.isSaved(decodedPath, 'novel').then(setSaved);
-  }, [decodedPath]);
+      .then((value) => {
+        if (!active) return;
+        if (!value.name) throw new Error('The title is not available.');
+        setDetail(value); setLoading(false);
+      })
+      .catch(() => { if (active) { setDetail(null); setLoading(false); setLoadError('Please try again, or choose another title from the library.'); } });
+    void Library.isSaved(decodedPath, 'novel').then(value => { if (active) setSaved(value); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [decodedPath, retry]);
 
   const handleSave = async () => {
     if (!detail) return;
@@ -854,6 +871,15 @@ export default function NovelExtDetail() {
     }),
     [],
   );
+
+  if (Platform.OS === 'web') return <NovelDetailWeb
+    detail={detail} loading={loading} error={loadError} saved={saved} original={isSakuraNovelPath(decodedPath)}
+    progress={novelProgress} offline={offlineMap} batchDownloading={bulkDownloading} batchPaused={batchPaused} batchProgress={batchProgress} toast={toast}
+    onBack={() => router.canGoBack() ? router.back() : router.replace('/novel')}
+    onRetry={() => setRetry(value => value + 1)}
+    onSave={() => { void handleSave().catch(() => setToast('This title could not be saved. Please try again.')); }}
+    onShare={handleShare} onOpen={openChapter} onDownload={handleDownloadChapter} onDownloadAll={handleDownloadAll}
+  />;
 
   if (loading || !detail) return <DetailSkeleton onBack={onTap(() => router.back())} />;
 

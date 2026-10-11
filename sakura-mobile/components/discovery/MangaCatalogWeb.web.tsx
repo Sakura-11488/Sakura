@@ -1,5 +1,5 @@
-import React, { useRef } from 'react';
-import { useScrollToTop } from 'expo-router';
+import React, { useRef, useEffect, useState } from 'react';
+import { useScrollToTop, useLocalSearchParams } from 'expo-router';
 import CoverImage from '@/components/ui/CoverImage';
 import { useTheme } from '@/lib/theme';
 import type { CatalogSearchResult, MangaCatalogWebProps } from './MangaCatalogWeb';
@@ -41,44 +41,44 @@ export default function MangaCatalogWeb({ query, onQueryChange, filter, filters,
   const viewportRef = useRef<HTMLElement>(null);
   const scrollAdapterRef = useRef({ scrollToTop: () => viewportRef.current?.scrollTo({ top: 0 }) });
   useScrollToTop(scrollAdapterRef);
+  const searchParams = useLocalSearchParams<{ focus?: string }>();
+  const [recent, setRecent] = useState<string[]>(() => {
+    try { const value = JSON.parse(localStorage.getItem('sakura-searches-v1') || '[]'); return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').slice(0, 5) : []; } catch { return []; }
+  });
+  useEffect(() => { if (searchParams.focus) inputRef.current?.focus(); }, [searchParams.focus]);
+  const remember = () => {
+    const value = query.trim(); if (value.length < 2) return;
+    const next = [value, ...recent.filter(item => item.toLowerCase() !== value.toLowerCase())].slice(0, 5);
+    setRecent(next); try { localStorage.setItem('sakura-searches-v1', JSON.stringify(next)); } catch { /* Private browsing can disable storage. */ }
+  };
   const searching = query.trim().length >= 2;
   return <main ref={viewportRef} className="manga-catalog-web" data-theme={isDark ? 'dark' : 'light'} data-filter={filter}>
     <div className="mcw-shell">
-      <header className={`mcw-masthead${searching ? ' mcw-masthead-searching' : ''}`}>
-        <div className="mcw-masthead-copy">
-          <p className="mcw-eyebrow"><span /> THE DISCOVERY DESK <span lang="ja">/ 探す</span></p>
-          <h1>{searching ? 'Find your next favorite.' : <>One more chapter.<br /><span>A whole new world.</span></>}</h1>
-          <p className="mcw-description">Manga, anime, novels, and the people who love them. Your next obsession starts here.</p>
-        </div>
-        {!searching && <div className="mcw-cover-art" aria-hidden="true">
-          <span className="mcw-art-lettering">物語</span>
-          <div className="mcw-cover-stack">{(discoverCards.length ? discoverCards.slice(0, 3) : [null, null, null]).map((card, index) => <div className="mcw-art-cover" key={card?.id || index}>{card ? <Cover uri={card.cover} title="" eager={index === 1} /> : <span>{['漫', '画', '桜'][index]}</span>}</div>)}</div>
-          <span className="mcw-art-stamp">READ.<br />REPEAT.</span>
-        </div>}
-      </header>
+      <header className="mcw-masthead"><div className="mcw-masthead-copy"><p className="mcw-eyebrow">Explore Sakura</p><h1>Find your next read<span> / </span>watch.</h1><p className="mcw-description">Search titles and creators across the whole collection.</p></div></header>
 
       <section className="mcw-search-section" aria-label="Search Sakura">
-        <form className="mcw-search" role="search" onSubmit={event => { event.preventDefault(); if (searching) onRetry(); }}>
+        <form className="mcw-search" role="search" onSubmit={event => { event.preventDefault(); if (searching) { remember(); onRetry(); } }}>
           <Icon name="search" />
           <input ref={inputRef} type="search" value={query} onChange={event => onQueryChange(event.target.value)} aria-label="Search manga, anime, novels, or people" placeholder="Search a title, a world, a creator…" autoComplete="off" autoCorrect="off" spellCheck={false} />
-          {query ? <button type="button" className="mcw-search-clear" aria-label="Clear search" onClick={() => { onQueryChange(''); inputRef.current?.focus(); }}><Icon name="close" /></button> : <span className="mcw-search-hint">FIND YOUR STORY</span>}
+          {query ? <button type="button" className="mcw-search-clear" aria-label="Clear search" onClick={() => { onQueryChange(''); inputRef.current?.focus(); }}><Icon name="close" /></button> : <span className="mcw-search-hint">/ to search</span>}
         </form>
         {query.trim().length === 1 && <p className="mcw-input-help" role="status">Enter at least 2 characters to search.</p>}
         {searching && <div className="mcw-filters" role="group" aria-label="Filter search results by format">{filters.map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => onFilterChange(value)}>{value === 'Novel' ? 'Novels' : value === 'Users' ? 'People' : value}</button>)}</div>}
       </section>
 
+      {!query && recent.length > 0 && <div className="mcw-recent" aria-label="Recent searches"><span>Recently searched</span>{recent.map(value => <button key={value} onClick={() => onQueryChange(value)}>{value}</button>)}<button className="mcw-clear-recents" onClick={() => { setRecent([]); try { localStorage.removeItem('sakura-searches-v1'); } catch {} }}>Clear</button></div>}
       {searching ? <section className="mcw-results" aria-busy={loading} aria-labelledby="mcw-results-title">
-        <div className="mcw-section-heading"><div><p className="mcw-eyebrow">YOUR SEARCH</p><h2 id="mcw-results-title">Results for “{query.trim()}”</h2></div><span className="mcw-result-count" role="status" aria-live="polite">{loading ? 'Searching…' : `${results.length} ${results.length === 1 ? 'result' : 'results'}`}</span></div>
+        <div className="mcw-section-heading"><div><h2 id="mcw-results-title">Results for “{query.trim()}”</h2></div><span className="mcw-result-count" role="status" aria-live="polite">{loading ? 'Searching…' : `${results.length} ${results.length === 1 ? 'result' : 'results'}`}</span></div>
         {!loading && failedSources.length > 0 && <div className="mcw-source-note" role="status"><div><strong>Some shelves are taking a little longer.</strong><p>{failedSources.join(', ')} didn’t respond. {results.length ? 'You can still explore the results below.' : 'Please try again in a moment.'}</p></div><button type="button" onClick={onRetry}>Try again <Icon name="arrow" /></button></div>}
-        {loading ? <div className="mcw-grid" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => <div className="mcw-skeleton-card" key={index}><span className="mcw-skeleton-cover" /><span className="mcw-skeleton-line" /><span className="mcw-skeleton-line short" /></div>)}</div> : results.length ? <div className="mcw-grid">{results.map(item => <ResultCard key={item.key} item={item} busy={item.type === 'user' && messagingUser === item.user?.wallet_address} onPress={() => onResultPress(item)} />)}</div> : !failedSources.length ? <div className="mcw-empty"><Icon name="search" /><h3>No matches on this shelf</h3><p>Try a shorter title or another format to discover something new.</p><button type="button" onClick={() => { onQueryChange(''); onFilterChange('All'); inputRef.current?.focus(); }}>Start a new search <Icon name="arrow" /></button></div> : null}
+        {loading ? <div className="mcw-grid" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => <div className="mcw-skeleton-card" key={index}><span className="mcw-skeleton-cover" /><span className="mcw-skeleton-line" /><span className="mcw-skeleton-line short" /></div>)}</div> : results.length ? <div className="mcw-grid">{results.map(item => <ResultCard key={item.key} item={item} busy={item.type === 'user' && messagingUser === item.user?.wallet_address} onPress={() => { remember(); onResultPress(item); }} />)}</div> : !failedSources.length ? <div className="mcw-empty"><Icon name="search" /><h3>No matches on this shelf</h3><p>Try a shorter title or another format to discover something new.</p><button type="button" onClick={() => { onQueryChange(''); onFilterChange('All'); inputRef.current?.focus(); }}>Start a new search <Icon name="arrow" /></button></div> : null}
       </section> : <>
         <section className="mcw-discover" aria-labelledby="mcw-discover-title" aria-busy={discoverLoading}>
-          <div className="mcw-section-heading"><div><p className="mcw-eyebrow">WORTH TURNING THE PAGE</p><h2 id="mcw-discover-title">Start with a good story.</h2></div><span className="mcw-shelf-label">Trending manga <Icon name="book" /></span></div>
+          <div className="mcw-section-heading"><div><h2 id="mcw-discover-title">Trending manga.</h2></div><span className="mcw-shelf-label">Trending manga <Icon name="book" /></span></div>
           {discoverLoading ? <div className="mcw-grid" aria-hidden="true">{Array.from({ length: 6 }, (_, index) => <div className="mcw-skeleton-card" key={index}><span className="mcw-skeleton-cover" /><span className="mcw-skeleton-line" /></div>)}</div> : discoverCards.length ? <div className="mcw-grid">{discoverCards.map(card => <button type="button" className="mcw-card" key={card.id} onClick={() => onDiscoverPress(card.id)} aria-label={`Explore ${card.title}`}><div className="mcw-card-cover"><Cover uri={card.cover} title="" /><span className="mcw-card-action"><Icon name="arrow" /></span></div><span className="mcw-card-title">{card.title}</span><span className="mcw-card-meta">Manga</span></button>)}</div> : <div className="mcw-empty"><Icon name="book" /><h3>{discoverError ? 'The shelf couldn’t load just yet.' : 'A little quiet on this shelf.'}</h3><p>{discoverError ? 'Give it another try, or search for a favorite above.' : 'Search above to find a story you’ll love.'}</p><button type="button" onClick={onRetryDiscover}>Refresh the shelf <Icon name="arrow" /></button></div>}
         </section>
-        <section className="mcw-suggestions" aria-labelledby="mcw-suggestions-title"><div className="mcw-section-heading"><div><p className="mcw-eyebrow">FOLLOW YOUR CURIOSITY</p><h2 id="mcw-suggestions-title">A few places to start.</h2><p className="mcw-section-description">Search ideas for your next rabbit hole.</p></div></div><div className="mcw-suggestions-grid">{suggestions.map((suggestion, index) => <button type="button" className="mcw-suggestion" key={suggestion.label} onClick={() => { onQueryChange(suggestion.query); inputRef.current?.focus(); }}><span className="mcw-suggestion-number">{String(index + 1).padStart(2, '0')}</span><span>{suggestion.query}</span><Icon name="arrow" /></button>)}</div></section>
+        <section className="mcw-suggestions" aria-labelledby="mcw-suggestions-title"><div className="mcw-section-heading"><div><h2 id="mcw-suggestions-title">Try a title.</h2><p className="mcw-section-description">A few searches to get you started.</p></div></div><div className="mcw-suggestions-grid">{suggestions.map((suggestion, index) => <button type="button" className="mcw-suggestion" key={suggestion.label} onClick={() => { onQueryChange(suggestion.query); inputRef.current?.focus(); }}><span className="mcw-suggestion-number">{String(index + 1).padStart(2, '0')}</span><span>{suggestion.query}</span><Icon name="arrow" /></button>)}</div></section>
       </>}
-      <footer className="mcw-footer"><span>桜 sakura.</span><p>A home for every story.</p></footer>
+      <footer className="mcw-footer"><span>桜 sakura.</span><p>Manga. Anime. Novels. Yours.</p></footer>
     </div>
   </main>;
 }

@@ -94,7 +94,7 @@ test('discovery browser recovery and stale-response guards', { timeout: 40000 },
       assert.equal(await page.getByRole('button', { name: 'Try again', exact: true }).count(), 0);
     });
 
-    await run('seeded recommendation failure and retry recover with title/schedule navigation', { screen: 'personal', mode: 'fail', history: watched }, async page => {
+    await run('seeded recommendation failure and retry recover with title navigation', { screen: 'personal', mode: 'fail', history: watched }, async page => {
       await page.getByText('Recommendations are unavailable right now.', { exact: true }).waitFor();
       assert.equal(await page.evaluate(() => window.__requests.length), 2, 'AniList and real service fallback both failed');
       await page.evaluate(() => { window.__networkMode = 'success'; });
@@ -102,19 +102,19 @@ test('discovery browser recovery and stale-response guards', { timeout: 40000 },
       await page.getByRole('heading', { name: 'Because you watched Watched seed', exact: true }).waitFor();
       await page.getByRole('button', { name: 'Suggestion 1020', exact: false }).click();
       assert.deepEqual(await page.evaluate(() => window.__navigation.at(-1)), ['push', { pathname: '/anime/[id]', params: { id: '1020' } }]);
-      await page.getByRole('button', { name: 'Weekly schedule', exact: false }).click();
-      assert.deepEqual(await page.evaluate(() => window.__navigation.at(-1)), ['push', '/anime/schedule']);
     });
 
-    await run('no viewing/saved seeds produces an honest empty state without network requests', { screen: 'personal', mode: 'success' }, async page => {
-      await page.getByText('Your next favorite starts here.', { exact: true }).waitFor();
+    await run('no viewing/saved seeds hides the optional shelf without network requests', { screen: 'personal', mode: 'success' }, async page => {
+      await page.waitForFunction(() => typeof window.__setScreen === 'function');
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.locator('.anime-discovery-panels').waitFor({ state: 'detached' });
       assert.equal(await page.evaluate(() => window.__requests.length), 0);
-      await page.getByRole('button', { name: 'Explore anime', exact: true }).click();
-      assert.deepEqual(await page.evaluate(() => window.__navigation.at(-1)), ['push', '/anime']);
+      assert.equal(await page.locator('.ad-shelf').count(), 0);
     });
 
-    await run('already watched or saved recommendations produce the filtered empty state', { screen: 'personal', mode: 'filtered', history: watched }, async page => {
-      await page.getByText('No new suggestions yet.', { exact: true }).waitFor();
+    await run('already watched or saved recommendations hide the filtered shelf', { screen: 'personal', mode: 'filtered', history: watched }, async page => {
+      await page.waitForFunction(() => window.__requests.length === 1);
+      await page.locator('.anime-discovery-panels').waitFor({ state: 'detached' });
       assert.equal(await page.locator('.ad-shelf').count(), 0);
       assert.equal(await page.evaluate(() => window.__requests.length), 1);
     });

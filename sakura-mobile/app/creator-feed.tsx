@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Linking, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import Image from '@/components/ui/CoverImage';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/lib/theme';
 import { createCreatorPost, fetchCreatorFeed, type CreatorFeedPost } from '@/lib/creator-social';
@@ -9,7 +9,7 @@ import ProfileAvatar from '@/components/ui/ProfileAvatar';
 import { buildWalletAuthHeaders } from '@/lib/wallet-auth';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
-import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
+import { Fonts, FontSize, FontWeight, Radius, Spacing } from '@/constants/theme';
 
 function creatorName(post: CreatorFeedPost): string {
   return post.creator?.display_name?.trim() || `${post.creator_wallet.slice(0, 6)}...${post.creator_wallet.slice(-4)}`;
@@ -27,18 +27,32 @@ export default function CreatorFeedScreen() {
   const [posting, setPosting] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [moreError, setMoreError] = useState('');
+  const requestVersion = React.useRef(0);
 
   const load = useCallback(async () => {
-    const { items: feed, nextCursor } = await fetchCreatorFeed(25);
-    setItems(feed);
-    setCursor(nextCursor);
+    const version = ++requestVersion.current;
+    setLoadError('');
+    setMoreError('');
+    try {
+      const { items: feed, nextCursor } = await fetchCreatorFeed(25);
+      if (version !== requestVersion.current) return;
+      setItems(feed);
+      setCursor(nextCursor);
+    } catch {
+      if (version === requestVersion.current) setLoadError('The creator feed could not be loaded.');
+    }
   }, []);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !cursor) return;
+    const version = requestVersion.current;
     setLoadingMore(true);
+    setMoreError('');
     try {
       const { items: more, nextCursor } = await fetchCreatorFeed(25, cursor);
+      if (version !== requestVersion.current) return;
       // De-dupe by id in case a boundary post repeats across pages.
       setItems((prev) => {
         const seen = new Set(prev.map((p) => p.id));
@@ -46,7 +60,7 @@ export default function CreatorFeedScreen() {
       });
       setCursor(more.length ? nextCursor : null);
     } catch {
-      // keep what we have; user can pull-to-refresh
+      if (version === requestVersion.current) setMoreError('More posts could not be loaded.');
     } finally {
       setLoadingMore(false);
     }
@@ -66,6 +80,7 @@ export default function CreatorFeedScreen() {
   }, [load]);
 
   const submitPost = useCallback(async () => {
+    if (posting || (!caption.trim() && !mediaUrl.trim())) return;
     if (!address) {
       showAlert('Wallet required', 'Connect your creator wallet to post.');
       return;
@@ -94,7 +109,7 @@ export default function CreatorFeedScreen() {
     } finally {
       setPosting(false);
     }
-  }, [address, caption, mediaUrl, signWithBiometrics]);
+  }, [address, caption, mediaUrl, posting, signWithBiometrics]);
 
   const styles = useMemo(
     () =>
@@ -103,15 +118,15 @@ export default function CreatorFeedScreen() {
         header: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
         back: { color: colors.primary, fontWeight: FontWeight.bold },
         title: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, color: colors.text },
-        compose: { margin: Spacing.md, padding: Spacing.md, borderRadius: Radius.lg, backgroundColor: colors.surface, gap: Spacing.sm, ...Shadow.sm },
-        input: { color: colors.text, minHeight: 70, textAlignVertical: 'top' },
-        mediaInput: { color: colors.text, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderLight, paddingTop: Spacing.sm },
-        postBtn: { alignSelf: 'flex-end', borderRadius: Radius.full, backgroundColor: colors.primary, paddingHorizontal: 18, paddingVertical: 9 },
+        compose: { margin: Spacing.md, padding: Spacing.md, borderRadius: Radius.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface, gap: Spacing.sm },
+        input: { color: colors.text, minHeight: 80, fontSize: 16, lineHeight: 24, textAlignVertical: 'top' },
+        mediaInput: { color: colors.text, minHeight: 44, fontSize: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderLight, paddingVertical: Spacing.sm },
+        postBtn: { alignSelf: 'flex-end', minHeight: 44, justifyContent: 'center', borderRadius: Radius.md, backgroundColor: colors.primary, paddingHorizontal: 22, paddingVertical: 10 },
         postBtnDisabled: { opacity: 0.55 },
         postBtnText: { color: '#fff', fontWeight: FontWeight.bold },
-        card: { minHeight: 420, marginHorizontal: Spacing.md, marginBottom: Spacing.md, borderRadius: Radius.xl, overflow: 'hidden', backgroundColor: colors.surface, ...Shadow.sm },
-        media: { width: '100%', height: 310, backgroundColor: colors.surfaceSecondary },
-        videoStub: { height: 310, alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' },
+        card: { marginHorizontal: Spacing.md, marginBottom: Spacing.lg, borderRadius: Radius.md, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, overflow: 'hidden', backgroundColor: colors.surface },
+        media: { width: '100%', aspectRatio: 16 / 10, maxHeight: 480, backgroundColor: colors.surfaceSecondary },
+        videoStub: { minHeight: 144, gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceSecondary },
         videoText: { color: '#fff', fontFamily: Fonts.bodyBold },
         body: { padding: Spacing.md, gap: 8 },
         creatorRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -121,6 +136,8 @@ export default function CreatorFeedScreen() {
         caption: { color: colors.textSecondary, lineHeight: 20 },
         stats: { color: colors.textTertiary, fontSize: FontSize.xs },
         center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+        feedback: { padding: Spacing.lg, gap: 8, alignItems: 'center' },
+        textButton: { minHeight: 44, paddingHorizontal: 10, justifyContent: 'center' },
       }),
     [colors],
   );
@@ -128,7 +145,7 @@ export default function CreatorFeedScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.safe}>
-        <View style={styles.center}><ActivityIndicator color={colors.primary} /></View>
+        <View style={styles.center}><ActivityIndicator accessibilityLabel="Loading creator feed" color={colors.primary} /></View>
       </SafeAreaView>
     );
   }
@@ -136,25 +153,35 @@ export default function CreatorFeedScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}><Text style={styles.back}>Back</Text></TouchableOpacity>
-        <Text style={styles.title}>Creator Feed</Text>
-        <View style={{ width: 38 }} />
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={styles.textButton} onPress={() => router.back()}><Text style={styles.back}>Back</Text></TouchableOpacity>
+        <Text style={styles.title}>Creator feed</Text>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Refresh creator feed" style={styles.textButton} onPress={refresh} disabled={refreshing}><Text style={styles.back}>{refreshing ? '…' : 'Refresh'}</Text></TouchableOpacity>
       </View>
 
       <FlatList
         data={items}
+        contentContainerStyle={{ paddingBottom: 80 }}
+        keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.id}
-        onEndReached={loadMore}
+        onEndReached={() => { if (!moreError) void loadMore(); }}
         onEndReachedThreshold={0.5}
         ListFooterComponent={
           loadingMore ? (
             <ActivityIndicator color={colors.primary} style={{ marginVertical: 20 }} />
-          ) : null
+          ) : moreError ? <View style={styles.feedback}>
+            <Text accessibilityRole="alert" style={styles.caption}>{moreError}</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={loadMore} style={styles.textButton}><Text style={styles.back}>Try again</Text></TouchableOpacity>
+          </View> : null
         }
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.primary} />}
         ListHeaderComponent={
-          <View style={styles.compose}>
+          <>{loadError ? <View style={styles.feedback}>
+            <Text accessibilityRole="alert" style={styles.caption}>{loadError}</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={refresh} style={styles.textButton}><Text style={styles.back}>Try again</Text></TouchableOpacity>
+          </View> : null}<View style={styles.compose}>
+            <Text style={styles.creator}>Share an update</Text>
             <TextInput
+              accessibilityLabel="Creator update"
               style={styles.input}
               placeholder="Post a Sakura creator update..."
               placeholderTextColor={colors.textTertiary}
@@ -163,6 +190,9 @@ export default function CreatorFeedScreen() {
               onChangeText={setCaption}
             />
             <TextInput
+              accessibilityLabel="Optional image or video URL"
+              keyboardType="url"
+              autoCorrect={false}
               style={styles.mediaInput}
               placeholder="Optional image/video URL"
               placeholderTextColor={colors.textTertiary}
@@ -170,11 +200,12 @@ export default function CreatorFeedScreen() {
               onChangeText={setMediaUrl}
               autoCapitalize="none"
             />
-            <TouchableOpacity style={[styles.postBtn, posting && styles.postBtnDisabled]} onPress={submitPost} disabled={posting} activeOpacity={0.85}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={posting ? 'Publishing update' : 'Publish update'} style={[styles.postBtn, (posting || (!caption.trim() && !mediaUrl.trim())) && styles.postBtnDisabled]} onPress={submitPost} disabled={posting || (!caption.trim() && !mediaUrl.trim())} activeOpacity={0.85}>
               <Text style={styles.postBtnText}>{posting ? 'Posting...' : 'Post'}</Text>
             </TouchableOpacity>
-          </View>
+          </View></>
         }
+        ListEmptyComponent={!loadError ? <View style={styles.feedback}><Text style={styles.creator}>No updates yet</Text><Text style={styles.caption}>Creator posts will appear here.</Text></View> : null}
         renderItem={({ item }) => {
           const firstMedia = item.media?.[0];
           const isVideo = firstMedia?.media_type === 'video';
@@ -183,11 +214,11 @@ export default function CreatorFeedScreen() {
               {firstMedia ? (
                 isVideo ? (
                   <View style={styles.videoStub}>
-                    <Text style={styles.videoText}>Video post</Text>
-                    <Text style={[styles.stats, { color: 'rgba(255,255,255,0.7)', marginTop: 6 }]} numberOfLines={1}>{firstMedia.url}</Text>
+                    <Text style={styles.creator}>Video update</Text>
+                    {/^https?:\/\//i.test(firstMedia.url) ? <TouchableOpacity accessibilityRole="link" accessibilityLabel={`Open video from ${creatorName(item)}`} style={styles.textButton} onPress={() => { void Linking.openURL(firstMedia.url); }}><Text style={styles.back}>Open video ↗</Text></TouchableOpacity> : null}
                   </View>
                 ) : (
-                  <Image source={{ uri: firstMedia.url }} style={styles.media} contentFit="cover" />
+                  <Image source={{ uri: firstMedia.url }} thumbnailWidth={512} style={styles.media} contentFit="cover" accessibilityLabel={`Image shared by ${creatorName(item)}`} />
                 )
               ) : null}
               <View style={styles.body}>

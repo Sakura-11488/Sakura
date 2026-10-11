@@ -16,6 +16,7 @@ import {
 import { WalletProvider } from '@/lib/wallet/context';
 import { WebTransactionAuthProvider } from '@/lib/wallet/web-transaction-auth';
 import HttpImageShim from '@/components/web/HttpImageShim';
+import WebRouteFrame from '@/components/layout/WebRouteFrame';
 import {
   Platform,
   View,
@@ -238,7 +239,7 @@ export default function RootLayout() {
           <ThemedStatusBar />
           <LiveActivityDeepLinkBridge />
           <NotificationBridge />
-          <Stack screenOptions={{ headerShown: false, animation: 'fade_from_bottom' }}>
+          <Stack screenLayout={({ children, route }) => <WebRouteFrame routeName={route.name}>{children}</WebRouteFrame>} screenOptions={{ headerShown: false, animation: Platform.OS === 'web' ? 'none' : 'fade_from_bottom' }}>
             <Stack.Screen name="index" options={{ animation: 'none' }} />
             <Stack.Screen name="welcome" options={{ animation: 'fade', gestureEnabled: false }} />
             <Stack.Screen name="(tabs)" />

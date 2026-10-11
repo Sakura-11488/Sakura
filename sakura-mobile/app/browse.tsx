@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ import { getScrapedAdapter, asScrapedSource, type ScrapedSource } from '@/lib/sc
 import { useTheme } from '@/lib/theme';
 import { Spacing, Radius, FontSize, FontWeight, Colors, Shadow } from '@/constants/theme';
 import { ContentItem } from '@/components/ui/ContentCard';
+import BrowseCatalogWeb from '@/components/discovery/BrowseCatalogWeb';
 import { contentWidth } from '@/constants/layout';
 
 const COLS = 3;
@@ -129,38 +130,55 @@ export default function BrowseScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState('');
+  const requestVersion = useRef(0);
 
   const loadPage = useCallback(
     async (p: number) => {
+      const version = ++requestVersion.current;
+      setError('');
       try {
         const { items: mapped, hasMore: more } = await loadBrowse(source, q, kind, p);
+        if (version !== requestVersion.current) return;
         if (mapped.length === 0) {
           setHasMore(false);
           return;
         }
-        setItems((prev) => (p === 0 ? mapped : [...prev, ...mapped]));
+        setItems((prev) => {
+          const seen = new Set<string>();
+          return (p === 0 ? mapped : [...prev, ...mapped]).filter(item => {
+            const key = `${item.source}-${item.id}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        });
+        setPage(p);
         setHasMore(more);
       } catch {
-        setHasMore(false);
+        if (version !== requestVersion.current) return;
+        setError('This shelf could not load. Please try again.');
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (version === requestVersion.current) { setLoading(false); setLoadingMore(false); }
       }
     },
     [source, q, kind],
   );
 
   useEffect(() => {
+    setLoading(true); setPage(0); setItems([]); setHasMore(true);
     loadPage(0);
+    return () => { requestVersion.current += 1; };
   }, [loadPage]);
 
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore || loading) return;
     const next = page + 1;
-    setPage(next);
     setLoadingMore(true);
     loadPage(next);
   }, [loadingMore, hasMore, loading, page, loadPage]);
+
+  if (Platform.OS === 'web') return <BrowseCatalogWeb key={`${source}-${q}-${kind}`} title={title} source={source} items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={() => { if (loading || loadingMore) return; if (!items.length) setLoading(true); else setLoadingMore(true); void loadPage(items.length ? page + 1 : 0); }} onLoadMore={loadMore}/>;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>

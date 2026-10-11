@@ -43,6 +43,7 @@ import {
 } from '@/lib/reader-progress';
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import CommentsSection from '@/components/social/CommentsSection';
+import NovelExtDetail from './ext';
 // import CreatorTab from '@/components/ui/CreatorTab';
 
 /**
@@ -463,6 +464,11 @@ function ChapterRow({
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function NovelDetail() {
+  if (Platform.OS === 'web') return <NovelExtDetail />;
+  return <NativeNovelDetail />;
+}
+
+function NativeNovelDetail() {
   const { W, HERO_H, HEADER_TRIGGER } = useDetailMetrics();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();

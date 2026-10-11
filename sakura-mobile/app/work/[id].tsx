@@ -12,7 +12,8 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import Image from '@/components/ui/CoverImage';
+import { Image as PageImage } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import Svg, { Path } from 'react-native-svg';
 import { onTap } from '@/lib/sound';
@@ -65,6 +66,8 @@ function BackIcon({ color }: { color: string }) {
 
 export default function WorkScreen() {
   const W = useContentW();
+  const [measuredWidth, setMeasuredWidth] = useState(0);
+  const readerWidth = measuredWidth || Math.min(W, Platform.OS === 'web' ? 960 : W);
   const { colors } = useTheme();
   const router = useRouter();
   const { connected, address, signWithBiometrics, unlockForAppSession, refreshBalances } = useWallet();
@@ -79,6 +82,7 @@ export default function WorkScreen() {
   const [purchaseBusy, setPurchaseBusy] = useState(false);
   const [paymentSignature, setPaymentSignature] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
 
   const player = useVideoPlayer('', (p) => {
     p.loop = false;
@@ -110,7 +114,7 @@ export default function WorkScreen() {
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, retryAttempt]);
 
   useEffect(() => {
     const workId = payload?.work.id;
@@ -147,7 +151,7 @@ export default function WorkScreen() {
       borderBottomColor: colors.border,
     },
     headerTitle: { flex: 1, fontSize: FontSize.md, fontWeight: FontWeight.bold, color: colors.text },
-    iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+    iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
     muted: { color: colors.textSecondary, textAlign: 'center' },
     hero: { flexDirection: 'row', gap: 14, padding: Spacing.md },
@@ -170,8 +174,8 @@ export default function WorkScreen() {
     rowTitle: { color: colors.text, fontSize: FontSize.sm },
     rowDate: { color: colors.textTertiary, fontSize: 10, marginTop: 2 },
     readerText: { color: colors.text, fontSize: 17, lineHeight: 27, padding: Spacing.md },
-    page: { width: W, height: W * 1.5, backgroundColor: colors.surfaceSecondary },
-    video: { width: W, height: W * 0.5625, backgroundColor: '#000' },
+    page: { width: readerWidth, height: readerWidth * 1.5, backgroundColor: colors.surfaceSecondary },
+    video: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000' },
   });
 
   if (loading) {
@@ -191,12 +195,13 @@ export default function WorkScreen() {
       <View style={s.root}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
           <View style={s.header}>
-            <TouchableOpacity style={s.iconBtn} onPress={onTap(() => router.back())} hitSlop={10}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={s.iconBtn} onPress={onTap(() => router.back())} hitSlop={10}>
               <BackIcon color={colors.text} />
             </TouchableOpacity>
           </View>
           <View style={s.center}>
             <Text style={s.muted}>{error || 'Work not available.'}</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={() => setRetryAttempt((attempt) => attempt + 1)} style={{ minHeight: 44, justifyContent: 'center', marginTop: 12 }}><Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>Try again</Text></TouchableOpacity>
           </View>
         </SafeAreaView>
       </View>
@@ -364,7 +369,7 @@ export default function WorkScreen() {
     if (selected.locked) {
       return <View style={s.root}><SafeAreaView style={{ flex: 1 }} edges={['top']}>
         <View style={s.header}>
-          <TouchableOpacity style={s.iconBtn} onPress={onTap(() => setSelected(null))} hitSlop={10}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={s.iconBtn} onPress={onTap(() => setSelected(null))} hitSlop={10}>
             <BackIcon color={colors.text} />
           </TouchableOpacity>
           <Text style={s.headerTitle} numberOfLines={1}>{selected.title}</Text>
@@ -397,10 +402,10 @@ export default function WorkScreen() {
       </View>
     ) : null;
     return (
-      <View style={s.root}>
+      <View style={s.root} onLayout={(event) => setMeasuredWidth(event.nativeEvent.layout.width)}>
         <SafeAreaView style={{ flex: 1 }} edges={['top']}>
           <View style={s.header}>
-            <TouchableOpacity style={s.iconBtn} onPress={onTap(() => setSelected(null))} hitSlop={10}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={s.iconBtn} onPress={onTap(() => setSelected(null))} hitSlop={10}>
               <BackIcon color={colors.text} />
             </TouchableOpacity>
             <Text style={s.headerTitle} numberOfLines={1}>{selected.title}</Text>
@@ -419,7 +424,7 @@ export default function WorkScreen() {
                 <View style={s.center}><Text style={s.muted}>No pages in this chapter yet.</Text></View>
               ) : (
                 (selected.media?.pages ?? []).map((uri, i) => (
-                  <Image key={`${uri}-${i}`} source={{ uri }} style={s.page} contentFit="contain" transition={200} />
+                  <PageImage key={`${uri}-${i}`} source={{ uri }} style={s.page} contentFit="contain" transition={200} accessibilityLabel={`Page ${i + 1}`} />
                 ))
               )}
               {downloads}
@@ -448,7 +453,7 @@ export default function WorkScreen() {
     <View style={s.root}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         <View style={s.header}>
-          <TouchableOpacity style={s.iconBtn} onPress={onTap(() => router.back())} hitSlop={10}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={s.iconBtn} onPress={onTap(() => router.back())} hitSlop={10}>
             <BackIcon color={colors.text} />
           </TouchableOpacity>
           <Text style={s.headerTitle} numberOfLines={1}>{work.title}</Text>
@@ -456,7 +461,7 @@ export default function WorkScreen() {
         <ScrollView contentContainerStyle={{ paddingBottom: 80 }} showsVerticalScrollIndicator={false}>
           <View style={s.hero}>
             {work.cover_url ? (
-              <Image source={{ uri: work.cover_url }} style={s.cover} contentFit="cover" transition={250} />
+              <Image source={{ uri: work.cover_url }} thumbnailWidth={256} style={s.cover} contentFit="cover" transition={250} />
             ) : (
               <View style={s.cover} />
             )}
@@ -507,7 +512,7 @@ export default function WorkScreen() {
             <View style={s.center}><Text style={s.muted}>No {listLabel.toLowerCase()} published yet.</Text></View>
           ) : (
             releases.map((r) => (
-              <TouchableOpacity key={r.id} style={s.row} activeOpacity={0.7} onPress={onTap(() => setSelected(r))}>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${work.kind === 'anime' ? 'Episode' : 'Chapter'} ${r.sequence_number}: ${r.title}${r.locked ? ', locked' : ''}`} key={r.id} style={s.row} activeOpacity={0.7} onPress={onTap(() => setSelected(r))}>
                 <Text style={s.rowNum}>{r.sequence_number}</Text>
                 {/* Title and date stack, so the row needs a wrapper — it is a
                     horizontal flex. Unpublished releases have no date. */}

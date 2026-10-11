@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Linking,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useScrollToTop } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -97,6 +98,7 @@ function AIRow({ colors }: { colors: any }) {
 
   return (
     <TouchableOpacity
+      accessibilityRole="button"
       style={[row.base, { backgroundColor: colors.surface }, row.walletRow]}
       onPress={onTap(() => router.push('/ai'))}
       activeOpacity={0.7}
@@ -138,6 +140,7 @@ function WalletRow({ onPress, colors }: { onPress: () => void; colors: any }) {
 
   return (
     <TouchableOpacity
+      accessibilityRole="button"
       style={[row.base, { backgroundColor: colors.surface }, row.walletRow]}
       onPress={onPress}
       activeOpacity={0.7}
@@ -176,6 +179,7 @@ function MenuRow({ label, icon, onPress, last, colors }: {
 }) {
   return (
     <TouchableOpacity
+      accessibilityRole="button"
       style={[
         row.base,
         { backgroundColor: colors.surface },
@@ -252,6 +256,7 @@ function CreatorRow({ colors }: { colors: any }) {
 
   return (
     <TouchableOpacity
+      accessibilityRole="button"
       style={[row.base, { backgroundColor: colors.surface }, row.walletRow]}
       onPress={onTap(() => router.push(route))}
       activeOpacity={0.7}
@@ -742,6 +747,7 @@ export default function ProfileScreen() {
     <SafeAreaView style={[s.safe, { backgroundColor: colors.background }]} edges={['top']}>
       <ScrollView
         ref={scrollRef}
+        contentContainerStyle={Platform.OS === 'web' ? { width: '100%', maxWidth: 860, alignSelf: 'center', paddingTop: 24, paddingBottom: 100 } : undefined}
         showsVerticalScrollIndicator={false}
         scrollIndicatorInsets={{ bottom: 90 }}
         refreshControl={
@@ -749,7 +755,7 @@ export default function ProfileScreen() {
         }
       >
         {/* ── Header ── */}
-        <Animated.View entering={FadeInDown.duration(400)} style={s.header}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.duration(400)} style={s.header}>
           <TouchableOpacity onPress={onTap(onAvatarPress)} activeOpacity={0.85} disabled={generatingAvatar || loadingAvatarMints || downloadingAvatar}>
             <View style={[s.avatarWrap, { borderColor: colors.primary, backgroundColor: colors.surfaceSecondary }]}>
               {connected && address ? (
@@ -796,7 +802,7 @@ export default function ProfileScreen() {
         </Animated.View>
 
         {/* ── Stats ── */}
-        <Animated.View entering={FadeInDown.delay(80).duration(400)}
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(80).duration(400)}
           style={[s.statsRow, { backgroundColor: colors.surface }]}>
           {([
             { label: 'Watching', value: stats.watching },
@@ -814,22 +820,22 @@ export default function ProfileScreen() {
         </Animated.View>
 
         {/* ── Wallet ── */}
-        <Animated.View entering={FadeInDown.delay(140).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(140).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
           <WalletRow onPress={() => setWalletVisible(true)} colors={colors} />
         </Animated.View>
 
         {/* ── Sakura AI ── */}
-        <Animated.View entering={FadeInDown.delay(170).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(170).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
           <AIRow colors={colors} />
         </Animated.View>
 
         {/* ── Creator ── */}
-        <Animated.View entering={FadeInDown.delay(185).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(185).duration(400)} style={[s.group, { marginBottom: Spacing.sm }]}>
           <CreatorRow colors={colors} />
         </Animated.View>
 
         {/* ── Quick links ── */}
-        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={s.group}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.delay(200).duration(400)} style={s.group}>
           <MenuRow
             label="My Downloads"
             icon={<IconBadge bg="#007AFF"><DownloadsIcon color="#fff" /></IconBadge>}
@@ -909,7 +915,7 @@ export default function ProfileScreen() {
 const s = StyleSheet.create({
   safe: { flex: 1 },
   header: { alignItems: 'center', paddingTop: Spacing.lg, paddingBottom: Spacing.md },
-  avatarWrap: { width: 88, height: 88, borderRadius: 44, borderWidth: 3, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', ...Shadow.md },
+  avatarWrap: { width: 88, height: 88, borderRadius: 44, borderWidth: Platform.OS === 'web' ? 1 : 3, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', ...Shadow.md },
   avatarLoading: {
     ...StyleSheet.absoluteFill,
     alignItems: 'center',

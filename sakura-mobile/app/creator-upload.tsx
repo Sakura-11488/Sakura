@@ -645,17 +645,17 @@ export default function CreatorUploadScreen() {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingBottom: 120 + insets.bottom }}
         >
-          <Animated.View entering={FadeInUp.duration(350)}>
+          <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.duration(350)}>
             <View style={styles.intro}>
               <View style={styles.introCopy}>
-                <Text style={styles.introEyebrow}>SAKURA STUDIO</Text>
+                <Text style={styles.introEyebrow}>Creator studio</Text>
                 <Text style={styles.introTitle}>
-                  {existingPublishedWork ? 'Your next chapter starts here' : 'Let your story bloom'}
+                  {existingPublishedWork ? 'Add to your series' : 'Create a new release'}
                 </Text>
                 <Text style={styles.introDescription}>
                   {existingPublishedWork
-                    ? 'Add the next chapter to your series and bring your readers back for more.'
-                    : 'Share your novels, manga, and anime with readers. Arrange chapters, add your art, and publish your way.'}
+                    ? 'Add your chapter files and details below, then review before publishing.'
+                    : 'Choose a format, add your files and details, then publish to your creator page.'}
                 </Text>
               </View>
               <Image
@@ -937,7 +937,7 @@ export default function CreatorUploadScreen() {
       </KeyboardAvoidingView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
-        <Text style={styles.footerHint}>
+        <Text accessibilityLiveRegion="polite" style={styles.footerHint}>
           {mediaProgress
             ? mediaProgress
             : canPublish
@@ -947,6 +947,8 @@ export default function CreatorUploadScreen() {
               : 'Add a title, release title, and chapter content to continue'}
         </Text>
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={uploading ? 'Publishing release' : 'Publish release to Sakura'}
           style={[styles.primaryBtn, (!canPublish || uploading) && styles.primaryBtnDisabled]}
           onPress={handleUpload}
           disabled={!canPublish || uploading}

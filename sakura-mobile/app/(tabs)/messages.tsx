@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect, useScrollToTop } from 'expo-router';
-import { Image } from 'expo-image';
+import Image from '@/components/ui/CoverImage';
 import { Ionicons } from '@expo/vector-icons';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
@@ -164,10 +164,10 @@ function ThreadRow({
 
   return (
     <View style={row.wrap}>
-      <TouchableOpacity style={row.row} activeOpacity={0.6} onPress={onPress}>
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${label}${unread ? ', unread' : ''}. ${preview}`} style={row.row} activeOpacity={0.6} onPress={onPress}>
         <View style={[row.avatar, !item.peer_avatar_url && { backgroundColor: avatarColor(seed) }]}>
           {item.peer_avatar_url ? (
-            <Image source={{ uri: item.peer_avatar_url }} style={StyleSheet.absoluteFill} contentFit="cover" />
+            <Image source={{ uri: item.peer_avatar_url }} thumbnailWidth={256} style={StyleSheet.absoluteFill} contentFit="cover" />
           ) : (
             <Text style={row.avatarText}>{label.slice(0, 1).toUpperCase()}</Text>
           )}
@@ -200,6 +200,7 @@ export default function MessagesTabScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
   const [newMessageOpen, setNewMessageOpen] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const listRef = React.useRef<FlatList>(null);
   useScrollToTop(listRef);
 
@@ -215,8 +216,9 @@ export default function MessagesTabScreen() {
     try {
       await refresh();
       hasLoadedRef.current = true;
+      setLoadError('');
     } catch {
-      // ignore
+      setLoadError('Conversations could not be refreshed.');
     } finally {
       setLoading(false);
       if (fromRefresh) setRefreshing(false);
@@ -256,15 +258,15 @@ export default function MessagesTabScreen() {
         title: {
           fontFamily: Fonts.display,
           fontWeight: Fonts.displayWeight,
-          fontSize: 34,
+          fontSize: 28,
           color: colors.text,
           letterSpacing: -0.4,
           flex: 1,
         },
         composeBtn: {
-          width: 40,
-          height: 40,
-          borderRadius: 20,
+          width: 44,
+          height: 44,
+          borderRadius: 14,
           alignItems: 'center',
           justifyContent: 'center',
           backgroundColor: colors.surfaceSecondary,
@@ -279,7 +281,8 @@ export default function MessagesTabScreen() {
           backgroundColor: colors.surfaceSecondary,
           borderRadius: Radius.full,
           paddingHorizontal: 12,
-          paddingVertical: 10,
+          minHeight: 48,
+          paddingVertical: 2,
           gap: 8,
         },
         searchInput: {
@@ -289,7 +292,8 @@ export default function MessagesTabScreen() {
           fontFamily: Fonts.body,
           padding: 0,
         },
-        clearBtn: { padding: 2 },
+        clearBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+        feedback: { marginHorizontal: Spacing.md, marginBottom: Spacing.sm, padding: Spacing.md, borderRadius: Radius.md, backgroundColor: colors.surfaceSecondary, gap: 6 },
         connectWrap: {
           flex: 1,
           alignItems: 'center',
@@ -361,6 +365,7 @@ export default function MessagesTabScreen() {
       <View style={styles.searchBar}>
         <Ionicons name="search" size={18} color={colors.textTertiary} />
         <TextInput
+          accessibilityLabel="Search conversations"
           style={styles.searchInput}
           value={query}
           onChangeText={setQuery}
@@ -372,7 +377,7 @@ export default function MessagesTabScreen() {
           returnKeyType="search"
         />
         {query.length > 0 ? (
-          <TouchableOpacity style={styles.clearBtn} onPress={() => setQuery('')} hitSlop={8}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Clear conversation search" style={styles.clearBtn} onPress={() => setQuery('')}>
             <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
           </TouchableOpacity>
         ) : null}
@@ -390,6 +395,7 @@ export default function MessagesTabScreen() {
             activeOpacity={0.75}
             onPress={onTap(() => setNewMessageOpen(true))}
             accessibilityLabel="New message"
+            accessibilityRole="button"
           >
             <Ionicons name="create-outline" size={22} color={colors.primary} />
           </TouchableOpacity>
@@ -404,6 +410,7 @@ export default function MessagesTabScreen() {
           </Text>
           <TouchableOpacity
             style={styles.connectBtn}
+            accessibilityRole="button"
             activeOpacity={0.88}
             onPress={onTap(() => router.push('/(tabs)/profile'))}
           >
@@ -424,7 +431,12 @@ export default function MessagesTabScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
-          ListHeaderComponent={searchBar}
+          ListHeaderComponent={<>{searchBar}{loadError ? <View style={styles.feedback}>
+            <Text accessibilityRole="alert" style={styles.noResultsSub}>{loadError}</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={() => load()} style={{ minHeight: 44, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.primary, fontFamily: Fonts.bodyBold }}>Try again</Text>
+            </TouchableOpacity>
+          </View> : null}</>}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -442,8 +454,11 @@ export default function MessagesTabScreen() {
                 <Text style={styles.noResultsSub}>
                   Nothing matched &ldquo;{query.trim()}&rdquo;
                 </Text>
+                <TouchableOpacity accessibilityRole="button" onPress={() => setQuery('')} style={{ minHeight: 44, justifyContent: 'center' }}>
+                  <Text style={{ color: colors.primary, fontFamily: Fonts.bodyBold }}>Clear search</Text>
+                </TouchableOpacity>
               </View>
-            ) : (
+            ) : loadError ? null : (
               <EmptyState
                 compact
                 title="No conversations yet"

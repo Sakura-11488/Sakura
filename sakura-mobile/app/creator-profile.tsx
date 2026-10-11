@@ -33,6 +33,7 @@ export default function CreatorProfileScreen() {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
+  const [loadError, setLoadError] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!address) {
@@ -40,6 +41,7 @@ export default function CreatorProfileScreen() {
       return;
     }
     setLoading(true);
+    setLoadError(false);
     try {
       const profile = await getCreatorProfile(address);
       if (!profile.username) {
@@ -50,7 +52,7 @@ export default function CreatorProfileScreen() {
       setDisplayName(profile.username.display_name || profile.profile?.display_name || '');
       setBio(profile.profile?.bio || '');
     } catch {
-      showAlert('Profile', 'Could not load your creator profile.');
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -69,7 +71,7 @@ export default function CreatorProfileScreen() {
   );
 
   const handleSave = async () => {
-    if (!address) return;
+    if (!address || loadError || saving) return;
     setSaving(true);
     try {
       await updateCreatorProfile({ walletAddress: address, displayName, bio });
@@ -135,6 +137,13 @@ export default function CreatorProfileScreen() {
   );
 
   if (loading) return <CreatorProfileSkeleton />;
+  if (loadError) return <SafeAreaView style={styles.safe} edges={['top']}>
+    <CreatorScreenHeader title="Edit profile" colors={colors} onBack={onTap(() => router.back())} />
+    <View style={{ padding: Spacing.lg, gap: Spacing.md }}>
+      <Text accessibilityRole="alert" style={styles.handleSub}>Your creator profile could not be loaded.</Text>
+      <TouchableOpacity accessibilityRole="button" style={styles.primaryBtn} onPress={refresh}><Text style={styles.primaryBtnText}>Try again</Text></TouchableOpacity>
+    </View>
+  </SafeAreaView>;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -150,15 +159,15 @@ export default function CreatorProfileScreen() {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingBottom: 120 + insets.bottom, paddingTop: Spacing.sm }}
         >
-          <Animated.View entering={FadeInUp.duration(350)}>
+          <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.duration(350)}>
             <FormSection title="Creator identity" subtitle="Your @handle cannot be changed after signup." colors={colors}>
               <View style={styles.profileHead}>
                 <View style={styles.lottieBadge}>
                   <LottieView
                     source={require('@/assets/lottie/write.json')}
                     style={styles.lottie}
-                    autoPlay
-                    loop
+                    autoPlay={Platform.OS !== 'web'}
+                    loop={Platform.OS !== 'web'}
                     speed={0.8}
                   />
                 </View>
@@ -175,6 +184,7 @@ export default function CreatorProfileScreen() {
             <FormSection title="Public profile" subtitle="Shown on your creator page and works." colors={colors}>
               <FormField
                 label="Display name"
+                accessibilityLabel="Display name"
                 colors={colors}
                 value={displayName}
                 onChangeText={setDisplayName}
@@ -182,6 +192,7 @@ export default function CreatorProfileScreen() {
               />
               <FormField
                 label="Bio"
+                accessibilityLabel="Creator bio"
                 hint="A few sentences about you and your work"
                 colors={colors}
                 value={bio}
@@ -197,6 +208,8 @@ export default function CreatorProfileScreen() {
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={saving ? 'Saving profile' : 'Save profile changes'}
           style={styles.primaryBtn}
           onPress={handleSave}
           disabled={saving}

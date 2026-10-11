@@ -6,6 +6,8 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
@@ -32,13 +34,19 @@ import ReaderAskSheet from '@/components/reader/ReaderAskSheet';
 import { buildReaderContext } from '@/lib/ai-context';
 import { useWallet } from '@/lib/wallet/context';
 
-const BackIcon = () => (
+const BackIcon = ({ color = Colors.text }: { color?: string }) => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
-    <Path d="M15 18l-6-6 6-6" stroke={Colors.text} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+    <Path d="M15 18l-6-6 6-6" stroke={color} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
   </Svg>
 );
 
 const FONT_SIZES = [13, 15, 17, 19, 21];
+const WEB_THEMES = [
+  { bg: '#fcf6f8', text: '#382731', label: 'Light' },
+  { bg: '#f3e7e4', text: '#44302d', label: 'Sepia' },
+  { bg: '#211a22', text: '#eee3e9', label: 'Dark' },
+  { bg: '#121016', text: '#d9cbd5', label: 'Night' },
+];
 const BG_THEMES = [
   { bg: '#FAFAF5', text: '#1A1A1A', label: 'Light' },
   { bg: '#F5F0E8', text: '#2C1F14', label: 'Sepia' },
@@ -57,12 +65,15 @@ export default function NovelReader() {
     novelPath?: string;
   }>();
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
+  const isWeb = Platform.OS === 'web';
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
-  const [fontIdx, setFontIdx] = useState(1);
+  const [fontIdx, setFontIdx] = useState(Platform.OS === 'web' ? 2 : 1);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [themeIdx, setThemeIdx] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const [readingMode, setReadingMode] = useState<'page' | 'scroll'>('page');
@@ -76,7 +87,8 @@ export default function NovelReader() {
   const lastOffset = useSharedValue(0);
 
   const decodedPath = path ? decodeURIComponent(path) : '';
-  const theme = BG_THEMES[themeIdx];
+  const availableThemes = isWeb ? WEB_THEMES : BG_THEMES;
+  const theme = availableThemes[themeIdx];
   const fontSize = FONT_SIZES[fontIdx];
   const deeplinkProgress = Math.min(1, Math.max(0, Number(o || 0)));
 
@@ -110,8 +122,9 @@ export default function NovelReader() {
   }, [decodedPath, deeplinkProgress]);
 
   useEffect(() => {
-    if (!decodedPath) return;
+    if (!decodedPath) { setContent('No content available.'); setLoading(false); return; }
     let cancelled = false;
+    setLoading(true);
 
     (async () => {
       if (offline === '1' && novelPath) {
@@ -143,7 +156,7 @@ export default function NovelReader() {
     return () => {
       cancelled = true;
     };
-  }, [decodedPath, offline, novelPath]);
+  }, [decodedPath, offline, novelPath, loadAttempt]);
 
   const scrollHandler = useAnimatedScrollHandler((e) => {
     scrollY.value = e.contentOffset.y;
@@ -300,6 +313,8 @@ export default function NovelReader() {
 
   const topPad = insets.top;
   const botPad = insets.bottom;
+  const readerError = !loading && (content === 'No content available.' || content === 'Failed to load chapter content.');
+  const webReadingLayout = isWeb ? { width: '100%' as const, maxWidth: 760, alignSelf: 'center' as const, paddingHorizontal: windowWidth > 760 ? 40 : 24 } : undefined;
 
   return (
     <View style={[s.root, { backgroundColor: theme.bg }]}>
@@ -310,9 +325,9 @@ export default function NovelReader() {
           tint={themeIdx >= 2 ? 'dark' : 'systemMaterialLight'}
           style={StyleSheet.absoluteFill}
         />
-        <View style={[s.headerRow, { paddingTop: topPad + 6 }]}>
-          <TouchableOpacity onPress={onTap(() => router.back())} style={s.headerBtn}>
-            <BackIcon />
+        <View style={[s.headerRow, { paddingTop: topPad + 6 }, isWeb && { maxWidth: 1100, width: '100%', alignSelf: 'center', paddingHorizontal: windowWidth > 760 ? 30 : 14 }]}>
+          <TouchableOpacity accessibilityLabel="Back to novel" onPress={onTap(() => router.canGoBack() ? router.back() : router.replace(novelPath ? { pathname: '/novel/ext', params: { path: novelPath } } : '/novel'))} style={s.headerBtn}>
+            <BackIcon color={theme.text} />
           </TouchableOpacity>
           <Text style={[s.headerTitle, { color: theme.text }]} numberOfLines={1}>
             {displayTitle}
@@ -321,22 +336,24 @@ export default function NovelReader() {
             <TouchableOpacity
               onPress={() => { playTap(); setFontIdx((i) => Math.max(0, i - 1)); }}
               style={s.fontBtn}
+              accessibilityLabel="Decrease text size"
               disabled={fontIdx === 0}
             >
-              <Text style={[s.fontBtnText, { color: fontIdx === 0 ? Colors.textTertiary : Colors.primary }]}>A-</Text>
+              <Text style={[s.fontBtnText, { color: fontIdx === 0 ? Colors.textTertiary : isWeb ? '#ae5f83' : Colors.primary }]}>A-</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => { playTap(); setFontIdx((i) => Math.min(FONT_SIZES.length - 1, i + 1)); }}
               style={s.fontBtn}
+              accessibilityLabel="Increase text size"
               disabled={fontIdx === FONT_SIZES.length - 1}
             >
-              <Text style={[s.fontBtnText, { color: fontIdx === FONT_SIZES.length - 1 ? Colors.textTertiary : Colors.primary }]}>A+</Text>
+              <Text style={[s.fontBtnText, { color: fontIdx === FONT_SIZES.length - 1 ? Colors.textTertiary : isWeb ? '#ae5f83' : Colors.primary }]}>A+</Text>
             </TouchableOpacity>
             {/* Ask about the chapter without leaving it. Inside the header's
                 Animated.View, so it fades with the controls rather than
                 becoming invisible-but-tappable. */}
-            <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={s.askBtn}>
-              <Text style={s.askBtnText}>Ask</Text>
+            <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={[s.askBtn, isWeb && { backgroundColor: '#e6a5be', borderRadius: 4 }]} accessibilityLabel="Ask about this chapter">
+              <Text style={[s.askBtnText, isWeb && { color: '#38202e' }]}>Ask</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -348,6 +365,12 @@ export default function NovelReader() {
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={[s.loadingText, { color: theme.text }]}>Loading chapter...</Text>
         </View>
+      ) : readerError ? (
+        <View style={[s.center, { paddingHorizontal: 26, paddingTop: topPad + 60 }]}>
+          <Text style={{ fontFamily: isWeb ? 'Georgia' : Fonts.bodyBold, fontSize: 25, color: theme.text, textAlign: 'center' }}>This chapter is unavailable.</Text>
+          <Text style={{ fontSize: 13, lineHeight: 21, color: theme.text, opacity: 0.7, textAlign: 'center', maxWidth: 380 }}>Try loading it again, or return to the novel to choose another chapter.</Text>
+          <TouchableOpacity accessibilityRole="button" onPress={() => setLoadAttempt(value => value + 1)} style={{ paddingVertical: 13, paddingHorizontal: 23, marginTop: 10, backgroundColor: '#e6a5be', borderRadius: 4 }}><Text style={{ color: '#38202e', fontSize: 13, fontWeight: '600' }}>Try again</Text></TouchableOpacity>
+        </View>
       ) : (
         <Animated.ScrollView
           ref={scrollRef}
@@ -356,12 +379,16 @@ export default function NovelReader() {
           showsVerticalScrollIndicator={false}
           pagingEnabled={readingMode === 'page'}
           decelerationRate={readingMode === 'page' ? 'fast' : 'normal'}
-          contentContainerStyle={[s.scroll, { paddingTop: topPad + 56, paddingBottom: botPad + 80 }]}
-          onTouchEnd={() => setShowControls((v) => !v)}
+          contentContainerStyle={isWeb ? undefined : [s.scroll, { paddingTop: topPad + 56, paddingBottom: botPad + 80 }]}
+          onTouchEnd={isWeb ? undefined : () => setShowControls((v) => !v)}
         >
+          {/* Keep web reader padding inside the snap target so page mode starts below the toolbar. */}
+          <View style={isWeb ? [webReadingLayout, { paddingTop: topPad + 92, paddingBottom: botPad + 120 }] : undefined}>
+          {isWeb && <View style={{ borderBottomWidth: 1, borderBottomColor: themeIdx >= 2 ? '#e6a5be25' : '#ae5f832a', paddingBottom: 25, marginBottom: 27 }}><Text style={{ fontSize: 10, letterSpacing: 1.6, color: themeIdx >= 2 ? '#e6a5be' : '#a35779', marginBottom: 13 }}>SAKURA · READING</Text><Text style={{ fontFamily: 'Georgia', color: theme.text, fontSize: windowWidth > 760 ? 31 : 26, lineHeight: windowWidth > 760 ? 41 : 35 }}>{chapterTitle}</Text></View>}
           <Text
             style={[
               s.body,
+              isWeb && { fontFamily: 'Georgia', lineHeight: fontSize * 1.9, letterSpacing: 0 },
               {
                 fontSize,
                 color: theme.text,
@@ -372,6 +399,7 @@ export default function NovelReader() {
           >
             {content}
           </Text>
+          </View>
         </Animated.ScrollView>
       )}
 
@@ -382,20 +410,24 @@ export default function NovelReader() {
           tint={themeIdx >= 2 ? 'dark' : 'systemMaterialLight'}
           style={StyleSheet.absoluteFill}
         />
-        <View style={[s.footerRow, { paddingBottom: botPad + 6 }]}>
-          <Text style={[s.footerLabel, { color: theme.text, opacity: 0.5 }]}>Theme</Text>
-          {BG_THEMES.map((t, i) => (
+        <View style={[s.footerRow, { paddingBottom: botPad + 6 }, isWeb && { maxWidth: 760, width: '100%', alignSelf: 'center', paddingHorizontal: windowWidth < 360 ? 12 : 20, gap: windowWidth < 360 ? 6 : 8 }]}>
+          {(!isWeb || windowWidth >= 360) && <Text style={[s.footerLabel, { color: theme.text, opacity: 0.5 }]}>Theme</Text>}
+          {availableThemes.map((t, i) => (
             <TouchableOpacity
               key={t.label}
               onPress={() => setThemeIdx(i)}
+              accessibilityLabel={`${t.label} reading theme`}
+              accessibilityState={{ selected: i === themeIdx }}
               style={[
                 s.themeChip,
-                { backgroundColor: t.bg, borderColor: i === themeIdx ? Colors.primary : Colors.border },
+                isWeb && { borderRadius: 4, minHeight: 36, justifyContent: 'center', paddingHorizontal: windowWidth < 360 ? 8 : 10 },
+                { backgroundColor: t.bg, borderColor: i === themeIdx ? isWeb ? '#ae5f83' : Colors.primary : Colors.border },
               ]}
             >
               <Text style={[s.themeChipText, { color: t.text }]}>{t.label}</Text>
             </TouchableOpacity>
           ))}
+          {isWeb && <Text accessibilityLabel={`${Math.round(readProgress * 100)} percent read`} style={{ marginLeft: 'auto', fontSize: 11, color: theme.text, opacity: 0.65 }}>{Math.round(readProgress * 100)}%</Text>}
         </View>
       </Animated.View>
 

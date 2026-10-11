@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { Appearance } from 'react-native';
+import { Appearance, Platform } from 'react-native';
 import { AppSettings } from './settings';
 
 export const LightColors = {
@@ -26,6 +26,7 @@ export const LightColors = {
   tabBarBg:         'rgba(255,255,255,0.75)',
   tabBarBorder:     'rgba(255,255,255,0.6)',
   blurTint:         'systemMaterialLight' as const,
+  ...(Platform.OS === 'web' ? { primary: '#b93e6a', primaryLight: '#e9a4bd', primaryDark: '#91304f', background: '#fcf9f7', surface: '#ffffff', surfaceSecondary: '#f4edf0', surfaceTertiary: '#eae0e6', text: '#30262d', textSecondary: '#7a6873', textTertiary: '#887782', border: '#dfd2d9', borderLight: '#eee4e9' } : {}),
 };
 
 export const DarkColors = {
@@ -52,6 +53,7 @@ export const DarkColors = {
   tabBarBg:         'rgba(28,28,33,0.88)',
   tabBarBorder:     'rgba(255,255,255,0.07)',
   blurTint:         'systemMaterialDark' as const,
+  ...(Platform.OS === 'web' ? { primary: '#c14874', primaryLight: '#efa8c0', primaryDark: '#973352', background: '#141216', surface: '#211d23', surfaceSecondary: '#29232b', surfaceTertiary: '#342b36', text: '#f7f0f4', textSecondary: '#b3a4ae', textTertiary: '#9b8b96', border: '#443440', borderLight: '#342a33' } : {}),
 };
 
 export type AppColors = Omit<typeof LightColors, 'blurTint'> & {

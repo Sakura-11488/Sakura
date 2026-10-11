@@ -12,8 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
+import Image from '@/components/ui/CoverImage';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
@@ -47,7 +46,7 @@ import {
 } from '@/lib/creator';
 import { contentWidth } from '@/constants/layout';
 
-const HERO_H = 188;
+const HERO_H = 150;
 
 /**
  * Read reactively. This was a module constant off Dimensions.get('window'),
@@ -56,12 +55,13 @@ const HERO_H = 188;
  * desktop web the sidebar is a sibling of the content column and anything sized
  * off the window overflows by exactly SIDEBAR_WIDTH.
  */
-function useDashboardMetrics() {
+function useDashboardMetrics(measuredWidth: number) {
   const { width: windowW } = useWindowDimensions();
   return useMemo(() => {
-    const SCREEN_W = Platform.OS === 'web' ? contentWidth(windowW) : windowW;
-    return { SCREEN_W, WORK_W: (SCREEN_W - Spacing.md * 2 - Spacing.sm) / 2 };
-  }, [windowW]);
+    const screenWidth = measuredWidth || (Platform.OS === 'web' ? Math.min(960, contentWidth(windowW)) : windowW);
+    const columns = Platform.OS === 'web' && screenWidth >= 700 ? 4 : screenWidth >= 520 ? 3 : 2;
+    return { WORK_W: (screenWidth - Spacing.md * 2 - Spacing.sm * (columns - 1)) / columns };
+  }, [windowW, measuredWidth]);
 }
 const FILTERS: Array<'all' | CreatorWorkKind> = ['all', 'novel', 'manga', 'anime'];
 
@@ -79,7 +79,8 @@ function avatarColor(seed: string): string {
 }
 
 export default function CreatorDashboardScreen() {
-  const { SCREEN_W, WORK_W } = useDashboardMetrics();
+  const [layoutWidth, setLayoutWidth] = useState(0);
+  const { WORK_W } = useDashboardMetrics(layoutWidth);
   const { colors } = useTheme();
   const router = useRouter();
   const { connected, address, shortAddress, restoring, signWithBiometrics, unlockForAppSession } = useWallet();
@@ -92,6 +93,7 @@ export default function CreatorDashboardScreen() {
   const [coinStatus, setCoinStatus] = useState<CreatorCoinStatus | null>(null);
   const [pendingLaunch, setPendingLaunch] = useState<PendingCreatorCoinLaunch | null>(null);
   const [verifyingLaunch, setVerifyingLaunch] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const refresh = useCallback(async (isActive: () => boolean) => {
     if (!address) {
@@ -103,6 +105,7 @@ export default function CreatorDashboardScreen() {
       return;
     }
     setLoading(true);
+    setLoadError('');
     try {
       const profile = await getCreatorProfile(address);
       if (!isActive()) return;
@@ -142,8 +145,7 @@ export default function CreatorDashboardScreen() {
       }
     } catch {
       if (isActive()) {
-        setCreator(null);
-        setWorks([]);
+        setLoadError('Your creator dashboard could not be loaded.');
       }
     } finally {
       if (isActive()) setLoading(false);
@@ -288,13 +290,13 @@ export default function CreatorDashboardScreen() {
         safe: { flex: 1, backgroundColor: colors.background },
         hero: {
           marginHorizontal: Spacing.md,
-          width: SCREEN_W - Spacing.md * 2,
           height: HERO_H,
           borderRadius: Radius.xl,
           overflow: 'hidden',
           marginBottom: Spacing.md,
-          backgroundColor: '#141418',
-          ...Shadow.md,
+          backgroundColor: colors.surfaceSecondary,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.border,
         },
         heroImage: { ...StyleSheet.absoluteFill },
         heroGrad: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '92%' },
@@ -304,12 +306,12 @@ export default function CreatorDashboardScreen() {
           top: Spacing.sm,
           left: Spacing.sm,
           zIndex: 2,
-          width: 38,
-          height: 38,
-          borderRadius: 19,
+          width: 44,
+          height: 44,
+          borderRadius: 12,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: 'rgba(0,0,0,0.45)',
+          backgroundColor: colors.surface,
         },
         heroContent: {
           position: 'absolute',
@@ -353,9 +355,9 @@ export default function CreatorDashboardScreen() {
           borderColor: '#141418',
         },
         heroText: { flex: 1 },
-        heroTag: { color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1, marginBottom: 4 },
-        heroName: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 22, color: '#fff' },
-        heroHandle: { color: 'rgba(255,255,255,0.82)', fontSize: FontSize.sm, marginTop: 2 },
+        heroTag: { color: colors.textSecondary, fontSize: 12, fontWeight: FontWeight.medium, marginBottom: 4 },
+        heroName: { fontFamily: Fonts.display, fontWeight: Fonts.displayWeight, fontSize: 24, color: colors.text },
+        heroHandle: { color: colors.textSecondary, fontSize: FontSize.sm, marginTop: 2 },
         statsRow: {
           flexDirection: 'row',
           marginHorizontal: Spacing.md,
@@ -440,6 +442,8 @@ export default function CreatorDashboardScreen() {
           marginBottom: Spacing.md,
         },
         filterChip: {
+          minHeight: 44,
+          justifyContent: 'center',
           paddingHorizontal: 14,
           paddingVertical: 8,
           borderRadius: Radius.full,
@@ -506,7 +510,7 @@ export default function CreatorDashboardScreen() {
         },
         emptyBtnText: { color: '#fff', fontWeight: FontWeight.bold, fontSize: FontSize.sm },
       }),
-    [colors],
+    [colors, WORK_W],
   );
 
   if (loading) return <CreatorDashboardSkeleton />;
@@ -517,24 +521,15 @@ export default function CreatorDashboardScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: Spacing.sm, paddingBottom: 120 }}>
-        <Animated.View entering={FadeInDown.duration(380)} style={styles.hero}>
-          <Image source={require('@/assets/images/banner.png')} style={styles.heroImage} contentFit="cover" />
-          <LinearGradient
-            colors={['rgba(0,0,0,0.25)', 'rgba(0,0,0,0.55)', 'rgba(0,0,0,0.9)']}
-            locations={[0.15, 0.5, 1]}
-            style={styles.heroGrad}
-          />
-          <LinearGradient
-            colors={['rgba(232,69,69,0.2)', 'transparent']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0.8 }}
-            style={styles.heroTint}
-          />
-
-          <TouchableOpacity style={styles.heroBack} onPress={onTap(() => router.back())} activeOpacity={0.85}>
+      <ScrollView onLayout={(event) => setLayoutWidth(event.nativeEvent.layout.width)} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: Spacing.sm, paddingBottom: 120 }}>
+        {loadError ? <View style={styles.emptyWrap}>
+          <Text accessibilityRole="alert" style={styles.emptySub}>{loadError}</Text>
+          <TouchableOpacity accessibilityRole="button" style={styles.emptyBtn} onPress={() => { void refresh(() => true); }}><Text style={styles.emptyBtnText}>Try again</Text></TouchableOpacity>
+        </View> : null}
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInDown.duration(380)} style={styles.hero}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" style={styles.heroBack} onPress={onTap(() => router.back())} activeOpacity={0.85}>
             <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
-              <Path d="M15 18l-6-6 6-6" stroke="#fff" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+              <Path d="M15 18l-6-6 6-6" stroke={colors.text} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
             </Svg>
           </TouchableOpacity>
 
@@ -545,10 +540,11 @@ export default function CreatorDashboardScreen() {
                 activeOpacity={0.85}
                 disabled={uploadingAvatar}
                 accessibilityLabel="Change profile photo"
+                accessibilityRole="button"
               >
                 <View style={[styles.avatar, !avatarUrl && { backgroundColor: avatarColor(avatarSeed) }]}>
                   {avatarUrl ? (
-                    <Image source={{ uri: avatarUrl }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                    <Image source={{ uri: avatarUrl }} thumbnailWidth={256} style={StyleSheet.absoluteFill} contentFit="cover" />
                   ) : (
                     <Text style={styles.avatarText}>{initial}</Text>
                   )}
@@ -572,7 +568,7 @@ export default function CreatorDashboardScreen() {
                 </View>
               </TouchableOpacity>
               <View style={styles.heroText}>
-                <Text style={styles.heroTag}>CREATOR DASHBOARD</Text>
+                <Text style={styles.heroTag}>Creator studio</Text>
                 <Text style={styles.heroName} numberOfLines={1}>{displayName}</Text>
                 <Text style={styles.heroHandle}>@{creator?.username?.username}</Text>
               </View>
@@ -580,7 +576,7 @@ export default function CreatorDashboardScreen() {
           </View>
         </Animated.View>
 
-        <Animated.View entering={FadeInUp.delay(50).duration(380)} style={styles.statsRow}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.delay(50).duration(380)} style={styles.statsRow}>
           {[
             { label: 'Works', value: stats.total },
             { label: 'Novels', value: stats.novels },
@@ -594,13 +590,14 @@ export default function CreatorDashboardScreen() {
           ))}
         </Animated.View>
 
-        <Animated.View entering={FadeInUp.delay(90).duration(380)} style={styles.actionsRow}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.delay(90).duration(380)} style={styles.actionsRow}>
           <TouchableOpacity
+            accessibilityRole="button"
             style={styles.actionCard}
             onPress={onTap(() => router.push('/creator-upload'))}
             activeOpacity={0.9}
           >
-            <LinearGradient colors={['#FF6B6B', '#E84545']} style={styles.actionInner}>
+            <View style={[styles.actionInner, styles.actionPrimary]}>
               <View>
                 <Text style={[styles.actionTitle, { color: '#fff' }]}>Upload work</Text>
                 <Text style={[styles.actionSub, { color: 'rgba(255,255,255,0.85)' }]}>
@@ -610,10 +607,11 @@ export default function CreatorDashboardScreen() {
               <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
                 <Path d="M12 5v14M5 12h14" stroke="#fff" strokeWidth={2.5} strokeLinecap="round" />
               </Svg>
-            </LinearGradient>
+            </View>
           </TouchableOpacity>
 
           <TouchableOpacity
+            accessibilityRole="button"
             style={[styles.actionCard, styles.actionSecondary]}
             onPress={onTap(() => router.push('/creator-profile'))}
             activeOpacity={0.85}
@@ -630,16 +628,15 @@ export default function CreatorDashboardScreen() {
           </TouchableOpacity>
         </Animated.View>
 
-        <Animated.View entering={FadeInUp.delay(120).duration(380)} style={styles.walletBar}>
+        <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.delay(120).duration(380)} style={styles.walletBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.walletLabel}>Connected account</Text>
             <Text style={styles.walletValue}>{shortAddress}</Text>
           </View>
         </Animated.View>
 
-        <View style={styles.sectionHead}>
           {coinStatus || pendingLaunch ? (
-            <Animated.View entering={FadeInUp.delay(120).duration(380)} style={styles.coinCard}>
+            <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.delay(120).duration(380)} style={styles.coinCard}>
               {coinStatus?.launchedCoin ? (
                 <TouchableOpacity
                   activeOpacity={0.85}
@@ -690,7 +687,7 @@ export default function CreatorDashboardScreen() {
               )}
             </Animated.View>
           ) : null}
-
+        <View style={styles.sectionHead}>
           <Text style={styles.sectionTitle}>Your library</Text>
           <Text style={styles.sectionCount}>{filteredWorks.length} shown</Text>
         </View>
@@ -703,6 +700,8 @@ export default function CreatorDashboardScreen() {
               return (
                 <TouchableOpacity
                   key={f}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
                   style={[
                     styles.filterChip,
                     {
@@ -720,13 +719,13 @@ export default function CreatorDashboardScreen() {
           </View>
         )}
 
-        {works.length === 0 ? (
-          <Animated.View entering={FadeIn.delay(150).duration(380)} style={styles.emptyWrap}>
+        {works.length === 0 && loadError ? null : works.length === 0 ? (
+          <Animated.View entering={Platform.OS === 'web' ? undefined : FadeIn.delay(150).duration(380)} style={styles.emptyWrap}>
             <SakuraLottie
               source={require('@/assets/lottie/write.json')}
               style={{ width: 56, height: 56 }}
-              autoPlay
-              loop
+              autoPlay={Platform.OS !== 'web'}
+              loop={Platform.OS !== 'web'}
               speed={0.75}
             />
             <Text style={styles.emptyTitle}>Start your catalog</Text>
@@ -734,6 +733,7 @@ export default function CreatorDashboardScreen() {
               Your published novels, manga, and anime will appear here. Upload your first work to go live on Sakura.
             </Text>
             <TouchableOpacity
+              accessibilityRole="button"
               style={styles.emptyBtn}
               onPress={onTap(() => router.push('/creator-upload'))}
               activeOpacity={0.85}
@@ -746,7 +746,7 @@ export default function CreatorDashboardScreen() {
             <Text style={[styles.emptySub, { marginBottom: 0 }]}>No {filter} works yet.</Text>
           </View>
         ) : (
-          <Animated.View entering={FadeInUp.delay(150).duration(380)} style={styles.worksGrid}>
+          <Animated.View entering={Platform.OS === 'web' ? undefined : FadeInUp.delay(150).duration(380)} style={styles.worksGrid}>
             {filteredWorks.map((work) => {
               const cover = workCoverUrl(work);
               const kColor = kindColor(work.kind);
@@ -755,7 +755,7 @@ export default function CreatorDashboardScreen() {
                 <View key={work.id} style={styles.workCard}>
                   <View>
                     {cover ? (
-                      <Image source={{ uri: cover }} style={styles.workCover} contentFit="cover" transition={200} />
+                      <Image source={{ uri: cover }} thumbnailWidth={512} style={styles.workCover} contentFit="cover" transition={200} />
                     ) : (
                       <View style={[styles.workCover, styles.workCoverFallback, { backgroundColor: `${kColor}14` }]}>
                         <Text style={{ fontSize: 12, fontWeight: FontWeight.bold, color: kColor, textTransform: 'uppercase' }}>
@@ -778,7 +778,7 @@ export default function CreatorDashboardScreen() {
                         onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
                         accessibilityRole="button"
                         accessibilityLabel={`Add chapters to ${work.title}`}
-                        style={{ paddingVertical: Spacing.sm }}
+                        style={{ minHeight: 44, justifyContent: 'center' }}
                       >
                         <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>+ Add chapters</Text>
                       </TouchableOpacity>
@@ -789,7 +789,7 @@ export default function CreatorDashboardScreen() {
                           onPress={onTap(() => router.push(`/creator-upload?workId=${work.id}`))}
                           accessibilityRole="button"
                           accessibilityLabel={`Resume ${work.title} draft`}
-                          style={{ paddingVertical: Spacing.xs }}
+                          style={{ minHeight: 44, justifyContent: 'center' }}
                         >
                           <Text style={{ color: colors.primary, fontWeight: FontWeight.bold }}>Resume →</Text>
                         </TouchableOpacity>
@@ -797,7 +797,7 @@ export default function CreatorDashboardScreen() {
                           onPress={onTap(() => { void discardDraft(work); })}
                           accessibilityRole="button"
                           accessibilityLabel={`Discard ${work.title} draft`}
-                          style={{ paddingVertical: Spacing.xs }}
+                          style={{ minHeight: 44, justifyContent: 'center' }}
                         >
                           <Text style={{ color: colors.textSecondary }}>Discard</Text>
                         </TouchableOpacity>
