@@ -110,6 +110,7 @@ async function bundleScreen() {
       plugin.onResolve({filter:/.*/}, args => {
         if (args.path in fixtures) return {path:args.path,namespace:'fixture'};
         if (args.path === '@/components/anime/EmbedPlayer') return {path:resolve(root,'sakura-mobile/components/anime/EmbedPlayer.web.tsx')};
+        if (args.path === '@/components/anime/WatchViewport') return {path:resolve(root,'sakura-mobile/components/anime/WatchViewport.web.tsx')};
         if (args.path === '@/lib/watch-progress') return {path:resolve(root,'sakura-mobile/lib/watch-progress.ts')};
         return undefined;
       });

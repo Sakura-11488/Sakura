@@ -43,6 +43,7 @@ import {
 } from '@/lib/watch-progress';
 import { getOfflinePlaybackUri } from '@/lib/anime-offline';
 import WebVideoPlayer, { type WebVideoPlayerHandle } from '@/components/anime/WebVideoPlayer';
+import WatchViewport from '@/components/anime/WatchViewport';
 
 const D = {
   bg: '#000000',
@@ -50,6 +51,7 @@ const D = {
   text: '#FFFFFF',
   muted: 'rgba(255,255,255,0.55)',
 };
+const WEB_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -66,7 +68,9 @@ const ChevronRightIcon = () => (
 export default function AnimeWatch() {
   const { id, ep, offline } = useLocalSearchParams<{ id: string; ep: string; offline?: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const safeAreaInsets = useSafeAreaInsets();
+  // The web viewport maps its own safe-area edges when the player rotates.
+  const insets = Platform.OS === 'web' ? WEB_INSETS : safeAreaInsets;
 
   const [anime, setAnime] = useState<AnimeInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -256,7 +260,9 @@ export default function AnimeWatch() {
     if (Platform.OS === 'android') {
       void NavigationBar.setVisibilityAsync('hidden').catch(() => undefined);
     }
-    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => undefined);
+    if (Platform.OS !== 'web') {
+      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => undefined);
+    }
 
     return () => {
       if (controlsTimerRef.current) {
@@ -267,7 +273,9 @@ export default function AnimeWatch() {
       if (Platform.OS === 'android') {
         void NavigationBar.setVisibilityAsync('visible').catch(() => undefined);
       }
-      void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => undefined);
+      if (Platform.OS !== 'web') {
+        void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => undefined);
+      }
     };
   }, []);
 
@@ -811,6 +819,7 @@ export default function AnimeWatch() {
     currentTimeSec < skipMarkers.outro.end - 0.5;
 
   return (
+    <WatchViewport>
     <View style={s.root}>
       <StatusBar hidden barStyle="light-content" backgroundColor={D.bg} />
 
@@ -1024,6 +1033,7 @@ export default function AnimeWatch() {
       )}
       </View>
     </View>
+    </WatchViewport>
   );
 }
 

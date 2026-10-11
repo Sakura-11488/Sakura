@@ -69,6 +69,12 @@ external player in a separate tab. Provider embeds never load inside the web
 watch screen: the current provider rejects a sandbox that blocks ad popups.
 External players may still show ads. The external tab has no opener access.
 
+On portrait touch phones, the watch screen automatically turns the video and
+controls into a landscape layout. It fits the visible viewport and safe areas,
+returns upright when the viewport becomes landscape, and restores the normal
+page on exit. Screen orientation locking is best effort; the rotated layout
+also works when the browser does not support it. Resizing keeps playback mounted.
+
 The server supplies required provider headers and rewrites media URLs for the
 browser. Its signing secret stays on the server; the client uses the existing
 Supabase URL. Without the function deployed, the external-player fallback stays
