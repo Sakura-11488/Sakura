@@ -38,6 +38,7 @@ import AppUpdateBridge from '@/components/AppUpdateBridge';
 import InstallAppBanner from '@/components/InstallAppBanner';
 import WebUpdateBanner from '@/components/WebUpdateBanner';
 import OfflineBanner from '@/components/OfflineBanner';
+import AnimeDeviceSaveBanner from '@/components/AnimeDeviceSaveBanner';
 import CloudSyncBridge from '@/components/CloudSyncBridge';
 import AvatarApologyBridge from '@/components/AvatarApologyBridge';
 import FloatingTradeWidget from '@/components/wallet/FloatingTradeWidget';
@@ -280,6 +281,7 @@ export default function RootLayout() {
           <AppUpdateBridge />
           <InstallAppBanner />
           <WebUpdateBanner />
+          <AnimeDeviceSaveBanner />
           <CloudSyncBridge />
           <AvatarApologyBridge />
           <PriceAlertBridge />

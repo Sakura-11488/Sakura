@@ -38,7 +38,7 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
  * flag — so "呪術廻戦 - Ch 12" became "- Ch 12" and every non-Latin series
  * collided on one filename. Unicode letter/number classes keep the title.
  */
-function sanitize(name: string): string {
+export function sanitizeDownloadName(name: string): string {
   let out = (name || 'sakura')
     // One allowlist, deliberately. Pairing this with a separate blocklist for
     // path separators and control characters was both redundant — nothing
@@ -77,7 +77,7 @@ function extFromMime(mime: string | undefined): string {
 export function saveTextFile(baseName: string, text: string): void {
   ensureWebEnv();
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  triggerBrowserDownload(blob, `${sanitize(baseName)}.txt`);
+  triggerBrowserDownload(blob, `${sanitizeDownloadName(baseName)}.txt`);
 }
 
 // --- Minimal store-only (uncompressed) ZIP writer -------------------------
@@ -248,7 +248,7 @@ export async function saveCbzFromBlobs(
   ensureWebEnv();
   if (!pages.length) throw new Error('Nothing to save.');
 
-  const folder = sanitize(baseName);
+  const folder = sanitizeDownloadName(baseName);
   const filename = `${folder}.cbz`;
   const pad = (n: number) => String(n).padStart(4, '0');
   const writer = new StoreZipWriter();

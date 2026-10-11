@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Image } from 'expo-image';
 import Hls from 'hls.js';
+import { CAN_SAVE_ANIME_VIDEO } from '@/lib/anime-device-save';
 import { canResumeWatchProgress, isWatchProgressComplete, resumePosition } from '@/lib/watch-progress';
 import type { AnimeDetailWebProps, AnimeDetailWebPlaceholderProps } from './AnimeDetailWeb';
 
@@ -59,7 +60,7 @@ function downloadStatus(download: AnimeDetailWebProps['offline'][string] | undef
   if (!download) return null;
   const pct = Math.round((download.progress || 0) * 100);
   switch (download.status) {
-    case 'ready': return { text: `Downloaded${download.quality ? ` · ${download.quality}` : ''}`, tone: 'ready' };
+    case 'ready': return { text: `Saved in Sakura${download.quality ? ` · ${download.quality}` : ''}`, tone: 'ready' };
     case 'downloading': return { text: download.totalSegments ? `Downloading ${pct}%` : 'Preparing download…' };
     case 'paused': return { text: `Download paused at ${pct}%` };
     default: return { text: download.error ? `Download failed: ${download.error}` : 'Download failed', tone: 'error' };
@@ -72,7 +73,7 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
   const [query, setQuery] = useState('');
   const [selectedPage, setSelectedPage] = useState<number | null>(null);
   const hlsPlayable = useMemo(browserPlaysHls, []);
-  const canDownload = downloadable && (!downloadsNeedHls || hlsPlayable);
+  const canDownload = downloadable && (CAN_SAVE_ANIME_VIDEO || !downloadsNeedHls || hlsPlayable);
   const episodes = anime.episodes;
   const savedEpisode = progress?.animeId === anime.id ? episodes.find(ep => ep.id === progress.episodeId) : undefined;
   const bookmark = savedEpisode ? progress : null;
@@ -133,7 +134,7 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
             <div className="sd-cta-row">
               <button className="sd-primary" onClick={() => onPlay(playEpisode, finished)}><Icon name="play" size={18} />{resumable ? 'Continue watching' : finished ? 'Watch again' : `Watch episode ${playEpisode.number}`}</button>
               {resumable && <button className="sd-secondary" onClick={() => onPlay(playEpisode, true)}><Icon name="restart" size={15} />Start over</button>}
-              {offline[playEpisode.id]?.status === 'ready' && <span className="sd-episode-status">Downloaded</span>}
+              {offline[playEpisode.id]?.status === 'ready' && <span className="sd-episode-status">Saved in Sakura</span>}
             </div>
           </div> : <p className="sd-unavailable">Episodes are not available yet.</p>}
         </div>
@@ -154,15 +155,15 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
           const download = offline[ep.id];
           const status = downloadStatus(download);
           const pct = Math.round((download?.progress || 0) * 100);
-          const downloadLabel = download?.status === 'ready' ? 'Downloaded' : download?.status === 'downloading' ? `Pause download (${pct}%)` : download?.status === 'paused' ? `Resume download (${pct}%)` : download?.status === 'error' ? 'Retry download' : 'Download episode';
+          const downloadLabel = download?.status === 'ready' ? 'Save video' : download?.status === 'downloading' ? `Pause download (${pct}%)` : download?.status === 'paused' ? `Resume download (${pct}%)` : download?.status === 'error' ? 'Retry download' : 'Download episode';
           return <article key={ep.id} className="sd-episode" data-current={current || undefined}>
             <button className="sd-episode-play" onClick={() => onPlay(ep, current && finished)} aria-label={`${current && resumable ? 'Continue' : current && finished ? 'Replay' : 'Watch'} episode ${ep.number}: ${ep.title}`}>
               <div className="sd-thumb">{(ep.thumbnail || hasArtwork) && <Image source={ep.thumbnail ? { uri: ep.thumbnail } : artwork} style={imageStyle} contentFit="cover" />}<span className="sd-thumb-number">{String(ep.number).padStart(2, '0')}</span><span className="sd-thumb-play"><Icon name="play" size={22} /></span></div>
               <div className="sd-episode-copy"><div className="sd-episode-kicker">{current ? resumable ? 'Continue watching' : finished ? 'Watched' : 'Up next' : `Episode ${ep.number}`}</div><div className="sd-episode-title">{ep.title || `Episode ${ep.number}`}</div>{current && resumable && <div className="sd-episode-status">{hasClock ? `Resume ${hasExactPosition ? 'at' : 'near'} ${clock(position)}` : `${Math.round(ratio * 100)}% watched`}{duration > 0 ? ` · ${remainingLabel}` : ''}</div>}{status && (canDownload || download?.status === 'ready') && <div className="sd-episode-status" data-tone={status.tone} aria-live={download?.status === 'downloading' ? 'off' : 'polite'}>{status.text}</div>}</div>
             </button>
-            {canDownload && <button className="sd-download" data-state={download?.status} aria-label={`${downloadLabel}: episode ${ep.number}`} title={downloadLabel} disabled={download?.status === 'ready'} onClick={() => onDownload(ep)}>
+            {canDownload && <button className="sd-download" data-state={download?.status} aria-label={`${downloadLabel}: episode ${ep.number}`} title={downloadLabel} onClick={() => onDownload(ep)}>
               {(download?.status === 'downloading' || download?.status === 'paused') && <svg className="sd-download-ring" viewBox="0 0 36 36" aria-hidden="true"><circle className="track" cx="18" cy="18" r="15" /><circle className="fill" cx="18" cy="18" r="15" pathLength={100} strokeDasharray={`${pct} 100`} transform="rotate(-90 18 18)" /></svg>}
-              <Icon name={download?.status === 'ready' ? 'check' : download?.status === 'downloading' ? 'pause' : download?.status === 'error' ? 'restart' : 'download'} size={download?.status === 'downloading' || download?.status === 'paused' ? 13 : 16} />
+              <Icon name={download?.status === 'downloading' ? 'pause' : download?.status === 'error' ? 'restart' : 'download'} size={download?.status === 'downloading' || download?.status === 'paused' ? 13 : 16} />
             </button>}
             {current && ratio > 0 && <span className="sd-episode-bar" style={{ width: `${ratio * 100}%` }} />}
           </article>;

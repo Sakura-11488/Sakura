@@ -35,7 +35,6 @@ import CommentsSection from '@/components/social/CommentsSection';
 import { fetchAnimeInfo, type AnimeInfo, type AnimeEpisode } from '@/lib/anime';
 import { getAnimeWatchProgress, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 import {
-  downloadAnimeEpisode,
   getOfflineEpisode,
   listOfflineEpisodes,
   pauseAnimeEpisodeDownload,
@@ -43,6 +42,7 @@ import {
   subscribeOfflineEpisodes,
   type OfflineEpisode,
 } from '@/lib/anime-offline';
+import { CAN_SAVE_ANIME_VIDEO, downloadAnimeEpisodeWithDeviceCopy, requestAnimeVideoSave } from '@/lib/anime-device-save';
 import { playTap, onTap } from '@/lib/sound';
 import { Library } from '@/lib/storage';
 import { useTheme } from '@/lib/theme';
@@ -926,7 +926,8 @@ export default function AnimeDetail() {
     playTap();
     const existing = offlineMap[ep.id];
     if (existing?.status === 'ready') {
-      setToast('Already downloaded');
+      if (CAN_SAVE_ANIME_VIDEO) requestAnimeVideoSave(String(id), ep.id);
+      else setToast('Saved in Sakura');
       return;
     }
     if (existing?.status === 'downloading') {
@@ -943,7 +944,7 @@ export default function AnimeDetail() {
       ? 'Resuming download… keep Sakura open on Wi‑Fi'
       : 'Starting download… keep Sakura open on Wi‑Fi');
     try {
-      await downloadAnimeEpisode({
+      await downloadAnimeEpisodeWithDeviceCopy({
         animeId: String(id),
         episodeId: ep.id,
         episodeNumber: ep.number,
@@ -956,7 +957,7 @@ export default function AnimeDetail() {
       // part-way, which used to toast "Episode downloaded" regardless. Say
       // what actually happened.
       const row = await getOfflineEpisode(String(id), ep.id).catch(() => null);
-      if (row?.status === 'ready') setToast('Episode downloaded');
+      if (row?.status === 'ready') setToast('Saved in Sakura');
       else if (row?.status === 'paused') setToast('Download paused');
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'Download failed');

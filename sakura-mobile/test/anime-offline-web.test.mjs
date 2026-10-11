@@ -372,10 +372,10 @@ test('space is checked against the estimated size before anything is written', a
   assert.deepEqual(cache.paths(DIR), []);
 });
 
-test('browsers without hls.js support get a clear refusal for HLS episodes', async () => {
+test('browsers without MediaSource can cache HLS for a device MP4 export', async () => {
   const { api } = loadStore({ hlsSupported: false });
-  await assert.rejects(api.downloadAnimeEpisode(episode()), /can't play downloaded episodes/);
-  assert.equal(await api.getOfflineEpisode('21', 'mal-21-1'), null);
+  await api.downloadAnimeEpisode(episode());
+  assert.equal((await api.getOfflineEpisode('21', 'mal-21-1')).status, 'ready');
 });
 
 test('Sakura Originals keep the single progressive file path', async () => {

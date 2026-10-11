@@ -1,4 +1,3 @@
-import Hls from 'hls.js';
 import type { StreamingSource } from '@/lib/anime';
 import { fetchBrowserAnimeStream } from '@/lib/anime-stream-client';
 import {
@@ -152,8 +151,6 @@ const THUMB_NAME = 'thumb';
 const COVER_SOURCE = 'anime';
 
 const SOURCE_UNAVAILABLE = "This episode's source is temporarily unavailable for download. Try again later.";
-const HLS_UNSUPPORTED =
-  "This browser can't play downloaded episodes. Use a current Chrome, Edge or Firefox, or Safari on iOS 17.1 or later.";
 
 type Manifest = { episodes: Record<string, OfflineEpisode> };
 
@@ -1093,14 +1090,8 @@ async function downloadHlsEpisode(
   cache: Cache,
   existing: OfflineEpisode | undefined,
 ): Promise<void> {
-  /*
-   * The copy only plays through hls.js on MediaSource, whose requests the
-   * service worker answers. Where hls.js cannot run (Safari before iOS 17.1)
-   * WebVideoPlayer hands the playlist to the browser's own HLS stack, which
-   * does not go through a service worker, so the download would be useless.
-   * The UI hides the button there too; this covers the Downloads screen.
-   */
-  if (!Hls.isSupported()) throw new DownloadError(HLS_UNSUPPORTED);
+  // Saving an MP4 from these cached segments does not require MediaSource.
+  // Browsers without hls.js playback can still keep the exported device file.
   const target = streamTarget(opts.animeId, opts.episodeId);
   if (!target) throw new DownloadError("This episode can't be downloaded in the browser.");
 

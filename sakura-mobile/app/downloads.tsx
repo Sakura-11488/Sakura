@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { confirmDestructive } from '@/lib/confirm-alert';
+import { CAN_SAVE_ANIME_VIDEO, downloadAnimeEpisodeWithDeviceCopy, requestAnimeVideoSave } from '@/lib/anime-device-save';
 import { CAN_EXPORT_OFFLINE, exportDownloadedChapter, type ExportTarget } from '@/lib/offline-export';
 import {
   Platform,
@@ -24,7 +25,6 @@ import {
   reconcileInterruptedEpisodes,
   pauseAnimeEpisodeDownload,
   resumeAnimeEpisodeDownload,
-  downloadAnimeEpisode,
   type OfflineEpisode,
 } from '@/lib/anime-offline';
 import {
@@ -534,7 +534,7 @@ export default function DownloadsScreen() {
       }
       if (row.data.status === 'paused') {
         resumeAnimeEpisodeDownload(animeId, episodeId);
-        afterStoreCall(downloadAnimeEpisode({
+        afterStoreCall(downloadAnimeEpisodeWithDeviceCopy({
           animeId,
           episodeId,
           episodeNumber,
@@ -593,7 +593,7 @@ export default function DownloadsScreen() {
     playTap();
     if (row.kind === 'anime') {
       const { animeId, episodeId, episodeNumber, episodeTitle, title, cover, episodeThumbnail } = row.data;
-      afterStoreCall(downloadAnimeEpisode({
+      afterStoreCall(downloadAnimeEpisodeWithDeviceCopy({
         animeId,
         episodeId,
         episodeNumber,
@@ -639,7 +639,7 @@ export default function DownloadsScreen() {
   const renderRow = (row: DownloadRow) => {
     const statusLabel =
       row.data.status === 'ready'
-        ? 'Ready'
+        ? row.kind === 'anime' ? 'Saved in Sakura' : 'Ready'
         : row.data.status === 'paused'
           ? `Paused · ${Math.round(row.data.progress * 100)}%`
           : row.data.status === 'downloading'
@@ -706,12 +706,16 @@ export default function DownloadsScreen() {
           </View>
         ) : (
           <View style={styles.rowActions}>
-            {/*
-              Web only, and only for the kinds stored in Cache Storage (every
-              kind but anime). The library copy can be reclaimed by the
-              browser; this writes a file to the Downloads folder, which
-              cannot. Costs no network — the bytes are already on the device.
-            */}
+            {CAN_SAVE_ANIME_VIDEO && row.kind === 'anime' && row.data.status === 'ready' ? (
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                accessibilityRole="button"
+                accessibilityLabel={`Save video: ${row.data.title}, episode ${row.data.episodeNumber}`}
+                onPress={() => { playTap(); requestAnimeVideoSave(row.data.animeId, row.data.episodeId); }}
+              >
+                <Text style={[styles.deleteText, { color: colors.primary }]}>Save video</Text>
+              </TouchableOpacity>
+            ) : null}
             {CAN_EXPORT_OFFLINE && row.data.status === 'ready' && row.kind !== 'anime' ? (
               <TouchableOpacity
                 style={styles.deleteBtn}
@@ -797,6 +801,7 @@ export default function DownloadsScreen() {
           {persistedStorage
             ? 'Your browser has marked these as protected storage.'
             : 'Your browser may clear these if the device runs low on space.'}
+          {' '}Save video creates an MP4 file. Files saved to your device survive clearing Sakura’s site data.
         </Text>
       ) : null}
 
