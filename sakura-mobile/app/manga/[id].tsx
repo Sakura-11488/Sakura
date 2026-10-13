@@ -710,6 +710,14 @@ export default function MangaDetail() {
    * connectivity can come back while this copy is still on screen.
    */
   const [offlineMode, setOfflineMode] = useState(false);
+  /**
+   * A live load is still out. The downloaded copy is read from the device, so
+   * it usually shows before the live answer, and without this the notice said
+   * "Couldn't reach this title's source" on every visit to a downloaded title
+   * until the live page swapped in a moment later. Only once the live load
+   * has actually settled does the copy mean the source failed.
+   */
+  const [liveChecking, setLiveChecking] = useState(false);
   /** Same-origin cover stored with the snapshot (web only). */
   const [offlineCoverUri, setOfflineCoverUri] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -772,6 +780,7 @@ export default function MangaDetail() {
     // the network first only adds a skeleton that ends in an error — and on a
     // bad connection supabase.functions.invoke has no timeout at all.
     if (!isOnline()) {
+      setLiveChecking(false);
       Promise.all([loadOfflineCopy(scraped, mangaId), savedFetch.catch(() => false)]).then(([copy, isSaved]) => {
         if (!active) return;
         noteSaved(isSaved);
@@ -798,12 +807,16 @@ export default function MangaDetail() {
     });
     const detailFetch = adapter ? adapter.detail(mangaId) : fetchMangaDetail(mangaId);
     const chaptersFetch = adapter ? adapter.chapters(mangaId) : fetchMangaChapters(mangaId);
+    setLiveChecking(true);
     Promise.allSettled([detailFetch, chaptersFetch, savedFetch]).then(async ([detail, chapterResult, savedResult]) => {
       liveLoadFinished = true;
+      // A superseded load leaves the flag to the run that replaced it.
       if (!active) return;
+      setLiveChecking(false);
       noteSaved(savedResult.status === 'fulfilled' && savedResult.value);
       // The fetchers report failure as a rejection or as null/[], so both
-      // count as "did not load" here.
+      // count as "did not load" here — and below, where nothing on the
+      // device covers it, both are shown as errors.
       const liveDetail = detail.status === 'fulfilled' ? detail.value : null;
       const liveChapters = chapterResult.status === 'fulfilled' ? chapterResult.value : [];
 
@@ -838,17 +851,29 @@ export default function MangaDetail() {
       // A refetch after reconnecting found nothing better; keep what is shown.
       if (silent) return;
 
-      // Nothing on the device either: the page as it always behaved.
+      // Nothing on the device either: report what did not load. Comics is
+      // the one loader that still REJECTS when its request fails, and that
+      // is worded as the source being down, with Browse comics as a way out.
+      const comicsDown = adapter?.key === 'comics'
+        ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+        : null;
       setManga(liveDetail);
       if (detail.status === 'rejected') {
-        setLoadError(adapter?.key === 'comics'
-          ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
-          : 'Could not load this title. Please try again.');
+        setLoadError(comicsDown ?? 'Could not load this title. Please try again.');
       }
       setChapters(sortChapters(liveChapters));
-      if (chapterResult.status === 'rejected') {
-        setChaptersError(adapter?.key === 'comics'
-          ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+      // An EMPTY list is an error too, not just a rejection. The chapter
+      // loaders resolve [] when the source fails (they catch outside the
+      // cache so the failure is never cached), so waiting for 'rejected' meant
+      // a failed list rendered as "No chapters yet" with no Retry, on every
+      // source. A failed source and a title with nothing in it look the same
+      // from here; offering a retry costs the second case nothing. Retry
+      // chapters is a full reload, which really asks the source again: the
+      // loaders throw on an empty answer INSIDE getOrSetCached, so no empty
+      // list is stored for the retry to be served from.
+      if (liveChapters.length === 0) {
+        setChaptersError(chapterResult.status === 'rejected' && comicsDown
+          ? comicsDown
           : 'Could not load chapters. Please try again.');
       }
       setOfflineMode(false);
@@ -1568,7 +1593,17 @@ export default function MangaDetail() {
   );
   const canContinueManga =
     !!mangaProgress && isActiveReadingProgress(mangaProgress.progress);
-  const resumeChapterId = canContinueManga ? mangaProgress!.chapterId : null;
+  // By id first, then by number: a chapter filled in from another scanlation
+  // group changes id once the main group uploads its own copy (see
+  // MangaProgress.chapterNumber), and Continue must still find it.
+  const resumeChapter = canContinueManga
+    ? chapters.find((c) => c.id === mangaProgress!.chapterId) ??
+      (mangaProgress!.chapterNumber
+        ? chapters.find((c) => c.number === mangaProgress!.chapterNumber)
+        : undefined) ??
+      null
+    : null;
+  const resumeChapterId = resumeChapter?.id ?? (canContinueManga ? mangaProgress!.chapterId : null);
 
   // With no network, a chapter is only worth showing as openable if it is
   // downloaded; the rest stay listed, dimmed, so the series still reads as a
@@ -1635,9 +1670,6 @@ export default function MangaDetail() {
     [],
   );
 
-  const resumeChapter = canContinueManga
-    ? chapters.find((c) => c.id === mangaProgress!.chapterId) ?? null
-    : null;
   /**
    * What Start/Continue opens. Live, that is the resume chapter or the first.
    * From the offline copy it must be a chapter that will actually open: the
@@ -1668,24 +1700,64 @@ export default function MangaDetail() {
     (manga?.status || '').toLowerCase().includes('complet') ? '#3B82F6' :
     colors.textSecondary;
 
-  // Web has its own layout but follows the same offline rules as the native
-  // one below: every source can download (atsu through /api/manga-page/)
-  // unless the browser is offline — handleDownloadChapter still refuses a
-  // pass-locked chapter without a pass — the cover is the stored snapshot's
-  // when the page is not live, Continue only when the play target really is
-  // the resume chapter, and the discussion is network-only.
-  if (Platform.OS === 'web') return <MangaDetailWeb
-    manga={manga && displayCover && displayCover !== manga.cover ? { ...manga, cover: displayCover } : manga}
-    loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
-    chapters={displayedChapters} sort={chapterSort} onSort={() => setChapterSort(value => value === 'oldest' ? 'newest' : 'oldest')}
-    saved={saved} canSave={!isAdult} onSave={handleSave} onShare={handleShare}
-    onBack={() => router.canGoBack() ? router.back() : router.replace('/home')}
-    onRetry={() => setReloadAttempt(value => value + 1)} onOpen={openMangaChapter}
-    playChapter={playChapter} resume={canContinueManga && !!playChapter && playChapter.id === resumeChapterId} progress={mangaProgress}
-    offline={offlineMap} canDownload={!restrictToDownloads} onDownload={handleDownloadChapter} gated={gatedChapterIds}
-    discussion={online ? <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" /> : null}
-    feedback={<Toast message={toast} visible={!!toast} onHide={() => { setToast(''); setToastDuration(undefined); }} durationMs={toastDuration} />}
-  />;
+  // Shared by both layouts so they cannot drift. Offline the notice explains
+  // the dimmed rows; online it means this is the downloaded copy, with a
+  // Retry: while the live load is still out (see liveChecking), and then
+  // because the source failed. Retry stays during the check too, since a
+  // native request has no timeout and can hang there.
+  const offlineNotice = !online
+    ? "You're offline — showing your downloaded chapters."
+    : !offlineMode
+      ? null
+      : liveChecking
+        ? "Checking this title's source — showing your downloaded chapters."
+        : "Couldn't reach this title's source — showing your downloaded chapters.";
+  // Download all, for every source: scraped sources used to have no batch
+  // download at all (runBatchDownload routes them through scraped-offline).
+  // Hidden offline, and on the offline copy of a title whose source just
+  // failed, unless a batch is already under way — then it is how you pause it.
+  const showBatchDownload = chapters.length > 0 && online && (!offlineMode || bulkDownloading || batchPaused);
+
+  // Web has its own layout but follows the same rules as the native one
+  // below. It replaced that layout wholesale, so each of these props carries
+  // a native behaviour the web page would otherwise silently lack: the
+  // offline / source-failed notice and its Retry, Download all with its
+  // Pause / Resume (the web-only "keep this tab open" toast and storage-quota
+  // prompt live in handleDownloadAll / runBatchDownload), the dimmed
+  // "needs a connection" rows offline, no download button on a pass-locked
+  // row without a pass (downloading it would sidestep the gate, since a
+  // downloaded chapter opens without a pass check), and the error states'
+  // ways out. Also as native: every source downloads (atsu through
+  // /api/manga-page/) unless the browser is offline, the cover is the stored
+  // snapshot's when the page is not live, Continue only when the play target
+  // really is the resume chapter, and the discussion is network-only.
+  if (Platform.OS === 'web') {
+    const browseComics = { label: 'Browse comics', onPress: () => router.push('/browse') };
+    return <MangaDetailWeb
+      manga={manga && displayCover && displayCover !== manga.cover ? { ...manga, cover: displayCover } : manga}
+      loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
+      chapters={displayedChapters} sort={chapterSort} onSort={() => setChapterSort(value => value === 'oldest' ? 'newest' : 'oldest')}
+      saved={saved} canSave={!isAdult} onSave={handleSave} onShare={handleShare}
+      onBack={() => router.canGoBack() ? router.back() : router.replace('/home')}
+      onRetry={() => setReloadAttempt(value => value + 1)} onOpen={openMangaChapter}
+      playChapter={playChapter} resume={canContinueManga && !!playChapter && playChapter.id === resumeChapterId} progress={mangaProgress}
+      offline={offlineMap} canDownload={!restrictToDownloads} onDownload={handleDownloadChapter} gated={gatedChapterIds}
+      canDownloadChapter={canDownload} downloadsOnly={restrictToDownloads}
+      notice={offlineNotice ? { text: offlineNotice, ...(online ? { actionLabel: 'Retry', onAction: onTap(retryLive) } : {}) } : undefined}
+      batch={showBatchDownload ? {
+        state: batchPaused ? 'paused' : bulkDownloading ? 'running' : 'idle',
+        progress: batchProgress,
+        onPress: () => { void handleDownloadAll(); },
+      } : undefined}
+      errorLinks={[
+        ...(adapter?.key === 'comics' && online ? [browseComics] : []),
+        ...(!online ? [{ label: 'Open your downloads', onPress: () => router.push('/downloads') }] : []),
+      ]}
+      chaptersErrorLinks={adapter?.key === 'comics' ? [browseComics] : []}
+      discussion={online ? <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" /> : null}
+      feedback={<Toast message={toast} visible={!!toast} onHide={() => { setToast(''); setToastDuration(undefined); }} durationMs={toastDuration} />}
+    />;
+  }
 
   if (loading) return <DetailSkeleton />;
 
@@ -1827,16 +1899,11 @@ export default function MangaDetail() {
         <View style={s.card}>
 
           {/* In flow rather than floating, so it pushes the page down instead
-              of covering it. Offline it explains the dimmed rows; online it
-              means the source failed and this is the downloaded copy. */}
-          {(!online || offlineMode) && (
+              of covering it. See offlineNotice for what it says when. */}
+          {offlineNotice && (
             <View style={s.offlineNotice} accessibilityRole="summary">
               <View style={s.offlineDot} />
-              <Text style={s.offlineText}>
-                {!online
-                  ? "You're offline — showing your downloaded chapters."
-                  : "Couldn't reach this title's source — showing your downloaded chapters."}
-              </Text>
+              <Text style={s.offlineText}>{offlineNotice}</Text>
               {online ? (
                 <TouchableOpacity accessibilityRole="button" onPress={onTap(retryLive)} hitSlop={8}>
                   <Text style={s.offlineAction}>Retry</Text>
@@ -1989,12 +2056,10 @@ export default function MangaDetail() {
                 openMangaChapter(playChapter, canContinueManga && playChapter.id === resumeChapterId)
               }
             />
-            {/* Every source: scraped sources used to have no batch download at
-                all (runBatchDownload routes them through scraped-offline).
-                Hidden offline, and on the offline copy of a title whose source
-                just failed, unless a batch is already under way. Web renders
-                MangaDetailWeb above, so this bar is native-only. */}
-            {chapters.length > 0 && online && (!offlineMode || bulkDownloading || batchPaused) && (
+            {/* See showBatchDownload. Web renders MangaDetailWeb above, which
+                gets the same control through its `batch` prop, so this bar
+                is native-only. */}
+            {showBatchDownload && (
               <TouchableOpacity
                 style={s.dlOutlineBtn}
                 activeOpacity={0.85}

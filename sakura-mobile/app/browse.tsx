@@ -58,8 +58,9 @@ type BrowseSource = 'manga' | ScrapedSource;
  * (manga or any scraped source) and its query, rather than always falling back
  * to the manga catalogue. `q` drives the genre sections (search), while `kind`
  * drives the catalogue sections (New Releases / Today's Pick / Trending /
- * Popular). Only the paginated manga catalogue reports `hasMore`; every other
- * source returns a single generous batch.
+ * Popular). The paginated manga catalogue and scraped sources with a paged
+ * `browse` (manhwa) report `hasMore`; every other source returns a single
+ * generous batch.
  */
 async function loadBrowse(
   source: BrowseSource,
@@ -68,6 +69,7 @@ async function loadBrowse(
   page: number,
 ): Promise<{ items: ContentItem[]; hasMore: boolean }> {
   const adapter = getScrapedAdapter(source);
+  if (adapter?.browse) return adapter.browse(page, PAGE_SIZE, q || undefined);
   if (adapter) {
     const items = q ? await adapter.search(q, PAGE_SIZE) : await adapter.trending(PAGE_SIZE);
     return { items, hasMore: false };
@@ -132,6 +134,10 @@ export default function BrowseScreen() {
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState('');
   const requestVersion = useRef(0);
+  // Sources that list one series under several ids (manhwa: `mr:` and `cz:`)
+  // also dedupe by title, so a series met again on a later page is not shown
+  // twice. A stable function from the registry, so it does not churn loadPage.
+  const titleKey = getScrapedAdapter(source)?.titleKey;
 
   const loadPage = useCallback(
     async (p: number) => {
@@ -148,8 +154,11 @@ export default function BrowseScreen() {
           const seen = new Set<string>();
           return (p === 0 ? mapped : [...prev, ...mapped]).filter(item => {
             const key = `${item.source}-${item.id}`;
-            if (seen.has(key)) return false;
+            const tk = titleKey?.(item.title);
+            const tKey = tk ? `${item.source}~${tk}` : '';
+            if (seen.has(key) || (tKey && seen.has(tKey))) return false;
             seen.add(key);
+            if (tKey) seen.add(tKey);
             return true;
           });
         });
@@ -162,7 +171,7 @@ export default function BrowseScreen() {
         if (version === requestVersion.current) { setLoading(false); setLoadingMore(false); }
       }
     },
-    [source, q, kind],
+    [source, q, kind, titleKey],
   );
 
   useEffect(() => {
@@ -171,14 +180,25 @@ export default function BrowseScreen() {
     return () => { requestVersion.current += 1; };
   }, [loadPage]);
 
+  // `page` only advances when a page loads, so until one has, the next page to
+  // ask for is 0 again — not `page + 1`. After a failed first page the native
+  // FlatList fires onEndReached on its empty list, and `page + 1` silently
+  // skipped page 0 (for manhwa: /popular and the first discovery words).
+  const nextPage = items.length ? page + 1 : 0;
+
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMore || loading) return;
-    const next = page + 1;
     setLoadingMore(true);
-    loadPage(next);
-  }, [loadingMore, hasMore, loading, page, loadPage]);
+    loadPage(nextPage);
+  }, [loadingMore, hasMore, loading, nextPage, loadPage]);
 
-  if (Platform.OS === 'web') return <BrowseCatalogWeb key={`${source}-${q}-${kind}`} title={title} source={source} items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={() => { if (loading || loadingMore) return; if (!items.length) setLoading(true); else setLoadingMore(true); void loadPage(items.length ? page + 1 : 0); }} onLoadMore={loadMore}/>;
+  const retry = useCallback(() => {
+    if (loading || loadingMore) return;
+    if (!items.length) setLoading(true); else setLoadingMore(true);
+    void loadPage(nextPage);
+  }, [loading, loadingMore, items.length, nextPage, loadPage]);
+
+  if (Platform.OS === 'web') return <BrowseCatalogWeb key={`${source}-${q}-${kind}`} title={title} source={source} items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={retry} onLoadMore={loadMore}/>;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -218,13 +238,28 @@ export default function BrowseScreen() {
             renderItem={({ item }) => <GridCard item={item} />}
             ListEmptyComponent={
               <View style={s.center}>
-                <Text style={{ color: colors.textSecondary }}>Nothing here yet.</Text>
+                <Text style={{ color: colors.textSecondary }}>{error || 'Nothing here yet.'}</Text>
+                {!!error && (
+                  <TouchableOpacity onPress={onTap(retry)} style={s.retryBtn} hitSlop={8}>
+                    <Text style={[s.retryText, { color: colors.primary }]}>Try again</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             }
             ListFooterComponent={
               loadingMore ? (
                 <View style={s.footer}>
                   <ActivityIndicator color={colors.primary} size="small" />
+                </View>
+              ) : error && items.length > 0 ? (
+                // Without this a failed "load more" was invisible on native:
+                // onEndReached does not fire again for the same content, so
+                // the grid just stopped with no way to continue.
+                <View style={s.footer}>
+                  <Text style={{ color: colors.textSecondary }}>{error}</Text>
+                  <TouchableOpacity onPress={onTap(retry)} style={s.retryBtn} hitSlop={8}>
+                    <Text style={[s.retryText, { color: colors.primary }]}>Try again</Text>
+                  </TouchableOpacity>
                 </View>
               ) : null
             }
@@ -273,6 +308,15 @@ const s = StyleSheet.create({
   footer: {
     paddingVertical: 20,
     alignItems: 'center',
+  },
+  retryBtn: {
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  retryText: {
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.semibold,
   },
 });
 

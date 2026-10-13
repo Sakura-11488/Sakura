@@ -169,8 +169,12 @@ export async function fetchPopularManga(limit = 20): Promise<AtsuItem[]> {
 
 export async function fetchMangaPagedList(kind: 'trending' | 'popular', page: number): Promise<AtsuItem[]> {
   const url = `${BASE}/api/infinite/${kind}?page=${page}&types=${encodeURIComponent(TYPES)}`;
+  // null when atsu could not be reached; [] when it answered with an empty page.
   const items = await getOrSetCached<AtsuItem[]>(
-    `manga:paged:${kind}:${page}`,
+    // v2: the previous build returned [] on a failed fetch and cached it here.
+    // That was harmless while [] fell through to MangaDex, but [] now means
+    // "end of catalogue" (below), so those entries must not be read.
+    `manga:paged:v2:${kind}:${page}`,
     5 * 60 * 1000,
     async () => {
       const res = await atsuFetch(url);
@@ -181,8 +185,15 @@ export async function fetchMangaPagedList(kind: 'trending' | 'popular', page: nu
       return (json.items || []) as AtsuItem[];
     },
     { staleIfError: true },
-  ).catch(() => [] as AtsuItem[]);
-  return items.length > 0 ? items : mangaDexList(kind, page, 24);
+  ).catch(() => null);
+  if (items && items.length > 0) return items;
+  // atsu answering with no items is the end of its catalogue (live: page 51
+  // onwards is {"items":[]}). On web the MangaDex fallback below can only
+  // throw (see mangaDexReachable), which turned reaching the end of the list
+  // into "This shelf could not load"; [] makes browse stop paging instead.
+  // A failed atsu fetch (null) still goes on to MangaDex, and throws on web.
+  if (items && !mangaDexReachable()) return [];
+  return mangaDexList(kind, page, 24);
 }
 
 export function toCarouselItem(item: AtsuItem) {
@@ -235,7 +246,48 @@ export interface MangaChapter {
   coverUrl?: string;
 }
 
-/** atsu allChapters merges every scanlation upload; keep one feed + one row per chapter number. */
+const rawChapterNumber = (c: any): number => Number(c.number ?? c.num ?? 0);
+const rawPageCount = (c: any): number => Number(c.pageCount ?? c.pages ?? 0);
+const TITLE_NUMBER = /^\s*(?:chapter|ch\.?|episode|ep\.?)\s*(\d+(?:\.\d+)?)/i;
+/** The number a row's own title gives it ("Chapter 12", "Ep. 12 - …"), or null when it names none. */
+function rawTitleNumber(c: any): number | null {
+  const m = TITLE_NUMBER.exec(String(c.title || ''));
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * atsu allChapters merges every scanlation group's uploads. One group is the
+ * primary feed — the one with the most rows, preferring "Chapter N" titles —
+ * so numbering and titles stay consistent, and the chapters it lacks are then
+ * filled in from the other groups, one row per number.
+ *
+ * The fill is what keeps the newest chapters visible. Groups upload at
+ * different speeds and the biggest is often a release or two behind; showing
+ * it alone hid exactly the chapters readers come back for (live: Lookism's
+ * primary stopped at 624 while three groups had 628, Stellar Swordmaster lacked
+ * 141-142, Eleceed 421-422).
+ *
+ * Filled: every number above the primary's newest, and whole numbers it
+ * skipped — unless it uploaded that chapter as parts (Lookism's primary has
+ * 510.1 and 510.2; other groups' 510 is the same pages in one upload). Not
+ * filled: another group's fractional numbers inside the primary's range. Live,
+ * those were one group's re-split parts of chapters the primary already has
+ * (Lookism 1.1-5.3, interleaved through its first five chapters) and one-page
+ * notices (Eleceed 187.5, 408.5). Nor, above the primary's newest, a part of a
+ * chapter it already has whole (Northern Blade: it has 202, another group's
+ * 202.2 is the back half of its own split 202). Rows atsu reports with zero
+ * pages never fill a gap: live they were placeholders a later upload replaced,
+ * and could only open an empty reader.
+ *
+ * A row is only as good as its `number`, which is all that lines groups up.
+ * One whose title names a different number ("Episode 158" at 170) is counted
+ * on another scheme, and never fills: live, one Time-Limited Genius Dark
+ * Knight group's numbers ran 12 ahead of everyone's, so its re-numbered copies
+ * of 158-168 would have shown up as eleven new chapters 170-180. And where
+ * several rows could fill one number, one whose title names that number wins
+ * over one that does not: Villainess Turns the Hourglass has "Episode 5" and
+ * "Epilogue 5" both at 5, and the epilogue has more pages.
+ */
 function pickScanlationChapters(raw: any[]): any[] {
   if (raw.length === 0) return raw;
 
@@ -258,27 +310,58 @@ function pickScanlationChapters(raw: any[]): any[] {
       best = items;
     }
   }
-  return dedupeChaptersByNumber(best);
+
+  const primary = dedupeChaptersByNumber(best);
+  const have = new Set(primary.map(rawChapterNumber));
+  let newest = -Infinity;
+  // Fractional numbers per whole number. Two or more means the chapter was
+  // uploaded in parts; a lone N.5 is an extra, and N itself is still missing.
+  const partsOf = new Map<number, number>();
+  for (const num of have) {
+    if (num > newest) newest = num;
+    if (Number.isFinite(num) && !Number.isInteger(num)) {
+      partsOf.set(Math.floor(num), (partsOf.get(Math.floor(num)) || 0) + 1);
+    }
+  }
+  // `have` holds every number in the primary group, so this also skips its own rows.
+  const candidates = raw.filter((c) => {
+    const num = rawChapterNumber(c);
+    if (have.has(num) || !Number.isFinite(num)) return false;
+    if ((c.pageCount ?? c.pages) != null && rawPageCount(c) <= 0) return false;
+    const named = rawTitleNumber(c);
+    // "Chapter 44 Part 2" at 44.2 agrees; only the whole number is in the title.
+    if (named !== null && named !== num && named !== Math.floor(num)) return false;
+    if (!Number.isInteger(num)) return num > newest && !have.has(Math.floor(num));
+    return num > newest || (partsOf.get(num) || 0) < 2;
+  });
+  // Candidates' titles name their own number or none (see above), so a number
+  // with a named candidate drops its unnamed ones ("Epilogue 5", "Hunt 22").
+  const namedNums = new Set(candidates.filter((c) => rawTitleNumber(c) !== null).map(rawChapterNumber));
+  const fill = candidates.filter((c) => rawTitleNumber(c) !== null || !namedNums.has(rawChapterNumber(c)));
+  // Numbers in `fill` are disjoint from the primary's, so deduping the union
+  // only picks the best of the other groups' rows (most pages, then newest)
+  // and never displaces a primary row.
+  return fill.length ? dedupeChaptersByNumber([...primary, ...fill]) : primary;
 }
 
 function dedupeChaptersByNumber(raw: any[]): any[] {
   const byNum = new Map<number, any>();
   for (const c of raw) {
-    const num = Number(c.number ?? c.num ?? 0);
+    const num = rawChapterNumber(c);
     const prev = byNum.get(num);
     if (!prev) {
       byNum.set(num, c);
       continue;
     }
-    const prevPages = Number(prev.pageCount ?? prev.pages ?? 0);
-    const nextPages = Number(c.pageCount ?? c.pages ?? 0);
+    const prevPages = rawPageCount(prev);
+    const nextPages = rawPageCount(c);
     const prevAt = Number(prev.createdAt || 0);
     const nextAt = Number(c.createdAt || 0);
     if (nextPages > prevPages || (nextPages === prevPages && nextAt > prevAt)) {
       byNum.set(num, c);
     }
   }
-  return [...byNum.values()].sort((a, b) => Number(a.number ?? a.num) - Number(b.number ?? b.num));
+  return [...byNum.values()].sort((a, b) => rawChapterNumber(a) - rawChapterNumber(b));
 }
 
 function mapRawChapter(c: any): MangaChapter {
@@ -325,9 +408,11 @@ export async function fetchMangaChapterThumbnail(
   chapterId: string,
 ): Promise<string | null> {
   // The cache holds the platform-neutral CDN URL; proxying is applied on the
-  // way out so a cached value is right on either platform.
+  // way out so a cached value is right on either platform. v2: the previous
+  // build cached null here for an hour when atsu answered non-2xx or with no
+  // pages (see the note above fetchMangaDetail).
   const url = await getOrSetCached<string>(
-    `manga:thumb:${mangaId}:${chapterId}`,
+    `manga:thumb:v2:${mangaId}:${chapterId}`,
     60 * 60 * 1000,
     () => fetchChapterFirstPageUrl(mangaId, chapterId),
     { staleIfError: true },
@@ -352,10 +437,17 @@ export async function fetchMangaChapterThumbnail(
  *
  * The exported functions keep their old contract (null / [] on failure) by
  * catching OUTSIDE the cache.
+ *
+ * The keys are versioned because the previous build still had those catching
+ * loaders, and its null / [] entries sit in clients' persisted caches under
+ * the old keys. This code cannot tell them from a real value — a fresh hit is
+ * returned without running the loader — so a new key is the only way to make
+ * every client drop them. manga:list and manga:search keep their keys: their
+ * loaders never cached a failure.
  */
 export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> {
   return getOrSetCached<MangaDetail>(
-    `manga:detail:${id}`,
+    `manga:detail:v2:${id}`,
     30 * 60 * 1000,
     async () => {
       try {
@@ -407,7 +499,9 @@ export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> 
 
 export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
   const chapters = await getOrSetCached<MangaChapter[]>(
-    `manga:chapters:v2:${id}`,
+    // v3 also drops lists picked before pickScanlationChapters filled in the
+    // newest chapters from other groups.
+    `manga:chapters:v3:${id}`,
     15 * 60 * 1000,
     async () => {
       const res = await atsuFetch(`/api/manga/allChapters?mangaId=${encodeURIComponent(id)}`);

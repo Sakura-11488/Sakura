@@ -94,6 +94,22 @@ function mapListItem(item: ProxyListItem): ContentItem {
   };
 }
 
+/**
+ * Thrown inside a cached loader so an empty answer is never cached, then
+ * turned back into null / [] outside the cache — so callers see exactly what
+ * they always did: null / [] for "nothing there", a rejection for a failed
+ * request (the detail screen words the two differently). Tagged rather than
+ * subclassed: `instanceof` on Error subclasses is unreliable once Babel's
+ * class transform has been through them. Same pattern as lib/manhwa.ts.
+ */
+function emptyAnswer(message: string): Error {
+  return Object.assign(new Error(message), { comicsEmptyAnswer: true });
+}
+
+function isEmptyAnswer(error: unknown): boolean {
+  return !!error && (error as { comicsEmptyAnswer?: unknown }).comicsEmptyAnswer === true;
+}
+
 export async function fetchTrendingComics(limit = 24): Promise<ContentItem[]> {
   return getOrSetCached<ContentItem[]>(
     `comics:trending:${limit}`,
@@ -123,9 +139,19 @@ export async function searchComics(query: string, limit = 24): Promise<ContentIt
   );
 }
 
+/*
+ * Detail, chapters and pages never cache an empty answer: getOrSetCached keeps
+ * whatever a loader returns as fresh for the whole TTL, and the scraper's
+ * "nothing" is also what an upstream hiccup behind it looks like, so a cached
+ * null / [] pinned a comic on "not found" / no issues / a blank reader for up
+ * to an hour. The keys are versioned (v2) because the previous release did
+ * cache those under the old keys, and on web that cache lives in localStorage
+ * across deploys; a new key strands the poisoned entries until their TTL
+ * runs out. Bump the version again whenever a release caches something wrong.
+ */
 export async function fetchComicDetail(id: string): Promise<MangaDetail | null> {
-  return getOrSetCached<MangaDetail | null>(
-    `comics:detail:${id}`,
+  return getOrSetCached<MangaDetail>(
+    `comics:detail:v2:${id}`,
     30 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id });
@@ -134,7 +160,7 @@ export async function fetchComicDetail(id: string): Promise<MangaDetail | null> 
         (data as { comic?: ProxyDetail }).comic ||
         (data as { manga?: ProxyDetail }).manga ||
         (data as ProxyDetail);
-      if (!detail || !detail.id) return null;
+      if (!detail || !detail.id) throw emptyAnswer('Comic not found.');
       const authors =
         Array.isArray(detail.authors) && detail.authors.length
           ? detail.authors.join(', ')
@@ -150,17 +176,21 @@ export async function fetchComicDetail(id: string): Promise<MangaDetail | null> 
       };
     },
     { staleIfError: true },
-  );
+  ).catch((error) => {
+    if (isEmptyAnswer(error)) return null;
+    throw error;
+  });
 }
 
 export async function fetchComicChapters(id: string): Promise<MangaChapter[]> {
   return getOrSetCached<MangaChapter[]>(
-    `comics:chapters:${id}`,
+    `comics:chapters:v2:${id}`,
     15 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id, limit: '500', offset: '0' });
       const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
       const chapters = data.issues || data.chapters || [];
+      if (!chapters.length) throw emptyAnswer('No issues.');
       return chapters.map((c, idx) => {
         const num = c.number != null ? Number(c.number) : chapters.length - idx;
         return {
@@ -173,21 +203,31 @@ export async function fetchComicChapters(id: string): Promise<MangaChapter[]> {
       });
     },
     { staleIfError: true },
-  );
+  ).catch((error) => {
+    if (isEmptyAnswer(error)) return [] as MangaChapter[];
+    throw error;
+  });
 }
 
 export async function fetchComicPages(comicId: string, rawChapterId: string): Promise<string[]> {
+  // Still resolves [] for an issue with no pages, but never caches it (see
+  // fetchComicDetail): a cached [] kept the issue, and its download, blank for
+  // the full hour.
   return getOrSetCached<string[]>(
-    `comics:pages:v1:${comicId}:${rawChapterId}`,
+    `comics:pages:v2:${comicId}:${rawChapterId}`,
     60 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id: comicId, chapterId: rawChapterId });
       const data = await requestProxy<ProxyPagesResponse>(`/pages?${params.toString()}`);
-      const pages = data.pages || data.images || [];
-      return pages
+      const pages = (data.pages || data.images || [])
         .filter((p): p is string => typeof p === 'string' && p.length > 0)
         .map((p) => proxyComicImage(p));
+      if (!pages.length) throw emptyAnswer('No pages.');
+      return pages;
     },
     { staleIfError: true },
-  );
+  ).catch((error) => {
+    if (isEmptyAnswer(error)) return [] as string[];
+    throw error;
+  });
 }

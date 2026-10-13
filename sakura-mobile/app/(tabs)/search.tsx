@@ -36,6 +36,13 @@ import { useContentPrefs } from '@/lib/content-prefs';
 import MangaCatalogWeb from '@/components/discovery/MangaCatalogWeb';
 
 const BASE_FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
+/**
+ * Manhwa shown per search. Manhwa titles live only in the scraper, not in the
+ * atsu catalogue, so this list is the only way to find most of them; it used
+ * to be cut to 10, which hid series users searched for by name. A full answer
+ * also offers "See all manhwa", the browse screen paging the same query.
+ */
+const MANHWA_SEARCH_LIMIT = 24;
 type Filter = (typeof BASE_FILTERS)[number] | '18+';
 
 type SearchResult = {
@@ -95,6 +102,8 @@ export default function SearchTabScreen() {
   const [loading, setLoading] = useState(false);
   /** Sources whose request rejected on the last search (outage, not "no match"). */
   const [failedSources, setFailedSources] = useState<string[]>([]);
+  /** The query whose manhwa answer came back full, so the scraper may hold more. */
+  const [manhwaMoreQuery, setManhwaMoreQuery] = useState<string | null>(null);
   const [messagingUser, setMessagingUser] = useState<string | null>(null);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
   const [discoverLoading, setDiscoverLoading] = useState(true);
@@ -120,6 +129,7 @@ export default function SearchTabScreen() {
     const q = raw.trim();
     if (q.length < 2) {
       setResults([]);
+      setManhwaMoreQuery(null);
       setLoading(false);
       setFailedSources([]);
       return;
@@ -134,12 +144,13 @@ export default function SearchTabScreen() {
           searchUsersByUsername(q, 12),
           // Unconditional: manhwa is SFW, and it carries titles the atsu
           // catalogue doesn't have at all.
-          searchManhwa(q, 12),
+          searchManhwa(q, MANHWA_SEARCH_LIMIT),
           allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
         ]);
       if (requestId !== searchRequestRef.current) return;
 
       const merged: SearchResult[] = [];
+      let manhwaMore: string | null = null;
 
       if (mangaRes.status === 'fulfilled') {
         mangaRes.value.slice(0, 10).forEach((item) => {
@@ -193,7 +204,10 @@ export default function SearchTabScreen() {
           });
       }
       if (manhwaRes.status === 'fulfilled') {
-        manhwaRes.value.slice(0, 10).forEach((item) => {
+        // Less than a full answer is everything the scraper has for this
+        // query, so only a full one is worth a "See all".
+        if (manhwaRes.value.length >= MANHWA_SEARCH_LIMIT) manhwaMore = q;
+        manhwaRes.value.slice(0, MANHWA_SEARCH_LIMIT).forEach((item) => {
           merged.push({
             key: `manhwa-${item.id}`,
             title: item.title,
@@ -233,9 +247,11 @@ export default function SearchTabScreen() {
       setFailedSources(failed);
 
       setResults(merged);
+      setManhwaMoreQuery(manhwaMore);
     } catch {
       if (requestId !== searchRequestRef.current) return;
       setResults([]);
+      setManhwaMoreQuery(null);
       setFailedSources(['Search']);
     } finally {
       if (requestId === searchRequestRef.current) setLoading(false);
@@ -303,6 +319,19 @@ export default function SearchTabScreen() {
   useEffect(() => {
     if (!allowAdult && filter === '18+') setFilter('All');
   }, [allowAdult, filter]);
+
+  // Manhwa results are typed 'manga', so they show under All and Manga only.
+  const showManhwaMore =
+    !!manhwaMoreQuery && (filter === 'All' || filter === 'Manga') && filteredResults.length > 0;
+  const openManhwaBrowse = useCallback(() => {
+    if (!manhwaMoreQuery) return;
+    // Same route shape as the home tab's "View all": browse pages a manhwa
+    // query through the adapter's `browse`, past what one search returns.
+    router.push({
+      pathname: '/browse',
+      params: { title: `Manhwa · ${manhwaMoreQuery}`, source: 'manhwa', q: manhwaMoreQuery },
+    } as never);
+  }, [manhwaMoreQuery, router]);
 
   const openUserChat = useCallback(
     async (user: UserSearchResult) => {
@@ -463,6 +492,8 @@ export default function SearchTabScreen() {
         resultTitle: { color: colors.text, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
         resultMeta: { color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.body },
         messageHint: { color: colors.primary, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium },
+        seeAllRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14 },
+        seeAllText: { flex: 1, color: colors.primary, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
         loader: { paddingTop: 48, alignItems: 'center' },
         empty: { paddingTop: 24 },
       }),
@@ -625,6 +656,21 @@ export default function SearchTabScreen() {
                     </Animated.View>
                   );
                 }}
+                ListFooterComponent={
+                  showManhwaMore ? (
+                    <TouchableOpacity
+                      style={[s.resultRow, s.seeAllRow]}
+                      activeOpacity={0.85}
+                      accessibilityRole="link"
+                      onPress={openManhwaBrowse}
+                    >
+                      <Text style={s.seeAllText} numberOfLines={1}>
+                        See all manhwa for “{manhwaMoreQuery}”
+                      </Text>
+                      <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+                    </TouchableOpacity>
+                  ) : null
+                }
                 ListEmptyComponent={
                   failedSources.length ? (
                     // An outage must read as an outage. Saying "no results"

@@ -44,6 +44,14 @@ export type MangaProgress = {
   updatedAt: number;
   /** 'comics' | 'hentai' for droplet-scraped sources; absent for atsu manga. */
   source?: string;
+  /**
+   * Chapter number when the reader knew it. The id alone is not stable for
+   * atsu: the newest chapters can be filled in from another scanlation group
+   * (see pickScanlationChapters), and once the main group uploads that number
+   * its own row — with a different id — replaces the filled one. The title
+   * page falls back to this number so Continue still finds the chapter.
+   */
+  chapterNumber?: number;
 };
 
 type ProgressStore = {
@@ -205,6 +213,7 @@ export async function setMangaReadProgress(entry: {
   page: number;
   totalPages: number;
   source?: string;
+  chapterNumber?: number;
 }): Promise<void> {
   if (!entry.mangaId || !entry.chapterId) return;
   await ensureLoaded();
@@ -222,6 +231,7 @@ export async function setMangaReadProgress(entry: {
     progress,
     updatedAt: Date.now(),
     source: entry.source ?? mem.manga[entry.mangaId]?.source,
+    ...(entry.chapterNumber && entry.chapterNumber > 0 ? { chapterNumber: entry.chapterNumber } : {}),
   };
   await persist();
 }

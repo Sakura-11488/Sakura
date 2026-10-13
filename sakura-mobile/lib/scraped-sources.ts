@@ -24,6 +24,8 @@ import {
   fetchManhwaChapters,
   fetchManhwaPages,
   proxyManhwaImage,
+  browseManhwa,
+  manhwaTitleKey,
 } from '@/lib/manhwa';
 
 /**
@@ -68,6 +70,26 @@ export interface ScrapedSourceAdapter {
   detailKind: string;
   trending(limit?: number): Promise<ContentItem[]>;
   search(query: string, limit?: number): Promise<ContentItem[]>;
+  /**
+   * Optional page-aware listing for the full-grid browse screen. `page` counts
+   * from 0; a query pages through its search results, no query pages through
+   * the source's catalogue. Titles may repeat across pages (the screen dedupes
+   * by id and `titleKey`). Rejects when the page could not be loaded at all,
+   * which the screen shows as a retry rather than the end. A source without
+   * it is shown as one `trending` / `search` batch with no "Load more".
+   */
+  browse?(
+    page: number,
+    pageSize: number,
+    query?: string,
+  ): Promise<{ items: ContentItem[]; hasMore: boolean }>;
+  /**
+   * Optional loose title identity for deduping a `browse` grid across pages,
+   * for sources that list one series under several ids ('' = no key). Manhwa
+   * needs it: the same series comes back as `mr:` from one query and `cz:`
+   * from another.
+   */
+  titleKey?(title: string): string;
   detail(id: string): Promise<MangaDetail | null>;
   chapters(id: string): Promise<MangaChapter[]>;
   pages(contentId: string, chapterId: string): Promise<string[]>;
@@ -108,6 +130,9 @@ export const SCRAPED_SOURCES: Record<ScrapedSource, ScrapedSourceAdapter> = {
     detailKind: 'Manhwa',
     trending: fetchTrendingManhwa,
     search: searchManhwa,
+    // `/popular` alone is a fixed 19 titles; this pages through the rest.
+    browse: browseManhwa,
+    titleKey: manhwaTitleKey,
     detail: fetchManhwaDetail,
     chapters: fetchManhwaChapters,
     pages: fetchManhwaPages,

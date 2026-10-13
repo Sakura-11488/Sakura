@@ -44,6 +44,8 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true, ...(process.env.SAKURA_BROWSER_EXECUTABLE ? { executablePath: process.env.SAKURA_BROWSER_EXECUTABLE } : {}) });
 const context = await browser.newContext({ viewport: { width: 1100, height: 900 } });
 let holdSource = false;
+let failSource = false; // Source requests fail outright (checked before holdSource).
+let failChapters = false; // The chapter list comes back empty, as a failed source does.
 const errors = [];
 context.on('page', page => { page.on('pageerror', error => errors.push(error.message)); page.on('dialog', dialog => dialog.accept()); });
 await context.route('**/*', async route => {
@@ -51,11 +53,12 @@ await context.route('**/*', async route => {
   const url = new URL(request.url());
   if (url.origin === base) return route.continue();
   if (url.pathname.endsWith('/functions/v1/web-content-proxy')) {
+    if (failSource) return route.abort();
     if (holdSource) return; // Offline title must render even if navigator.onLine is true.
     const payload = request.postDataJSON();
     let data = {};
     if (payload.path === '/api/manga/page') data = { mangaPage: { id: 'offline-fixture', title: 'Offline Test Manga', poster: { image: '/static/posters/fixture.png' }, synopsis: 'A local test title.', genres: ['Adventure'], status: 'Completed', type: 'Manga' } };
-    if (payload.path === '/api/manga/allChapters') data = { chapters: [1, 2].map(n => ({ id: `ch${n}`, number: n, title: `Chapter ${n}`, pageCount: 2 })) };
+    if (payload.path === '/api/manga/allChapters' && !failChapters) data = { chapters: [1, 2].map(n => ({ id: `ch${n}`, number: n, title: `Chapter ${n}`, pageCount: 2 })) };
     if (payload.path === '/api/read/chapter') data = { readChapter: { pages: [{ image: '/static/pages/fixture/ch1/1.png' }, { image: '/static/pages/fixture/ch1/2.png' }] } };
     if (payload.source === 'manhwa') {
       if (payload.path === '/details') data = { id: 'mr:offline-fixture', title: 'Offline Test Manhwa', cover: 'https://www.mangaread.org/wp-content/uploads/fixture.png', status: 'Completed' };
@@ -76,6 +79,15 @@ async function pollPage(predicate) {
   throw new Error(`Timed out waiting for browser storage: ${predicate}`);
 }
 try {
+  // A failed chapter list must say so and offer a Retry that really asks the
+  // source again (an empty list is never cached), not settle on "No chapters yet".
+  failChapters = true;
+  await page.goto(`${base}/app/manga/offline-fixture`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('Could not load chapters. Please try again.', { exact: true }).waitFor();
+  failChapters = false;
+  await page.getByRole('button', { name: 'Retry chapters', exact: true }).click();
+  await page.getByRole('button', { name: 'Download Chapter 1', exact: true }).waitFor();
+  console.log('PASS: failed chapter list shows Retry chapters, which refetches');
   await page.goto(`${base}/app/manga/offline-fixture`, { waitUntil: 'domcontentloaded' });
   await page.getByText('Offline Test Manga', { exact: true }).first().waitFor();
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
@@ -100,6 +112,17 @@ try {
   holdSource = true;
   await page.goto(`${base}/app/manga/offline-fixture`, { waitUntil: 'domcontentloaded' });
   await page.getByText('Offline Test Manga', { exact: true }).first().waitFor({ timeout: 5000 });
+  // The downloaded copy says why it is showing and hides Download all. While
+  // the live load is still out that is a check, not a failure...
+  await page.getByText("Checking this title's source — showing your downloaded chapters.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Download all', exact: true }).count(), 0);
+  // ...and once the source has failed (here: Retry, answered with an error) it says so.
+  failSource = true;
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await page.getByText("Couldn't reach this title's source — showing your downloaded chapters.", { exact: true }).waitFor();
+  await page.getByText("Still can't reach this title's source", { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Download all', exact: true }).count(), 0);
+  failSource = false;
   console.log('PASS: saved title renders while source requests hang; Clear Cache preserves user data');
   // Close the tab to drop all module state; fresh navigations must boot from SW.
   await page.close();
@@ -107,8 +130,9 @@ try {
   page = await context.newPage();
   await page.goto(`${base}/app/manga/offline-fixture`, { waitUntil: 'domcontentloaded' });
   await page.getByText('Offline Test Manga', { exact: true }).first().waitFor();
+  await page.getByText("You're offline — showing your downloaded chapters.", { exact: true }).waitFor();
   await page.getByText('Not downloaded · needs a connection', { exact: true }).waitFor();
-  await page.getByText('Start Reading', { exact: true }).click();
+  await page.getByRole('button', { name: 'Start reading', exact: true }).click();
   await page.waitForURL('**/app/chapter/**');
   await page.waitForFunction(() => [...document.querySelectorAll('img')].some(img => img.src.includes('/__offline/atsu/') && img.complete && img.naturalWidth > 0));
   await page.screenshot({ path: '/tmp/sakura-offline-reader.png' });
@@ -129,7 +153,7 @@ try {
   holdSource = false;
   await context.setOffline(false);
   await page.goto(`${base}/app/manga/offline-fixture`, { waitUntil: 'domcontentloaded' });
-  await page.getByText('Download', { exact: true }).click();
+  await page.getByRole('button', { name: 'Download all', exact: true }).click();
   await pollPage(async () => {
     const response = await (await caches.open('sakura-offline-v1')).match('/app/__offline/manga-manifest.json');
     const chapters = response && (await response.json()).chapters;
@@ -153,7 +177,7 @@ try {
   await page.goto(`${base}/app/library`, { waitUntil: 'domcontentloaded' });
   await page.getByText('Offline Test Manhwa', { exact: true }).click();
   await page.waitForURL('**source=manhwa');
-  await page.getByText('Start Reading', { exact: true }).click();
+  await page.getByRole('button', { name: 'Start reading', exact: true }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('img')].some(img => img.src.includes('/__offline/manhwa/') && img.complete && img.naturalWidth > 0));
   assert.deepEqual(errors, []);
   console.log('PASS: manhwa download and offline reader through source-aware Library navigation');

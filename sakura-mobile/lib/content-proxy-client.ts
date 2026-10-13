@@ -42,11 +42,50 @@ async function parseInvokeError(error: { message?: string; context?: Response })
   return message || 'Content proxy request failed.';
 }
 
-/** Invoke Supabase edge function so the browser never hits upstream APIs directly. */
+/**
+ * Longest one content-proxy call may take. The edge function has no upstream
+ * timeout of its own, so a stalled atsu / droplet request used to hold a title
+ * on "Loading series…" for as long as Supabase let the function run (75 s and
+ * more) before any error, retry or stale copy could show. 25 s is well past a
+ * healthy answer — the 2000-chapter manhwa lists included — while leaving the
+ * user a Try again they can act on.
+ */
+export const CONTENT_PROXY_TIMEOUT_MS = 25_000;
+
+/**
+ * Invoke Supabase edge function so the browser never hits upstream APIs directly.
+ *
+ * Rejects (name 'TimeoutError') after CONTENT_PROXY_TIMEOUT_MS. getOrSetCached
+ * stores only what a loader returns, so a loader that lets the rejection
+ * through caches nothing and serves its stale copy instead (staleIfError).
+ */
 export async function invokeContentProxy<T>(req: ContentProxyRequest): Promise<T> {
-  const { data, error } = await supabase.functions.invoke('web-content-proxy', {
-    body: req,
+  // The signal stops the request itself; the race is what guarantees the
+  // deadline, because supabase-js awaits the auth session before it calls
+  // fetch, and a signal cannot interrupt that.
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Reject before aborting, so the race settles with this message and not
+      // with the generic fetch failure the abort produces.
+      const timeout = new Error('The content source took too long to respond. Please try again.');
+      timeout.name = 'TimeoutError';
+      reject(timeout);
+      controller.abort();
+    }, CONTENT_PROXY_TIMEOUT_MS);
   });
+  const invoked = supabase.functions.invoke('web-content-proxy', {
+    body: req,
+    signal: controller.signal,
+  });
+  let result: Awaited<typeof invoked>;
+  try {
+    result = await Promise.race([invoked, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+  const { data, error } = result;
 
   if (error) {
     throw new Error(await parseInvokeError(error));
@@ -182,12 +221,14 @@ export function getWebMangaPageProxyUrl(url: string): string {
 }
 
 /**
- * Second route to the same atsu page, for the web downloader only: the
- * droplet's manhwa image proxy behind /api/media-proxy/, which has served
- * cdn.atsu.moe pages since before /api/manga-page/ existed. It is a fallback
- * and not the primary because the droplet is one small worker shared by every
- * scraped source; the reader never uses it. Accepts raw or proxied page URLs;
- * returns the input unchanged for anything else, and on native.
+ * Second route to the same atsu page: the droplet's manhwa image proxy behind
+ * /api/media-proxy/, which has served cdn.atsu.moe pages since before
+ * /api/manga-page/ existed, in both page-path shapes atsu returns. The web
+ * downloader and the web reader (ReaderImage.web) switch to it once, after the
+ * primary fails for a page. It is a fallback and not the primary because the
+ * droplet is one small worker shared by every scraped source. Accepts raw or
+ * proxied page URLs; returns the input unchanged for anything else, and on
+ * native.
  */
 export function getWebMangaPageFallbackUrl(url: string): string {
   if (Platform.OS !== 'web') return url;

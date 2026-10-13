@@ -24,7 +24,10 @@ window.__dismissals = window.__retries = window.__downloads = window.__shares = 
 `;
 
 test('Anime device save controls preserve ready episodes and handle progress, retry, cancellation and mobile layout', { timeout: 60000 }, async () => {
+  // AnimeDetailWeb.web.tsx imports its stylesheet, so esbuild emits a .css
+  // file beside the .js one; outfile names both, and each is picked by type.
   const built = await build({
+    outfile: 'test.js',
     stdin: {
       contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
         import Banner from ${JSON.stringify(resolve(root, 'sakura-mobile/components/AnimeDeviceSaveBanner.web.tsx'))};
@@ -34,6 +37,11 @@ test('Anime device save controls preserve ready episodes and handle progress, re
     },
     bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
     tsconfigRaw: { compilerOptions: {} }, nodePaths: [resolve(root, 'web/node_modules')],
+    // The components resolve `react` from sakura-mobile/node_modules and the
+    // entry resolves react-dom from web/node_modules: two Reacts, and every
+    // hook throws "Cannot read properties of null (reading 'useState')".
+    // One copy, the one react-dom ships with.
+    alias: { react: resolve(root, 'web/node_modules/react'), 'react-dom': resolve(root, 'web/node_modules/react-dom') },
     define: { 'process.env.NODE_ENV': '"test"' },
     plugins: [{ name: 'device-save-fixture', setup(builder) {
       builder.onResolve({ filter: /^(@\/lib\/anime-device-save|@\/lib\/watch-progress|\.\/AnimeDiscoveryPanels|expo-image|hls.js)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
@@ -46,9 +54,12 @@ test('Anime device save controls preserve ready episodes and handle progress, re
       }));
     } }],
   });
+  const code = built.outputFiles.find(file => file.path.endsWith('.js')).text;
+  const css = built.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   const server = createServer((req, res) => {
-    if (req.url === '/test.js') { res.setHeader('content-type', 'text/javascript'); res.end(built.outputFiles[0].text); }
-    else { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0"><div id="root"></div><script src="/test.js"></script></body></html>'); }
+    if (req.url === '/test.js') { res.setHeader('content-type', 'text/javascript'); res.end(code); }
+    else if (req.url === '/test.css') { res.setHeader('content-type', 'text/css'); res.end(css); }
+    else { res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/test.css"></head><body style="margin:0"><div id="root"></div><script src="/test.js"></script></body></html>'); }
   });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const browser = await chromium.launch({ headless: true, executablePath: process.env.SAKURA_BROWSER_EXECUTABLE || (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined) });

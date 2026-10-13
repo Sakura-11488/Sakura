@@ -3,3 +3,12 @@
 @media(prefers-reduced-motion:reduce){.manga-detail-web *{scroll-behavior:auto!important;transition:none!important}}
 
 .md-download{min-width:44px;min-height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}.md-download small{font-size:10px}.md-download:disabled{opacity:.65;cursor:default}
+
+/* Offline / source-failed notice, Download all, and per-row download status: native features ported onto this layout. */
+.manga-detail-web{--md-ok:#93d3a8}.manga-detail-web.md-light{--md-ok:#2e7a4c}
+.md-notice{display:flex;align-items:center;gap:12px;margin:-14px 0 30px;padding:11px 14px;border:1px solid var(--md-line);border-radius:3px;background:var(--md-surface);font-size:12px;line-height:1.5}.md-notice::before{content:'';flex-shrink:0;width:7px;height:7px;border-radius:50%;background:#e7b45a}.md-notice>span{flex:1;min-width:0}.md-notice button{flex-shrink:0;min-height:36px;padding:0 12px;border:1px solid var(--md-line);border-radius:3px;background:none;color:var(--md-pink);font-size:11px}
+.md-primary{max-width:100%;min-width:0}.md-primary>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.md-batch{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;gap:8px;background:none;border:1px solid var(--md-line);color:var(--md-text)}.md-batch>span:first-child{color:var(--md-pink)}.md-batch small{color:var(--md-muted);font-size:10px;font-variant-numeric:tabular-nums}.md-batch:not([data-state=idle]){border-color:var(--md-pink)}.md-batch i{position:absolute;left:0;bottom:0;height:2px;background:var(--md-pink);transition:width .3s}
+.md-chapter.unavailable .md-chapter-open{opacity:.45}.md-chapter-title small.md-chapter-status{margin-top:2px}.md-chapter-status[data-tone=ready]{color:var(--md-ok)}.md-chapter-status[data-tone=error]{color:var(--md-pink)}
+.md-links{display:flex;justify-content:center;flex-wrap:wrap;gap:0 20px;margin-top:8px}.md-empty .md-links button{border:0;padding:10px 2px;margin-top:0;min-height:40px}
+@media(max-width:700px){.md-notice{margin:-8px 0 22px;align-items:flex-start}.md-notice::before{margin-top:6px}.md-actions .md-batch{flex-basis:100%}}

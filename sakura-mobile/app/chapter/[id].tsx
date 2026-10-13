@@ -972,6 +972,7 @@ export default function ChapterReader() {
         page,
         totalPages: activeTotalPages,
         source: typeof source === 'string' ? source : undefined,
+        chapterNumber: activeSegment?.chapterNumber,
       });
     }, 400);
     return () => clearTimeout(t);
@@ -984,6 +985,7 @@ export default function ChapterReader() {
     mangaTitle,
     mangaCover,
     chapterLabel,
+    activeSegment?.chapterNumber,
     isAdult,
     source,
   ]);
@@ -1010,6 +1012,7 @@ export default function ChapterReader() {
             page: activePageIndex + 1,
             totalPages: activeTotalPages,
             source: typeof source === 'string' ? source : undefined,
+            chapterNumber: activeSegment?.chapterNumber,
           }
         : null;
   });

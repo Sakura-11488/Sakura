@@ -93,6 +93,20 @@ function mapListItem(item: ProxyListItem): ContentItem {
   };
 }
 
+/**
+ * Thrown inside a cached loader so an empty answer is never cached, then
+ * turned back into [] outside the cache. Tagged rather than subclassed:
+ * `instanceof` on Error subclasses is unreliable once Babel's class transform
+ * has been through them. Same pattern as lib/manhwa.ts.
+ */
+function emptyAnswer(message: string): Error {
+  return Object.assign(new Error(message), { hentaiEmptyAnswer: true });
+}
+
+function isEmptyAnswer(error: unknown): boolean {
+  return !!error && (error as { hentaiEmptyAnswer?: unknown }).hentaiEmptyAnswer === true;
+}
+
 export async function fetchTrendingHentai(limit = 24): Promise<ContentItem[]> {
   return getOrSetCached<ContentItem[]>(
     `hentai:trending:${limit}`,
@@ -156,10 +170,16 @@ export async function searchHentai(query: string, limit = 24): Promise<ContentIt
  * staleIfError serve the last good value; empty answers are not cached either.
  * The exported functions still resolve null / [] on failure, by catching
  * outside the cache. Same reasoning as lib/manhwa.ts.
+ *
+ * The detail, chapter and page keys are versioned (v2) because the previous
+ * release swallowed those errors and cached null / [] under the old keys, and
+ * on web that cache lives in localStorage across deploys. A new key strands
+ * the poisoned entries until their TTL runs out. Bump the version again
+ * whenever a release caches something wrong under these.
  */
 export async function fetchHentaiDetail(id: string): Promise<MangaDetail | null> {
   return getOrSetCached<MangaDetail>(
-    `hentai:detail:${id}`,
+    `hentai:detail:v2:${id}`,
     30 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id });
@@ -189,7 +209,7 @@ export async function fetchHentaiDetail(id: string): Promise<MangaDetail | null>
 
 export async function fetchHentaiChapters(id: string): Promise<MangaChapter[]> {
   return getOrSetCached<MangaChapter[]>(
-    `hentai:chapters:${id}`,
+    `hentai:chapters:v2:${id}`,
     15 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id, limit: '10', offset: '0' });
@@ -212,17 +232,25 @@ export async function fetchHentaiChapters(id: string): Promise<MangaChapter[]> {
 }
 
 export async function fetchHentaiPages(galleryId: string, rawChapterId: string): Promise<string[]> {
+  // Still resolves [] for a gallery with no pages, but never caches it: the
+  // scraper's empty answer is also what an upstream failure behind it looks
+  // like, and a cached [] kept the gallery, and its download, blank for the
+  // full hour. A failed request still rejects, as before.
   return getOrSetCached<string[]>(
-    `hentai:pages:v1:${galleryId}:${rawChapterId}`,
+    `hentai:pages:v2:${galleryId}:${rawChapterId}`,
     60 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id: galleryId, chapterId: rawChapterId || 'gallery' });
       const data = await requestProxy<ProxyPagesResponse>(`/pages?${params.toString()}`);
-      const pages = data.pages || data.images || [];
-      return pages
+      const pages = (data.pages || data.images || [])
         .filter((p): p is string => typeof p === 'string' && p.length > 0)
         .map((p) => proxyHentaiImage(p));
+      if (!pages.length) throw emptyAnswer('No pages.');
+      return pages;
     },
     { staleIfError: true },
-  );
+  ).catch((error) => {
+    if (isEmptyAnswer(error)) return [] as string[];
+    throw error;
+  });
 }
