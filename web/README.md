@@ -50,6 +50,85 @@ npm run build
 
 Output goes to `dist/` for static hosting.
 
+The build stamps `dist/sw.js` with its own bundle and font precache list. Ship
+the whole export together; copying an unstamped `public/sw.js` would leave the
+offline app on an older build. The service worker stores the first visit's app
+shell, keeps downloaded media across updates, and falls back to the shell on
+offline or slow navigations. Browser storage can still be evicted by the browser.
+
+For the separate `sakura-web` hosting checkout, set the source explicitly when
+syncing from a worktree. The sync script's default sibling path does not locate
+nested worktrees:
+
+```bash
+SAKURA_WEB_EXPORT=/absolute/path/to/Sakura-worktree/web/dist \
+  npm run sync:webapp --prefix /absolute/path/to/sakura-web-worktree
+```
+
+This copies files locally; deployment is a separate step. Keep the hosting
+`api/manga-page.js`, `lib/manga-page.js` and offline-route exclusions in
+`vercel.json` with the release. Atsu reading and downloads use that same-origin
+image endpoint. Regular anime downloads also need the matching deployed
+`anime-stream` relay; its setup is linked below.
+
+## Offline regression checks
+
+Run these from the Sakura repository root after installing web dependencies:
+
+```bash
+node web/scripts/verify-sw.mjs
+node --test web/scripts/write-precache-manifest.test.mjs web/scripts/verify-web-update.test.mjs
+node --test sakura-mobile/test/*offline*.test.mjs sakura-mobile/test/manga-page-urls.test.mjs sakura-mobile/test/hls-local-playlist.test.mjs
+npm run build --prefix web
+node web/scripts/verify-sw.mjs --dist
+SAKURA_HOSTING_ROOT=/absolute/path/to/sakura-web-worktree \
+  node sakura-mobile/test/browser-offline-flow.mjs
+node sakura-mobile/test/browser-anime-offline-flow.mjs
+```
+
+The browser checks use the real export and service worker with local source
+fixtures. The manga check invokes the hosting checkout's actual page proxy with
+synthetic upstream images. It covers downloading a chapter, clearing transient
+cache, opening a new tab offline, and reading saved title/reader/Downloads pages. Set
+`SAKURA_PLAYWRIGHT_MODULE` to an installed Playwright module and optionally
+`SAKURA_BROWSER_EXECUTABLE` to a Chromium executable when they are not on the
+default paths. The anime check generates an eight-second HLS test pattern using
+`ffmpeg` with `libx264` and AAC, then checks offline video and captions. Set
+`SAKURA_FFMPEG` to its executable if needed, or `SAKURA_ANIME_FIXTURE_DIR` to an
+existing directory containing `media.m3u8` and its `segN.ts` files to skip
+generation. Fixtures do not verify live provider availability.
+
+Browser anime downloads require a finite on-demand playlist. Separate audio
+renditions are rejected with an explicit message; the current downloader saves
+muxed audio/video. Progressive Sakura Original downloads can reuse partial bytes
+while the tab stays open, but restarting the tab restarts that transfer. Saved
+HLS segments remain resumable across reloads when the rendition still matches.
+
+Anime downloads now keep the browser copy and prepare a device video file from
+those same cached bytes. Existing episodes offer **Save video** on their title
+page and in Downloads. H.264/AAC transport streams are remuxed into MP4 without
+re-encoding; fragmented MP4 and cached progressive files are exported locally.
+Preparation is cancelable and does not delete the offline episode. One queued
+video is prepared at a time to avoid holding multiple large files in memory.
+
+The browser starts the file download and retains a **Download MP4** fallback.
+Android/desktop typically use Downloads; iPhone uses Files, with **Save / share**
+offering the system's available destinations, including Save Video when offered.
+File sharing must start from a fresh user tap after preparation. The app reports
+handoff, not a verified gallery save. Exported files survive clearing site data;
+websites cannot silently rediscover device files after their permissions/storage
+are cleared. Subtitles remain available in Sakura and as a separate VTT file.
+
+`sakura-mobile/test/anime-video-export.test.mjs` checks real generated media,
+AES-128 keys, byte ranges, discontinuities, and progressive-file integrity.
+`sakura-mobile/test/anime-device-save.test.mjs` checks completion, cancellation,
+queuing, retry, and share activation. The anime browser flow also saves the real
+MP4, clears website storage, and opens the file in a clean native video element.
+
+In the hosting checkout, run `node --test scripts/manga-page.test.cjs
+scripts/public-domain-comics.test.cjs scripts/cover-image.test.cjs` with its
+dependencies installed before syncing and reviewing the release.
+
 ## Web vs native differences
 
 | Native | Web |

@@ -33,8 +33,14 @@ export const NOVEL_MANIFEST_URL = `${OFFLINE_PREFIX}novel-manifest.json`;
 
 export const ANIME_MANIFEST_URL = `${OFFLINE_PREFIX}anime-manifest.json`;
 
+/** atsu (the default manga source) — lib/manga-offline.web.ts. */
+export const MANGA_MANIFEST_URL = `${OFFLINE_PREFIX}manga-manifest.json`;
+
 const NOVEL_PREFIX = `${OFFLINE_PREFIX}novel/`;
 const ANIME_PREFIX = `${OFFLINE_PREFIX}anime/`;
+const MANGA_PREFIX = `${OFFLINE_PREFIX}atsu/`;
+const TITLE_PREFIX = `${OFFLINE_PREFIX}title/`;
+const COVER_PREFIX = `${OFFLINE_PREFIX}cover/`;
 
 /**
  * Same-origin URL for one downloaded episode.
@@ -46,6 +52,36 @@ const ANIME_PREFIX = `${OFFLINE_PREFIX}anime/`;
  */
 export function offlineEpisodeUrl(animeId: string, episodeId: string): string {
   return `${ANIME_PREFIX}${encodeURIComponent(animeId)}/${encodeURIComponent(episodeId)}`;
+}
+
+/**
+ * One file of a downloaded HLS episode: the rewritten `index.m3u8`, a segment,
+ * a key or a caption track. Lives one level below offlineEpisodeUrl, so an
+ * HLS download and a progressive one for the same episode never share a key.
+ * The `.m3u8` name is load-bearing: WebVideoPlayer.web.tsx routes to hls.js
+ * on that extension.
+ */
+export function offlineEpisodeFileUrl(animeId: string, episodeId: string, name: string): string {
+  return `${offlineEpisodeUrl(animeId, episodeId)}/${encodeURIComponent(name)}`;
+}
+
+/** Same-origin URL for one downloaded atsu page. The service worker serves these. */
+export function offlineMangaPageUrl(mangaId: string, chapterId: string, index: number): string {
+  const seg = [mangaId, chapterId].map(encodeURIComponent).join('/');
+  return `${MANGA_PREFIX}${seg}/${String(index).padStart(4, '0')}`;
+}
+
+/**
+ * Title snapshot (detail + chapter list) for a series with downloads, so its
+ * page renders with no network. `source` is 'atsu' or a ScrapedSource.
+ */
+export function offlineTitleUrl(source: string, contentId: string): string {
+  return `${TITLE_PREFIX}${encodeURIComponent(source)}/${encodeURIComponent(contentId)}.json`;
+}
+
+/** Cover bytes for a title snapshot. Extension-less; the stored Response carries the type. */
+export function offlineCoverUrl(source: string, contentId: string): string {
+  return `${COVER_PREFIX}${encodeURIComponent(source)}/${encodeURIComponent(contentId)}`;
 }
 
 /** Same-origin URL for one downloaded page. The service worker serves these. */

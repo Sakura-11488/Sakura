@@ -334,7 +334,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   }, [showChrome, uri, videoRef]);
 
 
-  return <div className="sc-player" ref={rootRef} data-sakura-player="" data-up-next-visible={upNext && options.nextEpisode ? 'true' : 'false'} data-chrome-visible={showChrome ? 'true' : 'false'}
+  return <div className="sc-player" ref={rootRef} data-sakura-player="" data-up-next-visible={upNext && options.nextEpisode ? 'true' : 'false'} data-chrome-visible={showChrome ? 'true' : 'false'} data-captions-visible={captionsOn ? 'true' : 'false'}
     onPointerMove={event => { if (event.pointerType !== 'touch') reveal(); }} onFocus={reveal}
     onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); closeMenu(); } }}>
     <style>{playerStyles}</style>

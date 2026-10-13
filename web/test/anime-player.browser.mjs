@@ -84,7 +84,7 @@ const fixtures = {
   '@/lib/anime-media-session': `export const buildAnimeMediaSessionScript=()=>'';`,
   '@/lib/sound': `export const playTap=()=>{}; export const onTap=callback=>callback;`,
   '@/lib/anime-skip-times': `export const fetchAnimeSkipTimes=async()=>({}); export const mergeAnimeSkipMarkers=(primary)=>primary;`,
-  '@/lib/anime-offline': `export const getOfflinePlaybackUri=async()=>null;`,
+  '@/lib/anime-offline': `export const getOfflinePlaybackUri=async()=>null; export const listOfflineEpisodes=async()=>[];`,
   '@/lib/sakura-originals': `
     export const isSakuraOriginal=()=>window.__mode==='original';
     export const fetchSakuraOriginalInfo=async()=>({id:'original-fixture',title:'Fixture Original',episodes:[{id:'original-1',number:1,title:'Episode 1'}]});

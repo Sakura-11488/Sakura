@@ -15,6 +15,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import { getContinueWatching, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 import { getContinueReading, subscribeReadingProgress, type ContinueReadingItem } from '@/lib/reader-progress';
 import { playTap, onTap } from '@/lib/sound';
+import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { contentWidth } from '@/constants/layout';
 import LibraryWeb from '@/components/ui/LibraryWeb';
 
@@ -110,6 +111,17 @@ export default function LibraryScreen() {
     playTap();
     if (item.type === 'novel') {
       router.push(`/novel/ext?path=${encodeURIComponent(item.id)}` as any);
+    } else if (item.type === 'manga') {
+      // The manga screen serves every source and picks its backend from
+      // `source`; without it a saved manhwa or comic reopened as atsu. Only a
+      // key the registry knows is passed on — the stored value round-trips
+      // through cloud sync — and items saved before `source` existed have
+      // none, which correctly means atsu.
+      const adapter = getScrapedAdapter(item.source);
+      router.push({
+        pathname: '/manga/[id]',
+        params: { id: item.id, ...(adapter ? { source: adapter.key } : {}) },
+      });
     } else {
       router.push(`/${item.type}/${item.id}` as any);
     }

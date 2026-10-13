@@ -35,13 +35,14 @@ import CommentsSection from '@/components/social/CommentsSection';
 import { fetchAnimeInfo, type AnimeInfo, type AnimeEpisode } from '@/lib/anime';
 import { getAnimeWatchProgress, registerAnimeEpisodeCatalog, setAnimeEpisodeWatched, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 import {
-  downloadAnimeEpisode,
   getOfflineEpisode,
+  listOfflineEpisodes,
   pauseAnimeEpisodeDownload,
   resumeAnimeEpisodeDownload,
   subscribeOfflineEpisodes,
   type OfflineEpisode,
 } from '@/lib/anime-offline';
+import { CAN_SAVE_ANIME_VIDEO, downloadAnimeEpisodeWithDeviceCopy, requestAnimeVideoSave } from '@/lib/anime-device-save';
 import { playTap, onTap } from '@/lib/sound';
 import { Library } from '@/lib/storage';
 import { useTheme } from '@/lib/theme';
@@ -366,7 +367,7 @@ function EpisodeRow({
   offline?: OfflineEpisode | null;
   onPress: () => void;
   onDownload: () => void;
-  /** False on web for sources a browser cannot fetch; the button explains itself. */
+  /** False dims the button for a source this platform cannot download; the press path explains why. */
   downloadable: boolean;
 }) {
   const { colors } = useTheme();
@@ -461,18 +462,15 @@ function EpisodeRow({
         )}
       </View>
       {/*
-        On web this depends on the SOURCE, not the platform.
+        Only the native layout renders this row; web returns AnimeDetailWeb
+        before reaching it. Native downloads every source, so `downloadable`
+        is always true today.
 
-        Sakura Originals are progressive MP4/MOV files served same-origin
-        through /api/media-proxy/ with CORS and Range, so a browser can fetch
-        them like any other file. Third-party streamed episodes cannot be
-        fetched at all: their CDN 403s without a `Referer`, and `Referer` is a
-        forbidden request header name, so fetch silently drops it.
-
-        The button stays visible either way and the press path explains the
-        refusal, because a control that vanishes teaches the user nothing. It
-        is the guard in lib/anime-offline.web.ts that produces the message, so
-        the Downloads screen\u2019s retry path is covered too.
+        Web used to dim this button for everything but Sakura Originals, on
+        the grounds that third-party streams sit behind a Referer check a
+        browser cannot pass. Web playback now goes through the signed
+        anime-stream relay, which a browser can fetch, and
+        lib/anime-offline.web.ts downloads through it too.
 
         (It previously used to SUCCEED into nothing on web: the filesystem shim
         was localStorage-backed and its downloadAsync ran response.text() over
@@ -494,6 +492,33 @@ function EpisodeRow({
       </TouchableOpacity>
     </TouchableOpacity>
   );
+}
+
+/**
+ * A detail page built from what is on the device, for when the title's info
+ * cannot be fetched (no network, and the 24h info cache has expired).
+ *
+ * Before this, a title with perfectly good downloads opened to "Could not load
+ * this title" offline, so the only way to reach them was Profile → Downloads.
+ * Only downloaded (or downloading) episodes are listed; the artwork uses the
+ * same-origin copies the web store keeps, because the remote URLs cannot load.
+ */
+function animeFromOfflineRows(animeId: string, rows: OfflineEpisode[]): AnimeInfo {
+  const sorted = [...rows].sort((a, b) => a.episodeNumber - b.episodeNumber);
+  const localCover = sorted.find((row) => row.offlineCover)?.offlineCover;
+  return {
+    id: animeId,
+    title: sorted[0].title,
+    image: sorted[0].cover,
+    cover: sorted[0].cover,
+    localCover: localCover ? { uri: localCover } : undefined,
+    episodes: sorted.map((row) => ({
+      id: row.episodeId,
+      number: row.episodeNumber,
+      title: row.episodeTitle || `Episode ${row.episodeNumber}`,
+      thumbnail: row.offlineThumbnail || row.episodeThumbnail,
+    })),
+  };
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -664,23 +689,26 @@ export default function AnimeDetail() {
   const [toast, setToast] = useState('');
   const [watchProgress, setWatchProgress] = useState<AnimeWatchProgress | null>(null);
   const [offlineMap, setOfflineMap] = useState<Record<string, OfflineEpisode>>({});
+  /** The page is showing downloads only, because the title's info could not load. */
+  const [offlineOnly, setOfflineOnly] = useState(false);
 
   const scrollY = useSharedValue(0);
 
+  /*
+   * One pass over the store's rows rather than a lookup per episode: the store
+   * notifies on every downloaded segment, and a long series (One Piece has
+   * 1,100+ episodes) turned each notification into a thousand async lookups.
+   * Same result — this title's rows keyed by episode id.
+   */
   const refreshOffline = React.useCallback(async () => {
-    if (!id || !anime?.episodes.length) return;
-    const entries = await Promise.all(
-      anime.episodes.map(async (ep) => {
-        const row = await getOfflineEpisode(String(id), ep.id);
-        return [ep.id, row] as const;
-      }),
-    );
+    if (!id) return;
+    const rows = await listOfflineEpisodes().catch(() => [] as OfflineEpisode[]);
     const map: Record<string, OfflineEpisode> = {};
-    for (const [epId, row] of entries) {
-      if (row) map[epId] = row;
+    for (const row of rows) {
+      if (row.animeId === String(id)) map[row.episodeId] = row;
     }
     setOfflineMap(map);
-  }, [id, anime?.episodes]);
+  }, [id]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -725,8 +753,20 @@ export default function AnimeDetail() {
     setAnime(null);
     setSaved(false);
     setLoadError(null);
+    setOfflineOnly(false);
+    /** Web only: render downloads instead of the error page. False when there are none. */
+    const showDownloadsInstead = async (): Promise<boolean> => {
+      if (Platform.OS !== 'web') return false;
+      const rows = (await listOfflineEpisodes().catch(() => [] as OfflineEpisode[]))
+        .filter((row) => row.animeId === String(id));
+      if (!active || !rows.length) return false;
+      setAnime(animeFromOfflineRows(String(id), rows));
+      setOfflineOnly(true);
+      return true;
+    };
     (async () => {
       try {
+        if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.onLine === false && await showDownloadsInstead()) return;
         let data = await fetchAnimeInfo(id);
         if (data && data.episodes.length === 0) {
           // Retry uncached in case the empty episode list came from a stale or
@@ -741,9 +781,9 @@ export default function AnimeDetail() {
         if (!active) return;
         if (data) {
           setAnime(data);
-        } else {
+        } else if (!(await showDownloadsInstead())) {
           // Not a throw: the fetch completed and had nothing for this id.
-          setLoadError('No data returned for this title.');
+          if (active) setLoadError('No data returned for this title.');
         }
       } catch (err) {
         // Deliberately NOT swallowed.
@@ -755,7 +795,10 @@ export default function AnimeDetail() {
         // title all rendered the identical dead page.
         //
         // Now the reason reaches the screen. Whatever the cause turns out to be,
-        // the next report will name it instead of requiring another theory.
+        // the next report will name it instead of requiring another theory —
+        // unless the episodes are on the device, in which case the page they
+        // belong to is more use than the reason it could not be refreshed.
+        if (!active || (await showDownloadsInstead())) return;
         if (active) setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
         if (active) setLoading(false);
@@ -887,7 +930,8 @@ export default function AnimeDetail() {
     playTap();
     const existing = offlineMap[ep.id];
     if (existing?.status === 'ready') {
-      setToast('Already downloaded');
+      if (CAN_SAVE_ANIME_VIDEO) requestAnimeVideoSave(String(id), ep.id);
+      else setToast('Saved in Sakura');
       return;
     }
     if (existing?.status === 'downloading') {
@@ -895,28 +939,16 @@ export default function AnimeDetail() {
       setToast('Download paused');
       return;
     }
-    if (existing?.status === 'paused') {
-      resumeAnimeEpisodeDownload(String(id), ep.id);
-      setToast('Resuming download… keep Sakura open on Wi‑Fi');
-      try {
-        await downloadAnimeEpisode({
-          animeId: String(id),
-          episodeId: ep.id,
-          episodeNumber: ep.number,
-          episodeTitle: ep.title,
-          title: anime.title,
-          cover: anime.cover || anime.image || '',
-          episodeThumbnail: ep.thumbnail,
-        });
-        setToast('Episode downloaded');
-      } catch (e) {
-        setToast(e instanceof Error ? e.message : 'Download failed');
-      }
-      return;
-    }
-    setToast('Starting download… keep Sakura open on Wi‑Fi');
+    // A paused download continues; so does a failed web HLS copy, which keeps
+    // the segments it already has (native deletes a failed copy, so it restarts).
+    const resuming = existing?.status === 'paused'
+      || (existing?.status === 'error' && existing.format === 'hls' && existing.completedSegments > 0);
+    if (resuming) resumeAnimeEpisodeDownload(String(id), ep.id);
+    setToast(resuming
+      ? 'Resuming download… keep Sakura open on Wi‑Fi'
+      : 'Starting download… keep Sakura open on Wi‑Fi');
     try {
-      await downloadAnimeEpisode({
+      await downloadAnimeEpisodeWithDeviceCopy({
         animeId: String(id),
         episodeId: ep.id,
         episodeNumber: ep.number,
@@ -925,7 +957,12 @@ export default function AnimeDetail() {
         cover: anime.cover || anime.image || '',
         episodeThumbnail: ep.thumbnail,
       });
-      setToast('Episode downloaded');
+      // The promise also settles when the download is paused or deleted
+      // part-way, which used to toast "Episode downloaded" regardless. Say
+      // what actually happened.
+      const row = await getOfflineEpisode(String(id), ep.id).catch(() => null);
+      if (row?.status === 'ready') setToast('Saved in Sakura');
+      else if (row?.status === 'paused') setToast('Download paused');
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'Download failed');
     }
@@ -939,7 +976,18 @@ export default function AnimeDetail() {
         progress={watchProgress?.animeId === String(id) ? watchProgress : null}
         saved={saved}
         offline={offlineMap}
-        downloadable={isSakuraOriginal(String(id))}
+        // Every title downloads on web now: Originals as one file, everything
+        // else as HLS through the anime-stream relay (lib/anime-offline.web.ts).
+        // This used to be isSakuraOriginal(id), which left regular series with
+        // no Download button at all. An HLS copy only plays where hls.js runs,
+        // which AnimeDetailWeb checks.
+        downloadable
+        downloadsNeedHls={!isSakuraOriginal(String(id))}
+        notice={offlineOnly ? {
+          text: 'Showing the episodes on this device. Reconnect to see the full series.',
+          actionLabel: 'Try again',
+          onAction: () => { playTap(); setLoading(true); setReloadKey(key => key + 1); },
+        } : undefined}
         onBack={onTap(() => router.back())}
         onSave={handleSave}
         onShare={handleShare}
@@ -963,7 +1011,9 @@ export default function AnimeDetail() {
           }, watched, anime.episodes).then(() => setToast(watched ? 'Episode marked watched' : 'Episode marked unwatched'));
         }}
         onDownload={handleDownloadEpisode}
-        discussion={<CommentsSection contentId={`anime:${id}`} title="Discussion" />}
+        discussion={offlineOnly
+          ? <p className="sd-unavailable">Discussion needs a connection.</p>
+          : <CommentsSection contentId={`anime:${id}`} title="Discussion" />}
         creator={originalAuthor ? <CreatorTab creatorWallet={originalAuthor.wallet} displayName={originalAuthor.name} avatarImage={originalAuthor.avatarImage} tipLabel="Donate" showPass={false} /> : undefined}
       />
       <Toast message={toast} visible={!!toast} onHide={() => setToast('')} bottomOffset={insets.bottom + 80} />
@@ -1130,10 +1180,9 @@ export default function AnimeDetail() {
                 episodes.map((ep, i) => (
                   <Animated.View key={ep.id} entering={FadeInDown.delay(i < 8 ? i * 35 : 0).duration(280)}>
                     <EpisodeRow
-                      // Native can fetch anything; on web only Sakura
-                      // Originals are reachable, because everything else is
-                      // a third-party HLS stream behind a Referer check.
-                      downloadable={Platform.OS !== 'web' || isSakuraOriginal(String(id))}
+                      // Native only (web renders AnimeDetailWeb above), and
+                      // native can download every source.
+                      downloadable
                       ep={ep}
                       cover={anime.localCover ? undefined : (anime.cover || anime.image)}
                       progress={watchProgress?.episodeId === ep.id ? watchProgress.progress : undefined}

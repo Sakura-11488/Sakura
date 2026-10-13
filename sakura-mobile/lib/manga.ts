@@ -1,8 +1,20 @@
+import { Platform } from 'react-native';
 import { getOrSetCached } from '@/lib/cache';
 import { atsuFetch } from '@/lib/atsu-fetch';
+import { getWebMangaPageProxyUrl } from '@/lib/content-proxy-client';
 
 const BASE = 'https://atsu.moe';
 const STATIC = `${BASE}/static`;
+/**
+ * Chapter pages live on the CDN host only. atsu.moe/static/pages now answers
+ * 410 Gone (an HTML body), which is why atsu chapters stopped rendering; the
+ * CDN serves the same paths. Posters deliberately stay on atsu.moe — they
+ * still 301 to the CDN, and lib/cover-thumbnail.ts and its tests key on that
+ * form — so only pages move. See atsuPageCdnUrl in lib/content-proxy-client.ts
+ * for why web cannot load even the CDN URL directly.
+ */
+const PAGES_STATIC = 'https://cdn.atsu.moe/static';
+const ATSU_PAGES_ORIGIN = /^https?:\/\/(?:www\.)?atsu\.moe(?=\/static\/pages\/)/i;
 const TYPES = 'Manga,Manwha,Manhua,OEL';
 const MANGADEX_API = 'https://api.mangadex.org';
 const MANGADEX_COVERS = 'https://uploads.mangadex.org/covers';
@@ -26,9 +38,24 @@ function imgUrl(item: AtsuItem, size: 'medium' | 'large' = 'large'): string {
 
 function absUrl(path?: string | null): string {
   if (!path) return '';
-  if (/^https?:\/\//i.test(path)) return path;
-  if (path.startsWith('//')) return `https:${path}`;
-  return `${STATIC}/${path.replace(/^\/+/, '').replace(/^static\//, '')}`;
+  if (/^https?:\/\//i.test(path)) return path.replace(ATSU_PAGES_ORIGIN, 'https://cdn.atsu.moe');
+  if (path.startsWith('//')) return `https:${path}`.replace(ATSU_PAGES_ORIGIN, 'https://cdn.atsu.moe');
+  const rel = path.replace(/^\/+/, '').replace(/^static\//, '');
+  return `${rel.startsWith('pages/') ? PAGES_STATIC : STATIC}/${rel}`;
+}
+
+/**
+ * MangaDex is a native-only fallback.
+ *
+ * api.mangadex.org sends no Access-Control-Allow-Origin to other origins, so on
+ * web every MangaDex call below was a request that could only fail — after a
+ * full round trip, and in fetchMangaChapterPages only after atsu had already
+ * failed, doubling the wait before the reader could show its error. Web fails
+ * fast instead. Read lazily, not at module load, so tests can load this file
+ * without a react-native implementation.
+ */
+function mangaDexReachable(): boolean {
+  return Platform.OS !== 'web';
 }
 
 function mangaDexTitle(attrs: any): string {
@@ -70,6 +97,7 @@ function mangaDexUrl(path: string, params: Record<string, string | string[]> = {
 }
 
 async function mangaDexJson(path: string, params?: Record<string, string | string[]>): Promise<any> {
+  if (!mangaDexReachable()) throw new Error('MangaDex cannot be reached from the browser.');
   const res = await fetch(mangaDexUrl(path, params), {
     headers: { Accept: 'application/json' },
   });
@@ -146,12 +174,14 @@ export async function fetchMangaPagedList(kind: 'trending' | 'popular', page: nu
     5 * 60 * 1000,
     async () => {
       const res = await atsuFetch(url);
-      if (!res.ok) return [];
+      // Throw rather than return [], or the failure is cached as a real empty
+      // page for the whole TTL (see fetchMangaDetail).
+      if (!res.ok) throw new Error(`atsu HTTP ${res.status}`);
       const json = await res.json();
       return (json.items || []) as AtsuItem[];
     },
     { staleIfError: true },
-  ).catch(() => []);
+  ).catch(() => [] as AtsuItem[]);
   return items.length > 0 ? items : mangaDexList(kind, page, 24);
 }
 
@@ -264,36 +294,67 @@ function mapRawChapter(c: any): MangaChapter {
   };
 }
 
-async function fetchChapterFirstPageUrl(mangaId: string, chapterId: string): Promise<string | null> {
+/** Throws on any failure, so callers inside getOrSetCached never cache one. */
+async function fetchChapterFirstPageUrl(mangaId: string, chapterId: string): Promise<string> {
   const res = await atsuFetch(
     `/api/read/chapter?mangaId=${encodeURIComponent(mangaId)}&chapterId=${encodeURIComponent(chapterId)}`,
   );
-  if (!res.ok) return null;
+  if (!res.ok) throw new Error(`atsu HTTP ${res.status}`);
   const json = await res.json();
   const raw: unknown[] = json.readChapter?.pages || [];
   const first = raw[0];
-  if (!first) return null;
-  const row = first as { image?: string };
+  const row = first as { image?: string } | undefined;
   const rawImg = row?.image ?? first;
   const path = typeof rawImg === 'string' ? rawImg : '';
-  return path ? toPageUrl(path) : null;
+  if (!path) throw new Error('Chapter has no pages.');
+  return toPageUrl(path);
 }
 
-/** Cached first page of a chapter for list thumbnails. */
+/**
+ * The URL a screen should display an atsu chapter image with: the CDN form
+ * (which also repairs atsu.moe page URLs cached by earlier builds, now 410),
+ * wrapped in the same-origin page proxy on web. Native gets the CDN URL.
+ */
+function displayPageUrl(url: string): string {
+  return getWebMangaPageProxyUrl(toPageUrl(url));
+}
+
+/** Cached first page of a chapter for list thumbnails. Null when unavailable. */
 export async function fetchMangaChapterThumbnail(
   mangaId: string,
   chapterId: string,
 ): Promise<string | null> {
-  return getOrSetCached<string | null>(
+  // The cache holds the platform-neutral CDN URL; proxying is applied on the
+  // way out so a cached value is right on either platform.
+  const url = await getOrSetCached<string>(
     `manga:thumb:${mangaId}:${chapterId}`,
     60 * 60 * 1000,
-    async () => fetchChapterFirstPageUrl(mangaId, chapterId),
+    () => fetchChapterFirstPageUrl(mangaId, chapterId),
     { staleIfError: true },
-  );
+  ).catch(() => null);
+  return url ? displayPageUrl(url) : null;
 }
 
+/**
+ * Why the loaders below throw instead of returning null / []:
+ *
+ * getOrSetCached stores whatever its loader RETURNS as a fresh value for the
+ * full TTL. These loaders used to catch their own network errors and return
+ * null or [], so opening a title once while offline cached "no such title" for
+ * 30 minutes (and "no chapters" for 15). The page then showed "Could not load
+ * this title" even after the connection came back, and Try again could not fix
+ * it, because the poisoned entry was still fresh. A throwing loader caches
+ * nothing and lets staleIfError serve the last good value instead.
+ *
+ * Empty results are treated the same way — never cached — because a proxy that
+ * failed upstream and a title that genuinely has nothing look identical here,
+ * and re-asking for a genuinely empty title is cheap.
+ *
+ * The exported functions keep their old contract (null / [] on failure) by
+ * catching OUTSIDE the cache.
+ */
 export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> {
-  return getOrSetCached<MangaDetail | null>(
+  return getOrSetCached<MangaDetail>(
     `manga:detail:${id}`,
     30 * 60 * 1000,
     async () => {
@@ -324,27 +385,24 @@ export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> 
       } catch {
         // Fall through to MangaDex.
       }
-      try {
-        const json = await mangaDexJson(`/manga/${encodeURIComponent(id)}`, {
-          'includes[]': ['cover_art'],
-        });
-        const manga = json.data;
-        if (!manga?.id) return null;
-        return {
-          id: manga.id,
-          title: mangaDexTitle(manga.attributes),
-          cover: mangaDexCover(manga),
-          description: manga.attributes?.description?.en || '',
-          genres: mangaDexGenres(manga.attributes),
-          status: manga.attributes?.status || '',
-          type: 'Manga',
-        };
-      } catch {
-        return null;
-      }
+      // Throws on web (see mangaDexReachable) and on any MangaDex failure.
+      const json = await mangaDexJson(`/manga/${encodeURIComponent(id)}`, {
+        'includes[]': ['cover_art'],
+      });
+      const manga = json.data;
+      if (!manga?.id) throw new Error('Title not found.');
+      return {
+        id: manga.id,
+        title: mangaDexTitle(manga.attributes),
+        cover: mangaDexCover(manga),
+        description: manga.attributes?.description?.en || '',
+        genres: mangaDexGenres(manga.attributes),
+        status: manga.attributes?.status || '',
+        type: 'Manga',
+      };
     },
     { staleIfError: true },
-  );
+  ).catch(() => null);
 }
 
 export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
@@ -352,19 +410,20 @@ export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
     `manga:chapters:v2:${id}`,
     15 * 60 * 1000,
     async () => {
-      try {
-        const res = await atsuFetch(`/api/manga/allChapters?mangaId=${encodeURIComponent(id)}`);
-        if (!res.ok) return [];
-        const json = await res.json();
-        const raw: any[] = json.chapters || [];
-        return pickScanlationChapters(raw).map(mapRawChapter);
-      } catch {
-        return [];
-      }
+      const res = await atsuFetch(`/api/manga/allChapters?mangaId=${encodeURIComponent(id)}`);
+      if (!res.ok) throw new Error(`atsu HTTP ${res.status}`);
+      const json = await res.json();
+      const raw: any[] = json.chapters || [];
+      const list = pickScanlationChapters(raw).map(mapRawChapter);
+      if (!list.length) throw new Error('No chapters.');
+      return list;
     },
     { staleIfError: true },
-  ).catch(() => []);
-  if (chapters.length > 0) return chapters;
+  ).catch(() => [] as MangaChapter[]);
+  if (chapters.length > 0) {
+    return chapters.map((ch) => (ch.coverUrl ? { ...ch, coverUrl: displayPageUrl(ch.coverUrl) } : ch));
+  }
+  if (!mangaDexReachable()) return [];
 
   try {
     const json = await mangaDexJson(`/manga/${encodeURIComponent(id)}/feed`, {
@@ -390,11 +449,19 @@ export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
   }
 }
 
+/** Absolute URL for an atsu image path; chapter pages resolve to the CDN host. */
 export function toPageUrl(imagePath: string): string {
   return absUrl(imagePath);
 }
 
-/** Page image URLs for a manga chapter (atsu). */
+/**
+ * Page image URLs for a manga chapter (atsu), [] when unavailable.
+ *
+ * On web these are same-origin /api/manga-page/ URLs, because the browser can
+ * load neither atsu host directly (see atsuPageCdnUrl). The web downloader
+ * unwraps them again to reach its fallback route, so the wrapping is the only
+ * form any web caller needs.
+ */
 export async function fetchMangaChapterPages(mangaId: string, chapterId: string): Promise<string[]> {
   try {
     const res = await atsuFetch(
@@ -408,7 +475,7 @@ export async function fetchMangaChapterPages(mangaId: string, chapterId: string)
           const row = page as { image?: string };
           const rawImg = row?.image ?? page;
           const path = typeof rawImg === 'string' ? rawImg : '';
-          return path ? toPageUrl(path) : '';
+          return path ? displayPageUrl(path) : '';
         })
         .filter(Boolean);
       if (pages.length > 0) return pages;
@@ -416,6 +483,7 @@ export async function fetchMangaChapterPages(mangaId: string, chapterId: string)
   } catch {
     // Fall through to MangaDex at-home server.
   }
+  if (!mangaDexReachable()) return [];
 
   try {
     const json = await mangaDexJson(`/at-home/server/${encodeURIComponent(chapterId)}`);
@@ -473,7 +541,9 @@ export async function searchManga(query: string, limit = 24): Promise<AtsuItem[]
             }),
           )
           .slice(0, limit);
-        return items.length > 0 ? items : mangaDexSearch(query.trim(), limit);
+        // A genuine "no results" from atsu stays an empty list on web rather
+        // than becoming a MangaDex request that can only fail.
+        return items.length > 0 || !mangaDexReachable() ? items : mangaDexSearch(query.trim(), limit);
       } catch {
         return mangaDexSearch(query.trim(), limit);
       }

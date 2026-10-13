@@ -8,7 +8,16 @@ export interface AnimeDetailWebProps {
   progress: AnimeWatchProgress | null;
   saved: boolean;
   offline: Record<string, OfflineEpisode>;
+  /** This title's episodes can be kept for offline viewing. */
   downloadable: boolean;
+  /**
+   * The offline copy is an HLS playlist (every title but Sakura Originals). It
+   * only plays where hls.js runs on MediaSource, so the button is also hidden
+   * in browsers without it (Safari before iOS 17.1).
+   */
+  downloadsNeedHls?: boolean;
+  /** A banner above the title, e.g. "showing downloads only" when offline. */
+  notice?: { text: string; actionLabel?: string; onAction?: () => void };
   onBack: () => void;
   onSave: () => void;
   onShare: () => void;

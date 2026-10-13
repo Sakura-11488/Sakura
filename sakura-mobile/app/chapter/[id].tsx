@@ -6,7 +6,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
-import { loadChapterPages, fetchReaderChapterList } from '@/lib/chapter-pages';
+import { loadChapterPages, fetchReaderChapterList, type LoadedChapterPages } from '@/lib/chapter-pages';
+import { getOfflineMangaPageUris } from '@/lib/manga-offline';
+import { getScrapedOfflinePageUris } from '@/lib/scraped-offline';
+import { isOnline } from '@/lib/use-online';
 import type { MangaChapter } from '@/lib/manga';
 import {
   buildSegment,
@@ -54,6 +57,23 @@ const UI_FADE_MS = 200;
 const SEEK_GUARD_MS = 900;
 /** Scroll distance that counts as "reading resumed" rather than finger drift. */
 const SCROLL_HIDE_PX = 12;
+
+/**
+ * The downloaded copy of a chapter, or null — never the network. For the two
+ * decisions that must not wait on (or be fooled by) a request: whether a
+ * gated chapter needs a pass check, and what a failed Retry falls back to.
+ */
+async function downloadedPages(
+  contentId: string,
+  chapterId: string,
+  source: string | undefined,
+): Promise<string[] | null> {
+  const adapter = getScrapedAdapter(source);
+  const uris = adapter
+    ? await getScrapedOfflinePageUris(adapter.key, contentId, chapterId).catch(() => null)
+    : await getOfflineMangaPageUris(contentId, chapterId).catch(() => null);
+  return uris?.length ? uris : null;
+}
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -279,6 +299,19 @@ export default function ChapterReader() {
     setPageLoadError(null);
     setAccessChecked(false);
     (async () => {
+      // A chapter already on this device opens without the check. Getting it
+      // here required access (the manga page hides Download on locked rows
+      // without a pass), and checkPassStatus needs the network — so a
+      // downloaded gated chapter used to be locked exactly when it was most
+      // needed, offline. The manga page and Downloads apply the same rule
+      // before navigating; this covers every other way in.
+      if (await downloadedPages(mangaId, entryChapterId, source)) {
+        if (!cancelled) {
+          setHasAccess(true);
+          setAccessChecked(true);
+        }
+        return;
+      }
       if (!address) {
         if (!cancelled) {
           setHasAccess(false);
@@ -295,7 +328,7 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [isGated, address]);
+  }, [isGated, address, mangaId, entryChapterId, source]);
 
   // Re-check when returning from the pass purchase screen.
   useFocusEffect(
@@ -330,12 +363,31 @@ export default function ChapterReader() {
         // store, so the route's `offline` param is no longer consulted here.
         // That also means a chapter opened from Continue Reading — which never
         // passes the param — now reads from disk instead of refetching.
-        const { urls, origin } = await loadChapterPages({
-          contentId: mangaId,
-          chapterId: entryChapterId,
-          source,
-          preferOffline: loadAttempt === 0,
-        });
+        //
+        // Retry goes to the network on purpose: it is how a damaged download
+        // gets replaced. But with no network that only threw the downloaded
+        // copy away and turned "Retry" into a guaranteed failure, so offline
+        // the copy stays preferred — and when a deliberate network retry
+        // fails, the copy still beats an error.
+        const preferOffline = loadAttempt === 0 || !isOnline();
+        let loaded: LoadedChapterPages;
+        try {
+          loaded = await loadChapterPages({
+            contentId: mangaId,
+            chapterId: entryChapterId,
+            source,
+            preferOffline,
+          });
+        } catch (error) {
+          const local = preferOffline ? null : await downloadedPages(mangaId, entryChapterId, source);
+          if (!local) throw error;
+          loaded = { urls: local, origin: 'offline' };
+        }
+        if (!preferOffline && loaded.urls.length === 0) {
+          const local = await downloadedPages(mangaId, entryChapterId, source);
+          if (local) loaded = { urls: local, origin: 'offline' };
+        }
+        const { urls, origin } = loaded;
         if (cancelled) return;
         // Opening a chapter always resets the session to just that chapter;
         // neighbours are attached afterwards as the reader approaches them.

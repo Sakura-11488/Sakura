@@ -1,5 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Image } from 'expo-image';
+import Hls from 'hls.js';
+import { CAN_SAVE_ANIME_VIDEO } from '@/lib/anime-device-save';
 import { canResumeWatchProgress, getEpisodeWatchProgress, isEpisodeWatched, isWatchProgressComplete, resumePosition } from '@/lib/watch-progress';
 import AnimeDiscoveryPanels from './AnimeDiscoveryPanels';
 import type { AnimeDetailWebProps, AnimeDetailWebPlaceholderProps } from './AnimeDetailWeb';
@@ -13,7 +15,7 @@ function clock(seconds: number) {
   return `${minutes}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function Icon({ name, size = 18 }: { name: 'play' | 'back' | 'save' | 'check' | 'share' | 'download' | 'search' | 'restart'; size?: number }) {
+function Icon({ name, size = 18 }: { name: 'play' | 'back' | 'save' | 'check' | 'share' | 'download' | 'search' | 'restart' | 'pause'; size?: number }) {
   const paths = {
     play: 'm8 5 11 7-11 7V5Z', back: 'm14 6-6 6 6 6',
     save: 'M6 4h12v17l-6-4-6 4V4Z', check: 'm5 12 4 4L19 6',
@@ -21,6 +23,7 @@ function Icon({ name, size = 18 }: { name: 'play' | 'back' | 'save' | 'check' | 
     download: 'M12 3v12m-4-4 4 4 4-4M5 17v4h14v-4',
     search: 'm16 16 5 5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
     restart: 'M3 10a9 9 0 1 1 2 8M3 4v6h6',
+    pause: 'M9 7v10M15 7v10',
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill={name === 'play' ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
@@ -32,7 +35,27 @@ export function AnimeDetailWebPlaceholder({ onBack, error, onRetry }: AnimeDetai
   </div></main>;
 }
 
-export default function AnimeDetailWeb({ anime, progress, saved, offline, downloadable, onBack, onSave, onShare, onPlay, onDownload, onMarkWatched, discussion, creator }: AnimeDetailWebProps) {
+/** Whether hls.js can play here; WebVideoPlayer.web.tsx makes the same call when it plays the copy. */
+function browserPlaysHls(): boolean {
+  try {
+    return Hls.isSupported();
+  } catch {
+    return false;
+  }
+}
+
+function downloadStatus(download: AnimeDetailWebProps['offline'][string] | undefined): { text: string; tone?: 'error' | 'ready' } | null {
+  if (!download) return null;
+  const pct = Math.round((download.progress || 0) * 100);
+  switch (download.status) {
+    case 'ready': return { text: `Saved in Sakura${download.quality ? ` · ${download.quality}` : ''}`, tone: 'ready' };
+    case 'downloading': return { text: download.totalSegments ? `Downloading ${pct}%` : 'Preparing download…' };
+    case 'paused': return { text: `Download paused at ${pct}%` };
+    default: return { text: download.error ? `Download failed: ${download.error}` : 'Download failed', tone: 'error' };
+  }
+}
+
+export default function AnimeDetailWeb({ anime, progress, saved, offline, downloadable, downloadsNeedHls, notice, onBack, onSave, onShare, onPlay, onDownload, onMarkWatched, discussion, creator }: AnimeDetailWebProps) {
   const [section, setSection] = useState('episodes');
   const episodeSection = useRef<HTMLElement>(null);
   const changePage = (value: number) => {
@@ -43,6 +66,8 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
   const [query, setQuery] = useState('');
   const [episodeFilter, setEpisodeFilter] = useState<'all' | 'unwatched'>('all');
   const [selectedPage, setSelectedPage] = useState<number | null>(null);
+  const hlsPlayable = useMemo(browserPlaysHls, []);
+  const canDownload = downloadable && (CAN_SAVE_ANIME_VIDEO || !downloadsNeedHls || hlsPlayable);
   const episodes = anime.episodes;
   const savedEpisode = progress?.animeId === anime.id ? episodes.find(ep => ep.id === progress.episodeId || (/^(?:mal|hi)-\d+-\d+$/.test(ep.id) && /^(?:mal|hi)-\d+-\d+$/.test(progress.episodeId) && ep.number === progress.episodeNumber)) : undefined;
   const bookmark = savedEpisode ? progress : null;
@@ -81,6 +106,8 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
         </div>
       </nav>
 
+      {notice && <div className="sd-notice" role="status"><span>{notice.text}</span>{notice.actionLabel && notice.onAction && <button onClick={notice.onAction}>{notice.actionLabel}</button>}</div>}
+
       <section className="sd-hero" aria-labelledby="sd-title" data-artwork={hasArtwork}>
         <div className="sd-copy">
           <div className="sd-eyebrow">{creator ? 'Sakura Original' : 'Anime'}</div>
@@ -101,7 +128,7 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
             <div className="sd-cta-row">
               <button className="sd-primary" onClick={() => onPlay(playEpisode, finished)}><Icon name="play" size={18} />{resumable ? 'Continue watching' : finished ? 'Watch again' : `Watch episode ${playEpisode.number}`}</button>
               {resumable && <button className="sd-secondary" onClick={() => onPlay(playEpisode, true)}><Icon name="restart" size={15} />Start over</button>}
-              {offline[playEpisode.id]?.status === 'ready' && <span className="sd-episode-status">Downloaded</span>}
+              {offline[playEpisode.id]?.status === 'ready' && <span className="sd-episode-status">Saved in Sakura</span>}
             </div>
           </div> : <p className="sd-unavailable">Episodes are not available yet.</p>}
         </div>
@@ -125,14 +152,19 @@ export default function AnimeDetailWeb({ anime, progress, saved, offline, downlo
           const rowPosition = resumePosition(row);
           const rowRatio = row?.completed ? 1 : Math.min(1, Math.max(0, row?.progress ?? 0));
           const download = offline[ep.id];
-          const downloadLabel = download?.status === 'ready' ? 'Downloaded' : download?.status === 'downloading' ? `Pause download (${Math.round(download.progress * 100)}%)` : download?.status === 'paused' ? 'Resume download' : 'Download episode';
+          const status = downloadStatus(download);
+          const pct = Math.round((download?.progress || 0) * 100);
+          const downloadLabel = download?.status === 'ready' ? 'Save video' : download?.status === 'downloading' ? `Pause download (${pct}%)` : download?.status === 'paused' ? `Resume download (${pct}%)` : download?.status === 'error' ? 'Retry download' : 'Download episode';
           return <article key={ep.id} className="sd-episode" data-current={current || undefined} data-watched={watched || undefined} data-episode={ep.number}>
             <button className="sd-episode-play" onClick={() => onPlay(ep, watched && !rowResume)} aria-label={`${rowResume ? 'Continue' : watched ? 'Replay' : 'Watch'} episode ${ep.number}: ${ep.title}`}>
               <div className="sd-thumb">{(ep.thumbnail || hasArtwork) && <Image source={ep.thumbnail ? { uri: ep.thumbnail } : artwork} style={imageStyle} contentFit="cover" />}<span className="sd-thumb-number">{String(ep.number).padStart(2, '0')}</span><span className="sd-thumb-play"><Icon name="play" size={22} /></span></div>
-              <div className="sd-episode-copy"><div className="sd-episode-kicker">{rowResume ? 'Continue watching' : watched ? 'Watched' : current ? 'Up next' : `Episode ${ep.number}`}</div><div className="sd-episode-title">{ep.title || `Episode ${ep.number}`}</div>{rowResume ? <div className="sd-episode-status">{row?.positionSeconds != null ? `Resume at ${clock(rowPosition)}` : row?.durationSeconds ? `Resume near ${clock(rowPosition)}` : `${Math.round(rowRatio * 100)}% watched`}{watched ? ' · Previously watched' : ''}</div> : download?.status === 'ready' ? <div className="sd-episode-status">Downloaded</div> : null}</div>
+              <div className="sd-episode-copy"><div className="sd-episode-kicker">{rowResume ? 'Continue watching' : watched ? 'Watched' : current ? 'Up next' : `Episode ${ep.number}`}</div><div className="sd-episode-title">{ep.title || `Episode ${ep.number}`}</div>{rowResume ? <div className="sd-episode-status">{row?.positionSeconds != null ? `Resume at ${clock(rowPosition)}` : row?.durationSeconds ? `Resume near ${clock(rowPosition)}` : `${Math.round(rowRatio * 100)}% watched`}{watched ? ' · Previously watched' : ''}</div> : null}{status && (canDownload || download?.status === 'ready') && <div className="sd-episode-status" data-tone={status.tone} aria-live={download?.status === 'downloading' ? 'off' : 'polite'}>{status.text}</div>}</div>
             </button>
             {onMarkWatched && <button className="sd-watched" aria-label={`Mark episode ${ep.number} as ${watched ? 'unwatched' : 'watched'}`} aria-pressed={watched} title={watched ? 'Mark unwatched' : 'Mark watched'} onClick={() => onMarkWatched(ep, !watched)}><Icon name="check" size={17} /></button>}
-            {downloadable && <button className="sd-download" aria-label={`${downloadLabel}: episode ${ep.number}`} title={downloadLabel} disabled={download?.status === 'ready'} onClick={() => onDownload(ep)}><Icon name={download?.status === 'ready' ? 'check' : 'download'} size={16} /></button>}
+            {canDownload && <button className="sd-download" data-state={download?.status} aria-label={`${downloadLabel}: episode ${ep.number}`} title={downloadLabel} onClick={() => onDownload(ep)}>
+              {(download?.status === 'downloading' || download?.status === 'paused') && <svg className="sd-download-ring" viewBox="0 0 36 36" aria-hidden="true"><circle className="track" cx="18" cy="18" r="15" /><circle className="fill" cx="18" cy="18" r="15" pathLength={100} strokeDasharray={`${pct} 100`} transform="rotate(-90 18 18)" /></svg>}
+              <Icon name={download?.status === 'downloading' ? 'pause' : download?.status === 'error' ? 'restart' : 'download'} size={download?.status === 'downloading' || download?.status === 'paused' ? 13 : 16} />
+            </button>}
             {rowRatio > 0 && <span className="sd-episode-bar" style={{ width: `${rowRatio * 100}%` }} />}
           </article>;
         })}</div> : <div className="sd-empty"><strong>{episodes.length ? episodeFilter === 'unwatched' && !query ? 'You’re all caught up' : 'No matching episodes' : 'No streaming source found'}</strong>{episodes.length ? episodeFilter === 'unwatched' && !query ? 'Every episode in this list is marked watched.' : 'Try an episode number or a different title.' : anime.episodeLoadError || 'Please check back later.'}</div>}

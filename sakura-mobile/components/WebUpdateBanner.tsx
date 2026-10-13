@@ -8,6 +8,55 @@ const ACCENT = '#E84545';
 const VERSION_URL = '/app/version.json';
 const POLL_MS = 5 * 60 * 1000;
 
+/** How long "Refresh now" waits for the new worker before reloading anyway. */
+const WORKER_WAIT_MS = 20_000;
+
+/**
+ * Fetch the deployed service worker and wait, bounded, until it has activated.
+ *
+ * Every deploy ships a byte-different sw.js (the build's precache list is
+ * stamped into it), so update() finds a new worker. Its install caches the new
+ * build's document and bundle, replacing the offline shell only as a complete
+ * pair, so once it is active the shell it falls back to is the new build — the
+ * reload lands on it even when the network is too slow and the worker answers
+ * from cache. If the bundle could not be fetched, the previous complete shell
+ * stays. On timeout the reload goes ahead regardless; navigations are
+ * network-first, so the user still gets the new build online.
+ */
+export async function activateLatestWorker(timeoutMs: number): Promise<void> {
+  const container = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
+  if (!container?.getRegistration) return;
+  // The deadline covers registration lookup and update() too. A captive portal
+  // can leave update() pending forever, before there even is a worker to watch.
+  await new Promise<void>((resolve) => {
+    let pending: ServiceWorker | undefined;
+    let finished = false;
+    const onChange = () => {
+      if (pending?.state !== 'activated' && pending?.state !== 'redundant') return;
+      finish();
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      pending?.removeEventListener('statechange', onChange);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    void (async () => {
+      const reg = await container.getRegistration('/app/');
+      if (finished) return;
+      if (!reg) return finish();
+      await reg.update();
+      if (finished) return;
+      pending = reg.installing || reg.waiting || undefined;
+      if (!pending) return finish();
+      pending.addEventListener('statechange', onChange);
+      onChange();
+    })().catch(finish);
+  });
+}
+
 /**
  * Web-only "a new version is available" prompt.
  *
@@ -60,26 +109,25 @@ export default function WebUpdateBanner() {
     };
   }, [currentBuild]);
 
-  /** Genuine hard refresh: drop caches + the old service worker, then reload. */
+  /**
+   * Genuine hard refresh: install the new deploy's service worker, then reload.
+   *
+   * This deliberately deletes no caches. It used to delete every
+   * `sakura-shell-*` cache before reloading (and before that, every cache —
+   * including the user's downloads). Dropping the shell was never needed to get
+   * a new build, since navigations are network-first and bundles are
+   * content-hashed, but it was dangerous: if the reload then failed — a train
+   * tunnel, a captive portal — the installed app had no shell left and could
+   * not open offline, downloads and all. Instead this waits for the new
+   * worker, which caches the new build's shell before it takes over and prunes
+   * the old bundle itself.
+   */
   const hardRefresh = useCallback(async () => {
     setBusy(true);
     try {
-      if (typeof caches !== 'undefined') {
-        const keys = await caches.keys();
-        // Build caches only. This used to delete every key, which would wipe a
-        // user's downloaded chapters behind a button labelled "Update" — the
-        // library lives in `sakura-offline-*` and is user data, not build
-        // output. Getting a fresh build never requires destroying it.
-        await Promise.all(
-          keys.filter((k) => k.startsWith('sakura-shell-')).map((k) => caches.delete(k)),
-        );
-      }
-      if (navigator.serviceWorker?.getRegistrations) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map((r) => r.update().catch(() => undefined)));
-      }
+      await activateLatestWorker(WORKER_WAIT_MS);
     } catch {
-      // never block the reload on cleanup
+      // never block the reload on the worker
     }
     // Cache-busted URL so even a stubborn intermediary serves the new document.
     const url = new URL(window.location.href);

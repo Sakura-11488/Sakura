@@ -124,10 +124,13 @@ export async function fetchTrendingHentai(limit = 24): Promise<ContentItem[]> {
           // ignore individual fallback failures
         }
       }
+      // Nothing from any query is a failure, not an empty catalogue; throwing
+      // keeps it out of the cache (see fetchHentaiDetail).
+      if (!collected.length) throw new Error('18+ titles are temporarily unavailable.');
       return collected;
     },
     { staleIfError: true },
-  );
+  ).catch(() => [] as ContentItem[]);
 }
 
 export async function searchHentai(query: string, limit = 24): Promise<ContentItem[]> {
@@ -145,38 +148,43 @@ export async function searchHentai(query: string, limit = 24): Promise<ContentIt
   );
 }
 
+/**
+ * The detail and chapter loaders THROW on failure instead of returning null /
+ * []: getOrSetCached caches whatever a loader returns as fresh for the whole
+ * TTL, so a swallowed network error used to pin "no such gallery" for 30
+ * minutes after a single offline open. Throwing caches nothing and lets
+ * staleIfError serve the last good value; empty answers are not cached either.
+ * The exported functions still resolve null / [] on failure, by catching
+ * outside the cache. Same reasoning as lib/manhwa.ts.
+ */
 export async function fetchHentaiDetail(id: string): Promise<MangaDetail | null> {
-  return getOrSetCached<MangaDetail | null>(
+  return getOrSetCached<MangaDetail>(
     `hentai:detail:${id}`,
     30 * 60 * 1000,
     async () => {
-      try {
-        const params = new URLSearchParams({ id });
-        const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
-        const detail =
-          (data as { comic?: ProxyDetail }).comic ||
-          (data as { manga?: ProxyDetail }).manga ||
-          (data as ProxyDetail);
-        if (!detail || !detail.id) return null;
-        const authors =
-          Array.isArray(detail.authors) && detail.authors.length
-            ? detail.authors.join(', ')
-            : detail.author || '';
-        return {
-          id: detail.id,
-          title: detail.title || detail.id,
-          cover: proxyHentaiImage(detail.cover),
-          description: detail.description || '',
-          genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
-          status: detail.status || '',
-          type: authors ? `Doujin · ${authors}` : 'Doujin',
-        };
-      } catch {
-        return null;
-      }
+      const params = new URLSearchParams({ id });
+      const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
+      const detail =
+        (data as { comic?: ProxyDetail }).comic ||
+        (data as { manga?: ProxyDetail }).manga ||
+        (data as ProxyDetail);
+      if (!detail || !detail.id) throw new Error('Gallery not found.');
+      const authors =
+        Array.isArray(detail.authors) && detail.authors.length
+          ? detail.authors.join(', ')
+          : detail.author || '';
+      return {
+        id: detail.id,
+        title: detail.title || detail.id,
+        cover: proxyHentaiImage(detail.cover),
+        description: detail.description || '',
+        genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
+        status: detail.status || '',
+        type: authors ? `Doujin · ${authors}` : 'Doujin',
+      };
     },
     { staleIfError: true },
-  );
+  ).catch(() => null);
 }
 
 export async function fetchHentaiChapters(id: string): Promise<MangaChapter[]> {
@@ -184,26 +192,23 @@ export async function fetchHentaiChapters(id: string): Promise<MangaChapter[]> {
     `hentai:chapters:${id}`,
     15 * 60 * 1000,
     async () => {
-      try {
-        const params = new URLSearchParams({ id, limit: '10', offset: '0' });
-        const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
-        const chapters = data.issues || data.chapters || [];
-        return chapters.map((c, idx) => {
-          const num = c.number != null ? Number(c.number) : chapters.length - idx;
-          return {
-            id: c.id,
-            number: Number.isFinite(num) ? num : chapters.length - idx,
-            title: c.title || 'Read Gallery',
-            pageCount: c.pages || 0,
-            createdAt: c.publishAt || '',
-          } as MangaChapter;
-        });
-      } catch {
-        return [];
-      }
+      const params = new URLSearchParams({ id, limit: '10', offset: '0' });
+      const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
+      const chapters = data.issues || data.chapters || [];
+      if (!chapters.length) throw new Error('No chapters.');
+      return chapters.map((c, idx) => {
+        const num = c.number != null ? Number(c.number) : chapters.length - idx;
+        return {
+          id: c.id,
+          number: Number.isFinite(num) ? num : chapters.length - idx,
+          title: c.title || 'Read Gallery',
+          pageCount: c.pages || 0,
+          createdAt: c.publishAt || '',
+        } as MangaChapter;
+      });
     },
     { staleIfError: true },
-  );
+  ).catch(() => [] as MangaChapter[]);
 }
 
 export async function fetchHentaiPages(galleryId: string, rawChapterId: string): Promise<string[]> {

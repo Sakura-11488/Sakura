@@ -115,10 +115,17 @@ ${preloadLinks()}
       input, textarea, select { font-size: 16px; }
     </style>
     <script>
+      /*
+       * Register at parse time, not on window 'load'. 'load' waits for the
+       * whole ~7.5MB bundle to download and run, so on a first visit the
+       * worker — and with it the offline copy of the app, which it now
+       * precaches at install (public/sw.js) — started only after that, or
+       * never if the tab was closed first. Until the worker activates the tab
+       * is uncontrolled, and an uncontrolled tab cannot show anything the user
+       * downloads: /app/__offline/* is served by the worker alone.
+       */
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', function () {
-          navigator.serviceWorker.register('/app/sw.js', { scope: '/app/' }).catch(function () {});
-        });
+        navigator.serviceWorker.register('/app/sw.js', { scope: '/app/' }).catch(function () {});
       }
     </script>
   `;

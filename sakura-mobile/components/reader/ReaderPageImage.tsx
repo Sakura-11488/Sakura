@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Image } from 'expo-image';
+import ReaderImage from './ReaderImage';
 
 const IMAGE_TIMEOUT_MS = 15_000;
 
@@ -45,13 +45,16 @@ export default function ReaderPageImage({
     // The parent FlatList mirrors all its children in RTL mode. Counter-mirror
     // the whole page so both the artwork and recovery controls read normally.
     <View style={[{ width, height }, mirrored && styles.mirrored]}>
-      <Image
+      <ReaderImage
         key={requestId}
         source={{ uri }}
         style={StyleSheet.absoluteFill}
         contentFit="contain"
         transition={0}
         recyclingKey={requestId}
+        isVisible={isVisible}
+        retryAttempt={attempt}
+        accessibilityLabel={`Page ${pageNumber}`}
         onLoad={(event) => {
           if (currentRequest.current !== requestId) return;
           setResult({ requestId, status: 'ready' });

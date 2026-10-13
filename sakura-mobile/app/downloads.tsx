@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { confirmDestructive } from '@/lib/confirm-alert';
+import { CAN_SAVE_ANIME_VIDEO, downloadAnimeEpisodeWithDeviceCopy, requestAnimeVideoSave } from '@/lib/anime-device-save';
 import { CAN_EXPORT_OFFLINE, exportDownloadedChapter, type ExportTarget } from '@/lib/offline-export';
 import {
   Platform,
@@ -10,7 +11,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
-import Image from '@/components/ui/CoverImage';
+import CoverImage from '@/components/ui/CoverImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Path } from 'react-native-svg';
@@ -25,7 +26,6 @@ import {
   reconcileInterruptedEpisodes,
   pauseAnimeEpisodeDownload,
   resumeAnimeEpisodeDownload,
-  downloadAnimeEpisode,
   type OfflineEpisode,
 } from '@/lib/anime-offline';
 import {
@@ -57,6 +57,7 @@ import {
   type OfflineScrapedChapter,
 } from '@/lib/scraped-offline';
 import { SCRAPED_SOURCES, SCRAPED_SOURCE_KEYS } from '@/lib/scraped-sources';
+import { listOfflineTitles, type OfflineTitleSource } from '@/lib/offline-titles';
 import { playTap, onTap } from '@/lib/sound';
 
 type DownloadRow =
@@ -64,6 +65,77 @@ type DownloadRow =
   | { kind: 'manga'; data: OfflineMangaChapter }
   | { kind: 'novel'; data: OfflineNovelChapter }
   | { kind: 'scraped'; data: OfflineScrapedChapter };
+
+/** Rows that belong to a manga-like series and are grouped under it. */
+type SeriesRow = Extract<DownloadRow, { kind: 'manga' | 'scraped' }>;
+
+/** One downloaded series, shown as a header above its chapters. */
+interface SeriesInfo {
+  /** `${source}:${contentId}`, the same pair the title snapshots are keyed by. */
+  key: string;
+  /** 'atsu' for the default manga source, else the scraped source key. */
+  source: OfflineTitleSource;
+  contentId: string;
+  title: string;
+  /** Remote cover from the newest row; the stored one is preferred when present. */
+  cover: string;
+  ready: number;
+  total: number;
+}
+
+type DownloadSection = {
+  key: string;
+  /** Kind heading ("Manga", "Manhwa", …). */
+  title: string;
+  /** Only the first series of a kind repeats the kind heading. */
+  showHeading: boolean;
+  series?: SeriesInfo;
+  data: DownloadRow[];
+};
+
+function settled<T>(result: PromiseSettledResult<T>, fallback: T): T {
+  return result.status === 'fulfilled' ? result.value : fallback;
+}
+
+function seriesKey(source: OfflineTitleSource, contentId: string): string {
+  return `${source}:${contentId}`;
+}
+
+/**
+ * Chapters grouped by series: newest-touched series first, chapters in
+ * reading order within each. A flat list of "Ch 12 · Ch 3 · Ch 40" across
+ * several titles was the whole Downloads screen before, with no way from a
+ * chapter back to its series — offline, the only way to reach one.
+ */
+function groupBySeries(rows: SeriesRow[], source: OfflineTitleSource, heading: string): DownloadSection[] {
+  const groups = new Map<string, SeriesRow[]>();
+  for (const row of rows) {
+    const list = groups.get(row.data.mangaId);
+    if (list) list.push(row);
+    else groups.set(row.data.mangaId, [row]);
+  }
+  const newest = (list: SeriesRow[]) => Math.max(...list.map((r) => r.data.updatedAt || 0));
+  return [...groups.entries()]
+    .sort(([, a], [, b]) => newest(b) - newest(a))
+    .map(([contentId, list], index) => {
+      const latest = [...list].sort((a, b) => (b.data.updatedAt || 0) - (a.data.updatedAt || 0))[0];
+      return {
+        key: seriesKey(source, contentId),
+        title: heading,
+        showHeading: index === 0,
+        series: {
+          key: seriesKey(source, contentId),
+          source,
+          contentId,
+          title: latest.data.title,
+          cover: latest.data.cover,
+          ready: list.filter((r) => r.data.status === 'ready').length,
+          total: list.length,
+        },
+        data: [...list].sort((a, b) => a.data.chapterNumber - b.data.chapterNumber),
+      };
+    });
+}
 
 /** Stable per-row identity, so only the row being saved shows progress. */
 function rowKey(row: DownloadRow): string {
@@ -84,7 +156,12 @@ function BackIcon({ color }: { color: string }) {
 export default function DownloadsScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const [sections, setSections] = useState<{ title: string; data: DownloadRow[] }[]>([]);
+  const [sections, setSections] = useState<DownloadSection[]>([]);
+  /**
+   * Stored covers (web: Cache Storage, served by the service worker), keyed
+   * by series. Row covers are remote URLs, which offline render as nothing.
+   */
+  const [storedCovers, setStoredCovers] = useState<Record<string, string>>({});
   const [storageLabel, setStorageLabel] = useState('');
   // Web only. Whether the browser has granted durable storage for this
   // origin, which decides which of the two honest sentences the header shows.
@@ -95,6 +172,8 @@ export default function DownloadsScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const refreshInFlight = React.useRef<Promise<void> | null>(null);
+  /** A refresh was asked for while one was running; run once more after it. */
+  const refreshQueued = React.useRef(false);
   const hasActiveDownloads = React.useRef(false);
   const lastRefreshAt = React.useRef(0);
 
@@ -114,9 +193,18 @@ export default function DownloadsScreen() {
     };
   }, []);
 
-  const refresh = useCallback(() => {
-    if (refreshInFlight.current) return refreshInFlight.current;
-    const request = Promise.all([
+  const refresh = useCallback((): Promise<void> => {
+    // One read at a time: the poll, focus and every store call all land here.
+    // A call made while a read is running gets one more pass after it, so a
+    // delete or resume is never answered by a read that started before it.
+    if (refreshInFlight.current) {
+      refreshQueued.current = true;
+      return refreshInFlight.current;
+    }
+    // allSettled, not all: one store failing — an evicted cache, a corrupt
+    // manifest — rejected the whole refresh and left the screen saying "No
+    // downloads yet" while every other store was full.
+    const request = Promise.allSettled([
       listOfflineEpisodes(),
       listOfflineMangaChapters(),
       listOfflineNovelChapters(),
@@ -125,39 +213,56 @@ export default function DownloadsScreen() {
       getOfflineMangaStorageBytes(),
       getOfflineNovelStorageBytes(),
       getScrapedOfflineStorageBytes(),
-    ]).then(([anime, manga, novel, scraped, ab, mb, nb, sb]) => {
-      const total = ab + mb + nb + sb;
+    ]).then(([animeR, mangaR, novelR, scrapedR, abR, mbR, nbR, sbR]) => {
+      // Every store failing is a failed read, not an empty library: show the
+      // error and keep whatever was last listed instead of "No downloads yet".
+      if ([animeR, mangaR, novelR, scrapedR].every((r) => r.status === 'rejected')) {
+        throw new Error('No download store could be read');
+      }
+      const anime = settled(animeR, [] as OfflineEpisode[]);
+      const manga = settled(mangaR, [] as OfflineMangaChapter[]);
+      const novel = settled(novelR, [] as OfflineNovelChapter[]);
+      const scraped = settled(scrapedR, [] as OfflineScrapedChapter[]);
+      const total = settled(abR, 0) + settled(mbR, 0) + settled(nbR, 0) + settled(sbR, 0);
       setStorageLabel(formatBytes(total));
 
-      const next: { title: string; data: DownloadRow[] }[] = [];
+      const next: DownloadSection[] = [];
       if (anime.length) {
         next.push({
+          key: 'anime',
           title: 'Anime',
+          showHeading: true,
           data: anime.map((data) => ({ kind: 'anime' as const, data })),
         });
       }
-      if (manga.length) {
-        next.push({
-          title: 'Manga',
-          data: manga.map((data) => ({ kind: 'manga' as const, data })),
-        });
-      }
+      next.push(
+        ...groupBySeries(
+          manga.map((data) => ({ kind: 'manga' as const, data })),
+          'atsu',
+          'Manga',
+        ),
+      );
       if (novel.length) {
         next.push({
+          key: 'novels',
           title: 'Novels',
+          showHeading: true,
           data: novel.map((data) => ({ kind: 'novel' as const, data })),
         });
       }
-      // One section per scraped source, in registry order, so a new scraper's
+      // One heading per scraped source, in registry order, so a new scraper's
       // downloads can't end up invisible here just because nobody added a
       // matching filter+push block.
       for (const key of SCRAPED_SOURCE_KEYS) {
         const rows = scraped.filter((c) => c.source === key);
         if (!rows.length) continue;
-        next.push({
-          title: SCRAPED_SOURCES[key].label,
-          data: rows.map((data) => ({ kind: 'scraped' as const, data })),
-        });
+        next.push(
+          ...groupBySeries(
+            rows.map((data) => ({ kind: 'scraped' as const, data })),
+            key,
+            SCRAPED_SOURCES[key].label,
+          ),
+        );
       }
       setSections(next);
       hasActiveDownloads.current = next.some((section) => section.data.some((row) => row.data.status === 'downloading'));
@@ -166,16 +271,42 @@ export default function DownloadsScreen() {
     }).catch(() => setLoadError('Downloads could not be loaded. Your saved files have not been changed.')).finally(() => {
       setLoading(false);
       refreshInFlight.current = null;
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     });
     refreshInFlight.current = request;
     return request;
   }, []);
 
+  // Stored covers change only when a series gains or loses its snapshot, so
+  // they are read when the set of series changes and on focus — not on the
+  // two-second progress refresh, which would re-read every snapshot (each
+  // carrying a full chapter list) every two seconds.
+  const seriesSignature = useMemo(
+    () => sections.map((sec) => sec.series?.key).filter(Boolean).join('|'),
+    [sections],
+  );
+  const loadCovers = useCallback(() => {
+    void listOfflineTitles()
+      .then((titles) => {
+        const map: Record<string, string> = {};
+        for (const t of titles) if (t.coverUri) map[seriesKey(t.source, t.contentId)] = t.coverUri;
+        setStoredCovers(map);
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (seriesSignature) loadCovers();
+  }, [seriesSignature, loadCovers]);
+
   // Once per app run, flip any download left mid-flight by a previous session
   // (killed app, crash) from "downloading" to a resumable state so it stops
-  // showing a spinner that never advances.
+  // showing a spinner that never advances. Settled, so one store cannot stop
+  // the list from loading.
   useEffect(() => {
-    Promise.all([
+    void Promise.allSettled([
       reconcileInterruptedEpisodes(),
       reconcileInterruptedMangaChapters(),
       reconcileInterruptedNovelChapters(),
@@ -185,13 +316,18 @@ export default function DownloadsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      refresh();
+      void refresh();
+      loadCovers();
+      // Fast only while something is downloading; otherwise a slow re-check.
+      // Covers are not polled (see loadCovers). A tick that lands mid-read is
+      // dropped rather than queued — the next tick is two seconds away.
       const t = setInterval(() => {
         if (Platform.OS === 'web' && document.visibilityState === 'hidden') return;
+        if (refreshInFlight.current) return;
         if (hasActiveDownloads.current || Date.now() - lastRefreshAt.current >= 15000) void refresh();
       }, 2000);
       return () => clearInterval(t);
-    }, [refresh]),
+    }, [refresh, loadCovers]),
   );
 
   const styles = useMemo(
@@ -243,6 +379,16 @@ export default function DownloadsScreen() {
         },
         rowMain: { flex: 1, minWidth: 200, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
         thumb: { width: 72, height: 48, borderRadius: Radius.xs },
+        seriesHeader: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: Spacing.sm,
+          paddingVertical: Spacing.xs,
+          marginBottom: Spacing.xs,
+        },
+        seriesThumb: { width: 40, height: 56, borderRadius: Radius.xs, overflow: 'hidden' },
+        /** Chapters sit under their series header, so they lose the thumbnail and indent. */
+        groupedRow: { marginLeft: Spacing.sm },
         info: { flex: 1, minWidth: 0, gap: 4 },
         name: { fontSize: FontSize.sm, fontWeight: FontWeight.semibold, color: colors.text },
         meta: { fontSize: FontSize.xs, color: colors.textSecondary },
@@ -273,9 +419,10 @@ export default function DownloadsScreen() {
    * Costs no network — every byte is already on the device.
    */
   const saveCopy = (row: DownloadRow) => {
-    // Narrow before building the target rather than casting: only these two
-    // kinds are stored in Cache Storage, so only these two can be read back.
-    if (row.kind !== 'novel' && row.kind !== 'scraped') return;
+    // Narrow before building the target rather than casting: only these kinds
+    // are stored in Cache Storage, so only these can be read back. atsu manga
+    // joined them when it got a web store (lib/manga-offline.web.ts).
+    if (row.kind === 'anime') return;
     playTap();
 
     const target: ExportTarget =
@@ -286,14 +433,22 @@ export default function DownloadsScreen() {
             chapterPath: row.data.chapterPath,
             label: `${row.data.title} - ${row.data.chapterTitle}`,
           }
-        : {
-            kind: 'scraped',
-            source: row.data.source,
-            contentId: row.data.mangaId,
-            chapterId: row.data.chapterId,
-            pageCount: row.data.pageCount,
-            label: `${row.data.title} - Ch ${row.data.chapterNumber}`,
-          };
+        : row.kind === 'manga'
+          ? {
+              kind: 'manga',
+              mangaId: row.data.mangaId,
+              chapterId: row.data.chapterId,
+              pageCount: row.data.pageCount,
+              label: `${row.data.title} - Ch ${row.data.chapterNumber}`,
+            }
+          : {
+              kind: 'scraped',
+              source: row.data.source,
+              contentId: row.data.mangaId,
+              chapterId: row.data.chapterId,
+              pageCount: row.data.pageCount,
+              label: `${row.data.title} - Ch ${row.data.chapterNumber}`,
+            };
 
     setSaving(rowKey(row));
     void (async () => {
@@ -322,14 +477,41 @@ export default function DownloadsScreen() {
     void confirmDestructive('Delete download', `Remove ${label}?`).then((ok) => {
       if (!ok) return;
       if (row.kind === 'anime') {
-        deleteOfflineEpisode(row.data.animeId, row.data.episodeId).then(refresh);
+        afterStoreCall(deleteOfflineEpisode(row.data.animeId, row.data.episodeId), 'Could not delete');
       } else if (row.kind === 'manga') {
-        deleteOfflineMangaChapter(row.data.mangaId, row.data.chapterId).then(refresh);
+        afterStoreCall(deleteOfflineMangaChapter(row.data.mangaId, row.data.chapterId), 'Could not delete');
       } else if (row.kind === 'scraped') {
-        deleteScrapedOfflineChapter(row.data.source, row.data.mangaId, row.data.chapterId).then(refresh);
+        afterStoreCall(deleteScrapedOfflineChapter(row.data.source, row.data.mangaId, row.data.chapterId), 'Could not delete');
       } else {
-        deleteOfflineNovelChapter(row.data.novelPath, row.data.chapterPath).then(refresh);
+        afterStoreCall(deleteOfflineNovelChapter(row.data.novelPath, row.data.chapterPath), 'Could not delete');
       }
+    });
+  };
+
+  /**
+   * Refresh once a store call finishes, and say so when it fails. The
+   * download calls reject on failure — the web stores with a reason worth
+   * reading ("Not enough space…", "You're offline…") — and a bare
+   * `.then(refresh)` left that as an unhandled rejection and the row as the
+   * only clue.
+   */
+  function afterStoreCall(work: Promise<unknown>, fallback: string) {
+    work.then(refresh, (e: unknown) => {
+      setNotice(e instanceof Error && e.message ? e.message : fallback);
+      refresh();
+    });
+  }
+
+  const openSeries = (series: SeriesInfo) => {
+    playTap();
+    // With its source: without it a manhwa or comic would open as atsu. The
+    // manga page renders from the stored snapshot when offline.
+    router.push({
+      pathname: '/manga/[id]',
+      params: {
+        id: series.contentId,
+        ...(series.source !== 'atsu' ? { source: series.source } : {}),
+      },
     });
   };
 
@@ -344,6 +526,9 @@ export default function DownloadsScreen() {
       return;
     }
     if (row.kind === 'manga') {
+      // No `gated` param: a downloaded chapter opens without a pass check (it
+      // needed access to be downloaded, and the check needs the network). The
+      // manga page and the reader follow the same rule.
       router.push({
         pathname: '/chapter/[id]',
         params: {
@@ -385,6 +570,10 @@ export default function DownloadsScreen() {
 
   const handlePauseResume = (row: DownloadRow) => {
     playTap();
+    // A paused-only list polls every 15s, and the resumed job refreshes only
+    // when it ends; switch to the 2s poll so its progress shows straight away.
+    // The next refresh recomputes this from the real statuses.
+    hasActiveDownloads.current = true;
     if (row.kind === 'anime') {
       const { animeId, episodeId, episodeNumber, episodeTitle, title, cover, episodeThumbnail } = row.data;
       if (row.data.status === 'downloading') {
@@ -393,7 +582,7 @@ export default function DownloadsScreen() {
       }
       if (row.data.status === 'paused') {
         resumeAnimeEpisodeDownload(animeId, episodeId);
-        void downloadAnimeEpisode({
+        afterStoreCall(downloadAnimeEpisodeWithDeviceCopy({
           animeId,
           episodeId,
           episodeNumber,
@@ -401,7 +590,7 @@ export default function DownloadsScreen() {
           title,
           cover,
           episodeThumbnail,
-        }).then(refresh);
+        }), 'Download failed');
       }
       return;
     }
@@ -413,14 +602,14 @@ export default function DownloadsScreen() {
       }
       if (row.data.status === 'paused') {
         resumeMangaChapterDownload(mangaId, chapterId);
-        void downloadMangaChapter({
+        afterStoreCall(downloadMangaChapter({
           mangaId,
           chapterId,
           chapterNumber,
           chapterTitle,
           title,
           cover,
-        }).then(refresh);
+        }), 'Download failed');
       }
       return;
     }
@@ -432,7 +621,7 @@ export default function DownloadsScreen() {
       }
       if (row.data.status === 'paused') {
         resumeScrapedChapterDownload(source, mangaId, chapterId);
-        void downloadScrapedChapter({
+        afterStoreCall(downloadScrapedChapter({
           source,
           contentId: mangaId,
           chapterId,
@@ -440,7 +629,7 @@ export default function DownloadsScreen() {
           chapterTitle,
           title,
           cover,
-        }).then(refresh);
+        }), 'Download failed');
       }
       return;
     }
@@ -450,9 +639,11 @@ export default function DownloadsScreen() {
 
   const handleRetry = (row: DownloadRow) => {
     playTap();
+    // Same as resume: an error-only list is on the slow poll.
+    hasActiveDownloads.current = true;
     if (row.kind === 'anime') {
       const { animeId, episodeId, episodeNumber, episodeTitle, title, cover, episodeThumbnail } = row.data;
-      void downloadAnimeEpisode({
+      afterStoreCall(downloadAnimeEpisodeWithDeviceCopy({
         animeId,
         episodeId,
         episodeNumber,
@@ -460,20 +651,20 @@ export default function DownloadsScreen() {
         title,
         cover,
         episodeThumbnail,
-      }).then(refresh);
+      }), 'Download failed');
     } else if (row.kind === 'manga') {
       const { mangaId, chapterId, chapterNumber, chapterTitle, title, cover } = row.data;
-      void downloadMangaChapter({
+      afterStoreCall(downloadMangaChapter({
         mangaId,
         chapterId,
         chapterNumber,
         chapterTitle,
         title,
         cover,
-      }).then(refresh);
+      }), 'Download failed');
     } else if (row.kind === 'scraped') {
       const { source, mangaId, chapterId, chapterNumber, chapterTitle, title, cover } = row.data;
-      void downloadScrapedChapter({
+      afterStoreCall(downloadScrapedChapter({
         source,
         contentId: mangaId,
         chapterId,
@@ -481,55 +672,65 @@ export default function DownloadsScreen() {
         chapterTitle,
         title,
         cover,
-      }).then(refresh);
+      }), 'Download failed');
     } else {
       const { novelPath, chapterPath, chapterNumber, chapterTitle, title, cover } = row.data;
-      void downloadNovelChapter({
+      afterStoreCall(downloadNovelChapter({
         novelPath,
         chapterPath,
         chapterNumber,
         chapterTitle,
         title,
         cover,
-      }).then(refresh);
+      }), 'Download failed');
     }
   };
 
   const renderRow = (row: DownloadRow) => {
     const statusLabel =
       row.data.status === 'ready'
-        ? 'Ready'
+        ? row.kind === 'anime' ? 'Saved in Sakura' : 'Ready'
         : row.data.status === 'paused'
           ? `Paused · ${Math.round(row.data.progress * 100)}%`
           : row.data.status === 'downloading'
             ? `${Math.round(row.data.progress * 100)}%`
             : row.data.error || 'Failed';
 
+    // Manga-like chapters sit under their series header, which carries the
+    // title and cover; repeating both on every chapter was most of the row.
+    const grouped = row.kind === 'manga' || row.kind === 'scraped';
     const thumb =
       row.kind === 'anime'
         ? row.data.episodeThumbnail || row.data.cover
         : row.data.cover;
 
-    const name = row.data.title;
+    const name = grouped
+      ? `Ch ${row.data.chapterNumber} · ${row.data.chapterTitle}`
+      : row.data.title;
     const meta =
       row.kind === 'anime'
         ? `Ep ${row.data.episodeNumber} · ${row.data.episodeTitle}`
-        : row.kind === 'manga' || row.kind === 'scraped'
-          ? `Ch ${row.data.chapterNumber} · ${row.data.chapterTitle}`
+        : grouped
+          ? row.data.pageCount > 0 ? `${row.data.pageCount} pages` : ''
           : row.data.chapterTitle;
+    // The series header carries a grouped row's title on screen, but a screen
+    // reader reaches each button on its own, and "Delete download of Ch 3"
+    // could be any series — so the labels keep it.
+    const a11yName = grouped ? `${row.data.title}, ${name}` : name;
+    const a11yDetail = meta ? `${a11yName}, ${meta}` : a11yName;
 
     return (
-      <View style={styles.row}>
+      <View style={[styles.row, grouped && styles.groupedRow]}>
       <TouchableOpacity
         accessibilityRole="button"
-        accessibilityLabel={`Open ${name}, ${meta}`}
+        accessibilityLabel={`Open ${a11yDetail}`}
         disabled={row.data.status !== 'ready'}
         style={styles.rowMain}
         activeOpacity={row.data.status === 'ready' ? 0.85 : 1}
         onPress={() => openRow(row)}
       >
-        {thumb ? (
-          <Image source={{ uri: thumb }} thumbnailWidth={256} style={styles.thumb} contentFit="cover" />
+        {grouped ? null : thumb ? (
+          <CoverImage source={{ uri: thumb }} thumbnailWidth={256} style={styles.thumb} contentFit="cover" />
         ) : (
           <View style={[styles.thumb, { backgroundColor: colors.border }]} />
         )}
@@ -537,9 +738,11 @@ export default function DownloadsScreen() {
           <Text style={styles.name} numberOfLines={1}>
             {name}
           </Text>
-          <Text style={styles.meta} numberOfLines={1}>
-            {meta}
-          </Text>
+          {meta ? (
+            <Text style={styles.meta} numberOfLines={1}>
+              {meta}
+            </Text>
+          ) : null}
           <Text style={styles.badge}>{statusLabel}</Text>
         </View>
       </TouchableOpacity>
@@ -547,33 +750,36 @@ export default function DownloadsScreen() {
             chapter list needed to resume a batch, so their pause/resume lives on
             the novel page — here they show only Delete. */}
         {(row.data.status === 'downloading' || row.data.status === 'paused') && row.kind !== 'novel' ? (
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${row.data.status === 'paused' ? 'Resume' : 'Pause'} download of ${name}`} style={styles.deleteBtn} onPress={() => handlePauseResume(row)}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${row.data.status === 'paused' ? 'Resume' : 'Pause'} download of ${a11yName}`} style={styles.deleteBtn} onPress={() => handlePauseResume(row)}>
             <Text style={[styles.deleteText, { color: colors.primary }]}>
               {row.data.status === 'paused' ? 'Resume' : 'Pause'}
             </Text>
           </TouchableOpacity>
         ) : row.data.status === 'error' ? (
           <View style={styles.rowActions}>
-            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Retry download of ${name}`} style={styles.deleteBtn} onPress={() => handleRetry(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Retry download of ${a11yName}`} style={styles.deleteBtn} onPress={() => handleRetry(row)}>
               <Text style={[styles.deleteText, { color: colors.primary }]}>Retry</Text>
             </TouchableOpacity>
-            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${name}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${a11yName}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
               <Text style={styles.deleteText}>Delete</Text>
             </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.rowActions}>
-            {/*
-              Web only, and only for the kinds stored in Cache Storage. The
-              library copy can be reclaimed by the browser; this writes a file
-              to the Downloads folder, which cannot. Costs no network — the
-              bytes are already on the device.
-            */}
-            {CAN_EXPORT_OFFLINE && row.data.status === 'ready' &&
-            (row.kind === 'scraped' || row.kind === 'novel') ? (
+            {CAN_SAVE_ANIME_VIDEO && row.kind === 'anime' && row.data.status === 'ready' ? (
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                accessibilityRole="button"
+                accessibilityLabel={`Save video: ${row.data.title}, episode ${row.data.episodeNumber}`}
+                onPress={() => { playTap(); requestAnimeVideoSave(row.data.animeId, row.data.episodeId); }}
+              >
+                <Text style={[styles.deleteText, { color: colors.primary }]}>Save video</Text>
+              </TouchableOpacity>
+            ) : null}
+            {CAN_EXPORT_OFFLINE && row.data.status === 'ready' && row.kind !== 'anime' ? (
               <TouchableOpacity
                 accessibilityRole="button"
-                accessibilityLabel={`Save a copy of ${name}, ${meta}`}
+                accessibilityLabel={`Save a copy of ${a11yDetail}`}
                 style={styles.deleteBtn}
                 onPress={() => saveCopy(row)}
                 disabled={saving === rowKey(row)}
@@ -583,11 +789,45 @@ export default function DownloadsScreen() {
                 </Text>
               </TouchableOpacity>
             ) : null}
-            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${name}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Delete download of ${a11yName}`} style={styles.deleteBtn} onPress={() => confirmDelete(row)}>
               <Text style={styles.deleteText}>Delete</Text>
             </TouchableOpacity>
           </View>
         )}
+      </View>
+    );
+  };
+
+  const renderSeriesHeader = (series: SeriesInfo) => {
+    // The stored cover first: it is same-origin and works offline. The row's
+    // remote cover goes through CoverImage, which on web routes atsu and
+    // manhwa posters through the cover proxy just like the rest of the app.
+    const cover = storedCovers[series.key] || series.cover;
+    return (
+      <View style={styles.seriesHeader}>
+        {cover ? (
+          <CoverImage source={{ uri: cover }} style={styles.seriesThumb} contentFit="cover" />
+        ) : (
+          <View style={[styles.seriesThumb, { backgroundColor: colors.border }]} />
+        )}
+        <View style={styles.info}>
+          <Text style={styles.name} numberOfLines={2}>
+            {series.title}
+          </Text>
+          <Text style={styles.meta} numberOfLines={1}>
+            {series.ready === series.total
+              ? `${series.total} ${series.total === 1 ? 'chapter' : 'chapters'}`
+              : `${series.ready} of ${series.total} chapters ready`}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={() => openSeries(series)}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${series.title}`}
+        >
+          <Text style={[styles.deleteText, { color: colors.primary }]}>Open series</Text>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -623,6 +863,7 @@ export default function DownloadsScreen() {
           {persistedStorage
             ? 'Your browser has marked these as protected storage.'
             : 'Your browser may clear these if the device runs low on space.'}
+          {' '}Save video creates an MP4 file. Files saved to your device survive clearing Sakura’s site data.
         </Text>
       ) : null}
 
@@ -649,8 +890,14 @@ export default function DownloadsScreen() {
                   : `n-${item.data.novelPath}-${item.data.chapterPath}`
           }
           contentContainerStyle={styles.list}
-          renderSectionHeader={({ section: { title } }) => (
-            <Text style={styles.sectionTitle}>{title}</Text>
+          // Series headers are cards, not labels; pinned they would stack
+          // over the chapters scrolling beneath them.
+          stickySectionHeadersEnabled={false}
+          renderSectionHeader={({ section }) => (
+            <View>
+              {section.showHeading ? <Text style={styles.sectionTitle}>{section.title}</Text> : null}
+              {section.series ? renderSeriesHeader(section.series) : null}
+            </View>
           )}
           renderItem={({ item }) => renderRow(item)}
         />

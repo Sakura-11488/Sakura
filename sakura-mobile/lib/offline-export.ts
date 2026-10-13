@@ -19,6 +19,8 @@ export type ExportTarget =
       pageCount: number;
       label: string;
     }
+  /** atsu, the default manga source (lib/manga-offline.web.ts). */
+  | { kind: 'manga'; mangaId: string; chapterId: string; pageCount: number; label: string }
   | { kind: 'novel'; novelPath: string; chapterPath: string; label: string };
 
 /** Gate the UI on this rather than on Platform.OS, so the reason travels with it. */

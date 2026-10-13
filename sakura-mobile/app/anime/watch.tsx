@@ -44,7 +44,7 @@ import {
   canResumeWatchProgress,
   type AnimeWatchProgress,
 } from '@/lib/watch-progress';
-import { getOfflinePlaybackUri } from '@/lib/anime-offline';
+import { getOfflinePlaybackUri, listOfflineEpisodes, type OfflineEpisode } from '@/lib/anime-offline';
 import WebVideoPlayer, { type WebVideoPlayerHandle } from '@/components/anime/WebVideoPlayer';
 import WatchViewport from '@/components/anime/WatchViewport';
 import { readPlayerPreferences, savePlayerPreferences } from '@/components/anime/player-preferences';
@@ -58,6 +58,32 @@ const D = {
 };
 const WEB_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 const CATALOG_EPISODE_ID = /^(?:hi|mal)-\d+-\d+$/;
+
+/**
+ * Series metadata rebuilt from the downloads, for playing with no network.
+ *
+ * Every progress effect below needs `anime`, and offline it never arrived: the
+ * info cache keeps titles for 24 hours, after which fetchAnimeInfo has nothing
+ * to return. So a downloaded episode played, but nothing about it was saved.
+ * The remote artwork URLs are kept on purpose — they end up in the watch
+ * progress entry, which outlives the download.
+ */
+function animeFromOfflineRows(animeId: string, rows: OfflineEpisode[]): AnimeInfo | null {
+  if (!rows.length) return null;
+  const sorted = [...rows].sort((a, b) => a.episodeNumber - b.episodeNumber);
+  return {
+    id: animeId,
+    title: sorted[0].title,
+    image: sorted[0].cover,
+    cover: sorted[0].cover,
+    episodes: sorted.map((row) => ({
+      id: row.episodeId,
+      number: row.episodeNumber,
+      title: row.episodeTitle || `Episode ${row.episodeNumber}`,
+      thumbnail: row.episodeThumbnail,
+    })),
+  };
+}
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -130,6 +156,8 @@ export default function AnimeWatch() {
   const webBookmarkRef = useRef<{ entry: AnimeWatchProgress; episodes: AnimeEpisode[] } | null>(null);
   const savedWebBookmarkRef = useRef<typeof webBookmarkRef.current>(null);
   const lastWebSaveRef = useRef(0);
+  /** This series' download rows, read when playing a downloaded copy. */
+  const offlineRowsRef = useRef<OfflineEpisode[]>([]);
 
   const saveWebBookmark = useCallback(() => {
     const bookmark = webBookmarkRef.current;
@@ -459,25 +487,70 @@ export default function AnimeWatch() {
       const cached = await getOfflinePlaybackUri(String(id), ep).catch(() => null);
       if (cancelled) return;
       if (cached) {
+        const rows = (await listOfflineEpisodes().catch(() => [] as OfflineEpisode[]))
+          .filter((row) => row.animeId === String(id));
+        if (cancelled) return;
+        offlineRowsRef.current = rows;
+        const row = rows.find((candidate) => candidate.episodeId === ep);
+        // Captions and skip markers were reset above and, for a local file,
+        // never set again — so a downloaded episode lost its subtitles and its
+        // Skip Opening button. The web store keeps both with the episode.
+        if (row?.subtitles?.length) {
+          setWebSubtitles(row.subtitles.map((track) => ({ url: track.uri, lang: track.lang, label: track.label })));
+          setSubtitleMode(playbackHint?.subtitleMode ?? (isWeb ? 'auto' : 'off'));
+        }
+        if (row?.intro || row?.outro) setSkipMarkers({ intro: row.intro, outro: row.outro });
+        const fallback = animeFromOfflineRows(String(id), rows);
+        if (fallback) setAnime((current) => current?.id === String(id) ? current : fallback);
+        if (row) {
+          setAvailableCategories([row.category]);
+          setCategory(row.category);
+        }
         setLocalUri(cached);
+        // Play first. This used to await the metadata request before hiding
+        // the loader, so with no network the "Preparing your episode" overlay
+        // sat over a playable copy until the request timed out.
+        setLoading(false);
         // Metadata has to come from the right backend: fetchAnimeInfo is the
-        // Consumet call and returns nothing for an Originals id.
-        const info = await (isOriginal
+        // Consumet call and returns nothing for an Originals id. It replaces
+        // the rows-only fallback when it arrives (full episode list for "next").
+        void (isOriginal
           ? fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 })
           : fetchAnimeInfo(id)
-        ).catch(() => null);
-        if (info) setAnime(info);
+        ).catch(() => null).then((info) => {
+          if (!cancelled && info) setAnime(info);
+        });
+        return;
+      }
+
+      if (forceOffline || (isWeb && typeof navigator !== 'undefined' && navigator.onLine === false)) {
+        // A web copy can be complete and still unplayable: only a tab the
+        // service worker controls can read /app/__offline/ (see
+        // getOfflinePlaybackUri). Say so, instead of telling the user to
+        // download again something that is already on the device.
+        const row = isWeb
+          ? (await listOfflineEpisodes().catch(() => [] as OfflineEpisode[]))
+            .find((candidate) => candidate.animeId === String(id) && candidate.episodeId === ep)
+          : undefined;
+        if (cancelled) return;
+        const uncontrolled = isWeb && typeof navigator !== 'undefined' && !navigator.serviceWorker?.controller;
+        setError(row?.status === 'ready' && uncontrolled
+          ? 'This download can play once Sakura finishes loading in this tab. Reload the page and try again.'
+          : 'Offline file not found. Download the episode again while online.');
         setLoading(false);
         return;
       }
 
+
       // Sakura Originals — stream directly via native video player
       if (isOriginal) {
         const info = await fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 });
+        if (cancelled) return;
         if (info) setAnime(info);
 
         const embed = isWeb ? getSakuraOriginalEmbedUrl(ep) : null;
         const mp4 = await resolveSakuraOriginalStreamUrl(ep, { force: retryCount > 0 });
+        if (cancelled) return;
         if (mp4) {
           setEmbedFallbackUrl(embed);
           setLocalUri(mp4);
@@ -493,11 +566,6 @@ export default function AnimeWatch() {
         }
       }
 
-      if (forceOffline) {
-        setError('Offline file not found. Download the episode again while online.');
-        setLoading(false);
-        return;
-      }
 
       const info = await fetchAnimeInfo(id, { force: retryCount > 0 }).catch(() => null);
       if (cancelled) return;
@@ -864,6 +932,15 @@ export default function AnimeWatch() {
   const goToNext = () => {
     if (!nextEpisode || !anime) return;
     playTap();
+    // Native files carry the flag as before. A web copy carries it when the
+    // next episode is downloaded too (as the series page does) or there is no
+    // network at all; otherwise the next episode should simply stream.
+    const nextIsLocal = !!localUri?.startsWith('file://') || (
+      !!localUri?.startsWith('/app/__offline/') && (
+        offlineRowsRef.current.some((row) => row.episodeId === nextEpisode.id && row.status === 'ready') ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false)
+      )
+    );
     if (isWeb) {
       saveWebBookmark();
       webBookmarkRef.current = null;
@@ -881,7 +958,7 @@ export default function AnimeWatch() {
     }, anime.episodes || []);
     if (isWeb) {
       // Retain the viewport/fullscreen element and audio choice between episodes.
-      router.setParams({ ep: nextEpisode.id, restart: undefined, offline: undefined });
+      router.setParams({ ep: nextEpisode.id, restart: undefined, offline: nextIsLocal ? '1' : undefined });
       return;
     }
     router.replace({
@@ -889,7 +966,7 @@ export default function AnimeWatch() {
       params: {
         id,
         ep: nextEpisode.id,
-        ...(localUri?.startsWith('file://') ? { offline: '1' } : {}),
+        ...(nextIsLocal ? { offline: '1' } : {}),
       },
     });
   };
@@ -898,7 +975,9 @@ export default function AnimeWatch() {
     if (!skipMarkers.intro) return;
     playTap();
     const target = skipMarkers.intro.end;
-    if (isWeb && streamSource) {
+    // Every web source plays in WebVideoPlayer, downloaded copies included;
+    // this used to require streamSource, so skipping did nothing offline.
+    if (isWeb) {
       webVideoRef.current?.seekTo(target);
     } else {
       nativePlayer.currentTime = target;
@@ -911,7 +990,7 @@ export default function AnimeWatch() {
       goToNext();
     } else if (skipMarkers.outro) {
       const target = skipMarkers.outro.end;
-      if (isWeb && streamSource) {
+      if (isWeb) {
         webVideoRef.current?.seekTo(target);
       } else {
         nativePlayer.currentTime = target;

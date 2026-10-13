@@ -127,10 +127,13 @@ export async function fetchTrendingManhwa(limit = 24): Promise<ContentItem[]> {
           // ignore individual fallback failures
         }
       }
+      // Nothing from any query is a failure, not an empty catalogue; throwing
+      // keeps it out of the cache (see fetchManhwaDetail).
+      if (!collected.length) throw new Error('Manhwa are temporarily unavailable.');
       return collected;
     },
     { staleIfError: true },
-  );
+  ).catch(() => [] as ContentItem[]);
 }
 
 export async function searchManhwa(query: string, limit = 24): Promise<ContentItem[]> {
@@ -148,38 +151,46 @@ export async function searchManhwa(query: string, limit = 24): Promise<ContentIt
   );
 }
 
+/**
+ * The detail and chapter loaders THROW on failure instead of returning null /
+ * []. getOrSetCached stores whatever a loader returns as fresh for the whole
+ * TTL, so a swallowed network error used to be cached as "no such manhwa" for
+ * 30 minutes — one offline open left the title on "Could not load" long after
+ * the connection came back, and Try again could not clear it. Throwing caches
+ * nothing and lets staleIfError serve the last good value. An empty answer is
+ * not cached either: a failed upstream behind the proxy looks the same.
+ *
+ * The exported functions still resolve null / [] on failure, as before, by
+ * catching outside the cache.
+ */
 export async function fetchManhwaDetail(id: string): Promise<MangaDetail | null> {
-  return getOrSetCached<MangaDetail | null>(
+  return getOrSetCached<MangaDetail>(
     `manhwa:detail:${id}`,
     30 * 60 * 1000,
     async () => {
-      try {
-        const params = new URLSearchParams({ id });
-        const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
-        const detail =
-          (data as { comic?: ProxyDetail }).comic ||
-          (data as { manga?: ProxyDetail }).manga ||
-          (data as ProxyDetail);
-        if (!detail || !detail.id) return null;
-        const authors =
-          Array.isArray(detail.authors) && detail.authors.length
-            ? detail.authors.join(', ')
-            : detail.author || '';
-        return {
-          id: detail.id,
-          title: detail.title || detail.id,
-          cover: proxyManhwaImage(detail.cover),
-          description: detail.description || '',
-          genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
-          status: detail.status || '',
-          type: authors ? `Manhwa · ${authors}` : 'Manhwa',
-        };
-      } catch {
-        return null;
-      }
+      const params = new URLSearchParams({ id });
+      const data = await requestProxy<ProxyDetailResponse>(`/details?${params.toString()}`);
+      const detail =
+        (data as { comic?: ProxyDetail }).comic ||
+        (data as { manga?: ProxyDetail }).manga ||
+        (data as ProxyDetail);
+      if (!detail || !detail.id) throw new Error('Manhwa not found.');
+      const authors =
+        Array.isArray(detail.authors) && detail.authors.length
+          ? detail.authors.join(', ')
+          : detail.author || '';
+      return {
+        id: detail.id,
+        title: detail.title || detail.id,
+        cover: proxyManhwaImage(detail.cover),
+        description: detail.description || '',
+        genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
+        status: detail.status || '',
+        type: authors ? `Manhwa · ${authors}` : 'Manhwa',
+      };
     },
     { staleIfError: true },
-  );
+  ).catch(() => null);
 }
 
 export async function fetchManhwaChapters(id: string): Promise<MangaChapter[]> {
@@ -187,33 +198,30 @@ export async function fetchManhwaChapters(id: string): Promise<MangaChapter[]> {
     `manhwa:chapters:${id}`,
     15 * 60 * 1000,
     async () => {
-      try {
-        // Long-running manhwa routinely pass 300 chapters (God of Blackfield is
-        // 328), and the catalogue reaches into the thousands, so this must not
-        // inherit the comics client's 500 or the 18+ client's 10.
-        const params = new URLSearchParams({ id, limit: '2000', offset: '0' });
-        const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
-        const chapters = data.issues || data.chapters || [];
-        return chapters.map((c, idx) => {
-          const num = c.number != null ? Number(c.number) : idx + 1;
-          return {
-            id: c.id,
-            // The proxy returns chapters in reading order (ascending), so the
-            // positional fallback counts up. Comics counts down because its
-            // upstream lists newest first — copying that here would number
-            // every chapter backwards whenever the parsed number is missing.
-            number: Number.isFinite(num) ? num : idx + 1,
-            title: c.title || (c.number != null ? `Chapter ${c.number}` : c.id),
-            pageCount: c.pages || 0,
-            createdAt: c.publishAt || '',
-          } as MangaChapter;
-        });
-      } catch {
-        return [];
-      }
+      // Long-running manhwa routinely pass 300 chapters (God of Blackfield is
+      // 328), and the catalogue reaches into the thousands, so this must not
+      // inherit the comics client's 500 or the 18+ client's 10.
+      const params = new URLSearchParams({ id, limit: '2000', offset: '0' });
+      const data = await requestProxy<ProxyChaptersResponse>(`/chapters?${params.toString()}`);
+      const chapters = data.issues || data.chapters || [];
+      if (!chapters.length) throw new Error('No chapters.');
+      return chapters.map((c, idx) => {
+        const num = c.number != null ? Number(c.number) : idx + 1;
+        return {
+          id: c.id,
+          // The proxy returns chapters in reading order (ascending), so the
+          // positional fallback counts up. Comics counts down because its
+          // upstream lists newest first — copying that here would number
+          // every chapter backwards whenever the parsed number is missing.
+          number: Number.isFinite(num) ? num : idx + 1,
+          title: c.title || (c.number != null ? `Chapter ${c.number}` : c.id),
+          pageCount: c.pages || 0,
+          createdAt: c.publishAt || '',
+        } as MangaChapter;
+      });
     },
     { staleIfError: true },
-  );
+  ).catch(() => [] as MangaChapter[]);
 }
 
 export async function fetchManhwaPages(manhwaId: string, rawChapterId: string): Promise<string[]> {

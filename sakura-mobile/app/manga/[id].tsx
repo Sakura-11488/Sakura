@@ -50,9 +50,14 @@ import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { formatReleaseDate } from '@/lib/format-release-date';
 import {
   downloadScrapedChapter,
+  downloadAllScrapedChapters,
+  getScrapedBatchState,
   getScrapedOfflineMap,
   subscribeScrapedOffline,
+  subscribeScrapedBatch,
+  pauseScrapedBatchDownload,
   pauseScrapedChapterDownload,
+  resumeScrapedBatchDownload,
   resumeScrapedChapterDownload,
   type ScrapedSource,
 } from '@/lib/scraped-offline';
@@ -70,6 +75,17 @@ import {
   subscribeMangaBatch,
   type OfflineMangaChapter,
 } from '@/lib/manga-offline';
+import {
+  getOfflineTitle,
+  saveOfflineTitle,
+  type OfflineTitleDetail,
+  type OfflineTitleSnapshot,
+} from '@/lib/offline-titles';
+import { fetchOfflineChapterList } from '@/lib/chapter-pages';
+import { isOnline, useOnline } from '@/lib/use-online';
+import { confirmAction } from '@/lib/confirm-alert';
+import { useWallet } from '@/lib/wallet/context';
+import { checkPassStatus } from '@/lib/wallet/pass';
 import { playTap, onTap } from '@/lib/sound';
 import {
   getMangaReadProgress,
@@ -144,6 +160,129 @@ function useDetailMetrics() {
 const CHAPTER_ITEM_H = 64;
 
 type ChapterSort = 'oldest' | 'newest';
+
+// ─── Download-all sizing ──────────────────────────────────────────────────────
+/**
+ * Rough bytes per stored page, for the Download-all estimate. Mirrors
+ * ESTIMATED_PAGE_BYTES in lib/offline-image-store.web.ts, which a shared
+ * screen cannot import (on native that specifier would bundle the web store).
+ */
+const EST_PAGE_BYTES = 400 * 1024;
+/** Pages assumed for a chapter whose source reports no page count. */
+const EST_PAGES_PER_CHAPTER = 20;
+/**
+ * Download all asks first from this many chapters up. Below it the tap is the
+ * confirmation; above it, a manhwa can mean hundreds of chapters and gigabytes,
+ * which nobody should start by brushing a button.
+ */
+const CONFIRM_BATCH_FROM = 10;
+
+function approxBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+/**
+ * Free space the browser will give this origin, or null when it won't say
+ * (and always on native, whose downloads are not quota-bound the same way).
+ */
+async function freeWebStorageBytes(): Promise<number | null> {
+  if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !navigator.storage?.estimate) {
+    return null;
+  }
+  try {
+    const { quota, usage } = await navigator.storage.estimate();
+    if (typeof quota !== 'number' || quota <= 0) return null;
+    return Math.max(0, quota - (usage ?? 0));
+  } catch {
+    return null;
+  }
+}
+
+// ─── Offline copy of a title ──────────────────────────────────────────────────
+function sortChapters(list: MangaChapter[]): MangaChapter[] {
+  return [...list].sort((a, b) => a.number - b.number);
+}
+
+/** What the title snapshot keeps of the page's detail (lib/offline-titles). */
+function snapshotDetail(m: MangaData): OfflineTitleDetail {
+  return {
+    id: m.id,
+    title: m.title,
+    cover: m.cover,
+    description: m.description,
+    genres: m.genres,
+    status: m.status,
+    type: m.type,
+    ...(m.rating != null ? { rating: m.rating } : {}),
+  };
+}
+
+interface OfflineCopy {
+  snapshot: OfflineTitleSnapshot | null;
+  /** Ready chapters rebuilt from the store, for downloads that predate snapshots. */
+  downloadedChapters: MangaChapter[];
+  /** Title and cover from any download row, for the same case. */
+  row: { title: string; cover: string } | null;
+}
+
+/**
+ * Everything this device holds for a title, read without the network: the
+ * snapshot saved alongside its downloads, plus the download rows themselves.
+ * Downloads made before snapshots existed have only the rows, which still
+ * carry a title and cover, so they get a page too rather than an error.
+ */
+async function loadOfflineCopy(scraped: ScrapedSource | null, mangaId: string): Promise<OfflineCopy> {
+  const rows: Promise<Record<string, { title: string; cover: string }>> = scraped
+    ? getScrapedOfflineMap(scraped, mangaId)
+    : getOfflineMapForManga(mangaId);
+  const [snapshot, downloadedChapters, map] = await Promise.all([
+    getOfflineTitle(scraped ?? 'atsu', mangaId).catch(() => null),
+    fetchOfflineChapterList(scraped, mangaId).catch(() => [] as MangaChapter[]),
+    rows.catch(() => ({}) as Record<string, { title: string; cover: string }>),
+  ]);
+  const values = Object.values(map);
+  const first = values.find((r) => !!r.title) ?? values[0] ?? null;
+  return {
+    snapshot,
+    downloadedChapters,
+    row: first ? { title: first.title || 'Downloaded chapters', cover: first.cover || '' } : null,
+  };
+}
+
+function detailFromCopy(copy: OfflineCopy, mangaId: string): MangaData | null {
+  const d = copy.snapshot?.detail;
+  if (d) {
+    return {
+      id: d.id || mangaId,
+      title: d.title,
+      cover: d.cover || '',
+      description: d.description ?? '',
+      genres: Array.isArray(d.genres) ? d.genres : [],
+      status: d.status ?? '',
+      type: d.type ?? '',
+      ...(typeof d.rating === 'number' ? { rating: d.rating } : {}),
+    };
+  }
+  if (copy.row) {
+    return { id: mangaId, title: copy.row.title, cover: copy.row.cover, description: '', genres: [], status: '', type: '' };
+  }
+  return null;
+}
+
+/**
+ * The snapshot's full list, so the page still shows the whole series, plus any
+ * downloaded chapter the snapshot does not list (it was saved before that
+ * chapter existed, or the source has since renumbered); without a snapshot,
+ * just the downloads.
+ */
+function chaptersFromCopy(copy: OfflineCopy): MangaChapter[] {
+  const listed = copy.snapshot?.chapters ?? [];
+  if (!listed.length) return copy.downloadedChapters;
+  const ids = new Set(listed.map((c) => c.id));
+  const missing = copy.downloadedChapters.filter((c) => !ids.has(c.id));
+  return missing.length ? [...listed, ...missing] : listed;
+}
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const BackIcon = () => (
@@ -304,6 +443,8 @@ const ChapterRow = memo(function ChapterRow({
   onOpen,
   hideDownload,
   disableThumbFetch,
+  offlineOnly,
+  unavailableReason,
   locked,
 }: {
   ch: MangaChapter;
@@ -314,11 +455,18 @@ const ChapterRow = memo(function ChapterRow({
   isResume?: boolean;
   onOpen: (ch: MangaChapter, resume: boolean) => void;
   hideDownload?: boolean;
+  /** No chapter thumbnails at all (scraped sources, which have no thumbnail API). */
   disableThumbFetch?: boolean;
+  /** No network: only a thumbnail already on the device may be shown. */
+  offlineOnly?: boolean;
+  /** Why this row cannot be opened right now; dims it and replaces the status line. */
+  unavailableReason?: string;
   locked?: boolean;
 }) {
   const { colors } = useTheme();
-  const [thumbUri, setThumbUri] = useState<string | null>(ch.coverUrl ?? null);
+  const [thumbUri, setThumbUri] = useState<string | null>(
+    offlineOnly ? null : (ch.coverUrl ?? null),
+  );
 
   // "12 pages · Jul 18, 2026", or whichever half exists. Both are optional:
   // some sources report no page count until a chapter is opened, and
@@ -332,7 +480,11 @@ const ChapterRow = memo(function ChapterRow({
 
   useEffect(() => {
     let cancelled = false;
-    if (ch.coverUrl) {
+    // Offline, ch.coverUrl and the thumbnail API are both network URLs. A
+    // remote thumbnail would render as an empty box and the API call would
+    // just fail, row after row; the downloaded first page, or else the series
+    // cover stored with the downloads, is at least the right picture.
+    if (ch.coverUrl && !offlineOnly) {
       setThumbUri(ch.coverUrl);
       return;
     }
@@ -341,16 +493,22 @@ const ChapterRow = memo(function ChapterRow({
       return;
     }
     (async () => {
-      const local = offline?.status === 'ready' ? await getOfflineMangaPageUris(mangaId, ch.id) : null;
+      const local = offline?.status === 'ready'
+        ? await getOfflineMangaPageUris(mangaId, ch.id).catch(() => null)
+        : null;
       if (local?.[0]) {
         if (!cancelled) setThumbUri(local[0]);
+        return;
+      }
+      if (offlineOnly) {
+        if (!cancelled) setThumbUri(null);
         return;
       }
       const url = await fetchMangaChapterThumbnail(mangaId, ch.id);
       if (!cancelled && url) setThumbUri(url);
     })();
     return () => { cancelled = true; };
-  }, [mangaId, ch.id, ch.coverUrl, offline?.status, disableThumbFetch]);
+  }, [mangaId, ch.id, ch.coverUrl, offline?.status, disableThumbFetch, offlineOnly]);
 
   const ch_s = useMemo(() => StyleSheet.create({
     row: {
@@ -395,6 +553,12 @@ const ChapterRow = memo(function ChapterRow({
       color: colors.primary,
       marginTop: 2,
     },
+    unavailableLabel: {
+      fontSize: 10,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    dimmed: { opacity: 0.45 },
     dlBtn: {
       padding: 6,
       marginLeft: 4,
@@ -437,7 +601,12 @@ const ChapterRow = memo(function ChapterRow({
     <TouchableOpacity
       onPress={() => onOpen(ch, !!isResume)}
       activeOpacity={0.85}
-      style={[ch_s.row, isResume && { borderWidth: 1, borderColor: `${colors.primary}55` }]}
+      accessibilityHint={unavailableReason}
+      style={[
+        ch_s.row,
+        isResume && { borderWidth: 1, borderColor: `${colors.primary}55` },
+        !!unavailableReason && ch_s.dimmed,
+      ]}
     >
       {thumbSource ? (
         <Image
@@ -458,13 +627,24 @@ const ChapterRow = memo(function ChapterRow({
             also feeds getItemLayout, so a third line would clip and
             desynchronise scroll offsets. */}
         {!!metaLine && <Text style={ch_s.sub}>{metaLine}</Text>}
-        {offline?.status === 'downloading' && (
-          <Text style={ch_s.dlLabel}>Downloading {Math.round(offline.progress * 100)}% · tap to pause</Text>
+        {/* The status line. "tap to pause" used to follow these, but tapping
+            the row opens the reader; only the download icon pauses. */}
+        {unavailableReason ? (
+          <Text style={ch_s.unavailableLabel} numberOfLines={1}>{unavailableReason}</Text>
+        ) : (
+          <>
+            {offline?.status === 'downloading' && (
+              <Text style={ch_s.dlLabel}>Downloading {Math.round(offline.progress * 100)}%</Text>
+            )}
+            {offline?.status === 'paused' && (
+              <Text style={ch_s.dlLabel}>Paused at {Math.round(offline.progress * 100)}%</Text>
+            )}
+            {offline?.status === 'error' && (
+              <Text style={[ch_s.dlLabel, { color: colors.red }]} numberOfLines={1}>Download failed · tap ↓ to retry</Text>
+            )}
+            {offline?.status === 'ready' && <Text style={[ch_s.dlLabel, { color: '#34C759' }]}>Downloaded</Text>}
+          </>
         )}
-        {offline?.status === 'paused' && (
-          <Text style={ch_s.dlLabel}>Paused {Math.round(offline.progress * 100)}% · tap to resume</Text>
-        )}
-        {offline?.status === 'ready' && <Text style={[ch_s.dlLabel, { color: '#34C759' }]}>Downloaded</Text>}
         {isResume && (
           <View style={ch_s.resumeBadge}>
             <Text style={ch_s.resumeBadgeText}>Continue here</Text>
@@ -486,6 +666,8 @@ const ChapterRow = memo(function ChapterRow({
           }}
           style={ch_s.dlBtn}
           hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`${offline?.status === 'downloading' ? 'Pause download of' : offline?.status === 'paused' ? 'Resume download of' : offline?.status === 'error' ? 'Retry download of' : 'Download'} ${ch.title}`}
           disabled={offline?.status === 'ready'}
         >
           <DownloadIcon color={colors.primary} size={16} />
@@ -504,14 +686,16 @@ export default function MangaDetail() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const mangaId = String(id || '');
-  // Droplet-scraped sources reuse this screen but skip manga-only features
-  // (atsu offline downloads, pass-gating, chapter-thumbnail fetches).
-  // `adapter` is null for ordinary atsu-backed manga.
+  // Droplet-scraped sources reuse this screen with their own download store
+  // (lib/scraped-offline) and skip the atsu-only features: pass-gating and
+  // chapter-thumbnail fetches. `adapter` is null for ordinary atsu manga.
   const adapter = getScrapedAdapter(source);
   const isExternal = adapter !== null;
   // Distinct from isExternal: gates the surfaces an adult read must not touch
   // (library, history, lock-screen activity). Manhwa is scraped but SFW.
   const isAdult = adapter?.adult === true;
+  const online = useOnline();
+  const { address } = useWallet();
 
   const [manga, setManga] = useState<MangaData | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
@@ -519,6 +703,15 @@ export default function MangaDetail() {
   const [loadError, setLoadError] = useState('');
   const [chaptersError, setChaptersError] = useState('');
   const [reloadAttempt, setReloadAttempt] = useState(0);
+  /**
+   * The page is showing what this device holds (the title snapshot and the
+   * downloads) rather than a live load — because the browser is offline, or
+   * because the source failed while downloads exist. Distinct from `online`:
+   * connectivity can come back while this copy is still on screen.
+   */
+  const [offlineMode, setOfflineMode] = useState(false);
+  /** Same-origin cover stored with the snapshot (web only). */
+  const [offlineCoverUri, setOfflineCoverUri] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState('');
@@ -530,62 +723,194 @@ export default function MangaDetail() {
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [mangaProgress, setMangaProgress] = useState<MangaProgress | null>(null);
   const [chapterSort, setChapterSort] = useState<ChapterSort>('oldest');
+  /** Only checked while some chapter is pass-gated; see lib/pass-gate.ts. */
+  const [passValid, setPassValid] = useState(false);
   // const [activeTab, setActiveTab] = useState<'chapters' | 'author'>('chapters');
   // const [creatorWallet, setCreatorWallet] = useState<string | null>(null);
 
   const backScale = useSharedValue(1);
   const scrollY = useSharedValue(0);
+  /**
+   * Set before bumping reloadAttempt to refetch WITHOUT clearing the page:
+   * used when connectivity returns while the downloaded copy is on screen, so
+   * the reader keeps their place and the live page swaps in only if it loads.
+   */
+  const silentReloadRef = useRef(false);
 
   useEffect(() => {
     if (!mangaId) { setLoading(false); return; }
     let active = true;
-    setLoading(true);
-    setLoadError('');
-    setChaptersError('');
-    setManga(null);
-    setChapters([]);
+    const silent = silentReloadRef.current;
+    silentReloadRef.current = false;
+    if (!silent) {
+      setLoading(true);
+      setLoadError('');
+      setChaptersError('');
+      setManga(null);
+      setChapters([]);
+      setOfflineMode(false);
+      setOfflineCoverUri(null);
+    }
+    const scraped = adapter?.key ?? null;
+    const savedFetch = isAdult ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga');
+    const noteSaved = (isSaved: boolean) => {
+      setSaved(isSaved);
+      // Library items saved before `source` was stored reopen as atsu; this
+      // visit knows better, so record it.
+      if (isSaved && adapter) void Library.setSource(mangaId, 'manga', adapter.key).catch(() => {});
+    };
+    const showOfflineCopy = (copy: OfflineCopy, detail: MangaData, list: MangaChapter[]) => {
+      setManga(detail);
+      setChapters(sortChapters(list));
+      setOfflineCoverUri(copy.snapshot?.coverUri ?? null);
+      setOfflineMode(true);
+      setLoadError('');
+      setChaptersError('');
+    };
+
+    // Known offline: render what the device holds straight away. Waiting on
+    // the network first only adds a skeleton that ends in an error — and on a
+    // bad connection supabase.functions.invoke has no timeout at all.
+    if (!isOnline()) {
+      Promise.all([loadOfflineCopy(scraped, mangaId), savedFetch.catch(() => false)]).then(([copy, isSaved]) => {
+        if (!active) return;
+        noteSaved(isSaved);
+        const detail = detailFromCopy(copy, mangaId);
+        if (detail) showOfflineCopy(copy, detail, chaptersFromCopy(copy));
+        else if (!silent) {
+          setLoadError("You're offline, and this title isn't downloaded on this device. Reconnect and try again.");
+        }
+        setLoading(false);
+      });
+      return () => { active = false; };
+    }
+
+    // navigator.onLine can stay true while a source or connection hangs.
+    // Show the saved title immediately, then replace it only with a live result.
+    let liveLoadFinished = false;
+    const offlineCopy = loadOfflineCopy(scraped, mangaId);
+    void offlineCopy.then((copy) => {
+      if (!active || liveLoadFinished) return;
+      const detail = detailFromCopy(copy, mangaId);
+      if (!detail) return;
+      showOfflineCopy(copy, detail, chaptersFromCopy(copy));
+      setLoading(false);
+    });
     const detailFetch = adapter ? adapter.detail(mangaId) : fetchMangaDetail(mangaId);
     const chaptersFetch = adapter ? adapter.chapters(mangaId) : fetchMangaChapters(mangaId);
-    Promise.allSettled([
-      detailFetch,
-      chaptersFetch,
-      isAdult ? Promise.resolve(false) : Library.isSaved(mangaId, 'manga'),
-    ]).then(([detail, chapterResult, savedResult]) => {
+    Promise.allSettled([detailFetch, chaptersFetch, savedFetch]).then(async ([detail, chapterResult, savedResult]) => {
+      liveLoadFinished = true;
       if (!active) return;
-      if (detail.status === 'fulfilled') setManga(detail.value);
-      else setLoadError(adapter?.key === 'comics'
-        ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
-        : 'Could not load this title. Please try again.');
-      if (chapterResult.status === 'fulfilled') setChapters([...chapterResult.value].sort((a, b) => a.number - b.number));
-      else setChaptersError(adapter?.key === 'comics'
-        ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
-        : 'Could not load chapters. Please try again.');
-      setSaved(savedResult.status === 'fulfilled' && savedResult.value);
+      noteSaved(savedResult.status === 'fulfilled' && savedResult.value);
+      // The fetchers report failure as a rejection or as null/[], so both
+      // count as "did not load" here.
+      const liveDetail = detail.status === 'fulfilled' ? detail.value : null;
+      const liveChapters = chapterResult.status === 'fulfilled' ? chapterResult.value : [];
+
+      if (liveDetail && liveChapters.length > 0) {
+        setManga(liveDetail);
+        setChapters(sortChapters(liveChapters));
+        setOfflineMode(false);
+        setOfflineCoverUri(null);
+        setLoadError('');
+        setChaptersError('');
+        setLoading(false);
+        return;
+      }
+
+      // Part of the page did not load. Before reporting that, use what the
+      // device holds: a title with downloads must never land on "Could not
+      // load this title" — that was the whole of the offline experience,
+      // including the reader's Back button, once the API cache had expired.
+      const copy = await offlineCopy;
+      if (!active) return;
+      const deviceDetail = liveDetail ? null : detailFromCopy(copy, mangaId);
+      const deviceChapters = liveChapters.length ? [] : chaptersFromCopy(copy);
+      const shownDetail = liveDetail ?? deviceDetail;
+      if (shownDetail && (deviceDetail || deviceChapters.length)) {
+        showOfflineCopy(copy, shownDetail, liveChapters.length ? liveChapters : deviceChapters);
+        // A Retry (or reconnect) that changed nothing visible still deserves
+        // an answer.
+        if (silent) setToast("Still can't reach this title's source");
+        setLoading(false);
+        return;
+      }
+      // A refetch after reconnecting found nothing better; keep what is shown.
+      if (silent) return;
+
+      // Nothing on the device either: the page as it always behaved.
+      setManga(liveDetail);
+      if (detail.status === 'rejected') {
+        setLoadError(adapter?.key === 'comics'
+          ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+          : 'Could not load this title. Please try again.');
+      }
+      setChapters(sortChapters(liveChapters));
+      if (chapterResult.status === 'rejected') {
+        setChaptersError(adapter?.key === 'comics'
+          ? 'This comic source is temporarily unavailable. Try again later or choose another comic from Browse.'
+          : 'Could not load chapters. Please try again.');
+      }
+      setOfflineMode(false);
       setLoading(false);
     });
     return () => { active = false; };
   }, [mangaId, adapter, isAdult, reloadAttempt]);
 
+  // Connectivity came back while the downloaded copy is on screen: refetch in
+  // place, so new chapters, comments and downloads come back without a reload.
+  const wasOnlineRef = useRef(online);
+  useEffect(() => {
+    const was = wasOnlineRef.current;
+    wasOnlineRef.current = online;
+    if (online && !was && offlineMode) {
+      silentReloadRef.current = true;
+      setReloadAttempt((value) => value + 1);
+    }
+  }, [online, offlineMode]);
+
+  const retryLive = useCallback(() => {
+    silentReloadRef.current = true;
+    setReloadAttempt((value) => value + 1);
+  }, []);
+
+  const offlineRequestRef = useRef(0);
   const refreshOffline = useCallback(() => {
     if (!mangaId) return;
-    if (adapter) {
-      getScrapedOfflineMap(adapter.key, mangaId).then(setOfflineMap);
-    } else {
-      getOfflineMapForManga(mangaId).then(setOfflineMap);
-    }
+    const request = ++offlineRequestRef.current;
+    const lookup = adapter
+      ? getScrapedOfflineMap(adapter.key, mangaId)
+      : getOfflineMapForManga(mangaId);
+    void lookup.then((map) => {
+      if (request === offlineRequestRef.current) setOfflineMap(map);
+    }, () => {});
   }, [mangaId, adapter]);
 
   useEffect(() => {
+    setOfflineMap({});
     if (!mangaId) return;
     refreshOffline();
     const unsubscribe = adapter ? subscribeScrapedOffline(refreshOffline) : subscribeOfflineManga(refreshOffline);
-    return () => { unsubscribe(); };
+    return () => {
+      offlineRequestRef.current++;
+      unsubscribe();
+    };
   }, [mangaId, adapter, refreshOffline]);
 
+  /** The running or paused Download all for this title, from whichever store owns it. */
+  const getBatchState = useCallback(
+    () => (adapter ? getScrapedBatchState(adapter.key, mangaId) : getMangaBatchState(mangaId)),
+    [adapter, mangaId],
+  );
+
+  // Batch progress lives in the store, not here, so leaving the page and
+  // coming back shows the same Pause/Resume. Scraped sources used to return
+  // early from this effect: only atsu had a Download all, and on web not even
+  // that.
   useEffect(() => {
-    if (!mangaId || isExternal) return;
+    if (!mangaId) return;
     const refreshBatch = () => {
-      const state = getMangaBatchState(mangaId);
+      const state = getBatchState();
       setBatchPaused(!!state?.paused);
       setBatchProgress(state ? { done: state.done, total: state.total } : null);
       if (state && !state.paused && state.done < state.total) {
@@ -595,9 +920,9 @@ export default function MangaDetail() {
       }
     };
     refreshBatch();
-    const unsubscribe = subscribeMangaBatch(refreshBatch);
+    const unsubscribe = adapter ? subscribeScrapedBatch(refreshBatch) : subscribeMangaBatch(refreshBatch);
     return () => { unsubscribe(); };
-  }, [mangaId]);
+  }, [mangaId, adapter, getBatchState]);
 
   const loadMangaProgress = useCallback(() => {
     if (!mangaId) return;
@@ -622,9 +947,66 @@ export default function MangaDetail() {
     [isExternal, manga?.status, chapters],
   );
 
+  // Whether this wallet may download gated chapters. Only asked while some
+  // chapter is gated — which, with AUTO_GATE_LATEST_CHAPTERS off, is never —
+  // so the page makes no pass check at all in the normal case.
+  const needsPass = gatedChapterIds.size > 0;
+  useEffect(() => {
+    if (!needsPass || !address) {
+      setPassValid(false);
+      return;
+    }
+    let cancelled = false;
+    setPassValid(false);
+    checkPassStatus(address)
+      .then((status) => { if (!cancelled) setPassValid(status.valid); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [needsPass, address]);
+
+  /** May this chapter be downloaded? Locked rows need a valid pass. */
+  const canDownload = useCallback(
+    (chapterId: string) => !gatedChapterIds.has(chapterId) || passValid,
+    [gatedChapterIds, passValid],
+  );
+
+  /**
+   * Keep this title's offline snapshot (lib/offline-titles) current: the
+   * detail, the full chapter list and the cover, which is what lets the page
+   * render with no network at all. Saved when a download starts (`force`) and
+   * on any live visit to a title that already has downloads, so chapters
+   * released since the first download show up offline too.
+   *
+   * Never from the offline copy itself — rewriting a snapshot with its own
+   * contents gains nothing, and a copy rebuilt from download rows alone would
+   * replace a full chapter list with just the downloaded ones.
+   */
+  const lastSnapshotRef = useRef<MangaData | null>(null);
+  const rememberTitle = useCallback((force: boolean) => {
+    if (!manga || offlineMode || chapters.length === 0) return;
+    if (!force && lastSnapshotRef.current === manga) return;
+    lastSnapshotRef.current = manga;
+    void saveOfflineTitle({
+      source: adapter?.key ?? 'atsu',
+      contentId: mangaId,
+      detail: snapshotDetail(manga),
+      chapters,
+    });
+  }, [manga, offlineMode, chapters, adapter, mangaId]);
+
+  const hasDownloads = useMemo(() => Object.keys(offlineMap).length > 0, [offlineMap]);
+  useEffect(() => {
+    if (hasDownloads) rememberTitle(false);
+  }, [hasDownloads, rememberTitle]);
+
   const openMangaChapter = useCallback((ch: MangaChapter, resume = false) => {
     if (!manga) return;
     const off = offlineMap[ch.id];
+    const downloaded = off?.status === 'ready';
+    if (!online && !downloaded) {
+      setToast("This chapter isn't downloaded. Reconnect to read it.");
+      return;
+    }
     router.push({
       pathname: '/chapter/[id]',
       params: {
@@ -633,31 +1015,36 @@ export default function MangaDetail() {
         cover: (manga as { image?: string }).image || manga.cover || '',
         chapter: ch.title,
         ...(isExternal ? { source } : {}),
-        ...(gatedChapterIds.has(ch.id) ? { gated: '1' } : {}),
+        // A downloaded chapter opens without the pass check. Downloading it
+        // already required access (the button is hidden on locked rows
+        // without a pass), and the check needs the network — the one thing a
+        // download exists to do without. Downloads and the reader follow the
+        // same rule.
+        ...(gatedChapterIds.has(ch.id) && !downloaded ? { gated: '1' } : {}),
         // Resume wherever you stopped IN THIS chapter, however you opened it.
         // Previously `p` was only sent from the Continue button, so tapping the
         // chapter you were halfway through restarted it from page 1.
         ...(mangaProgress && mangaProgress.chapterId === ch.id && mangaProgress.page > 1
           ? { p: String(mangaProgress.page) }
           : {}),
-        ...(off?.status === 'ready' ? { offline: '1' } : {}),
+        ...(downloaded ? { offline: '1' } : {}),
       },
     });
-  }, [manga, mangaId, offlineMap, mangaProgress, router, isExternal, source, gatedChapterIds]);
+  }, [manga, mangaId, offlineMap, mangaProgress, router, isExternal, source, gatedChapterIds, online]);
 
   const handleDownloadChapter = useCallback(async (ch: MangaChapter) => {
     if (!manga) return;
     playTap();
-    // Web and native share this path now. On web, downloadScrapedChapter
-    // resolves to lib/scraped-offline.web.ts, which stores pages in Cache
-    // Storage under same-origin URLs the service worker serves — so the
-    // reader loads them through the same `<Image source={{ uri }}>` it always
-    // did and cannot tell the difference. Pause, resume, delete and the
-    // Downloads screen work unchanged because the web store exports the same
-    // surface as the native one.
+    // Every source downloads on web and native alike, through stores that
+    // export the native module's exact surface: lib/scraped-offline.web.ts for
+    // scraped sources, lib/manga-offline.web.ts for atsu. Both keep pages in
+    // Cache Storage under same-origin URLs the service worker serves, so the
+    // reader loads them through the same `<Image source={{ uri }}>` and cannot
+    // tell the difference.
     //
-    // Only scraped sources reach here on web: atsu manga sends no
-    // Access-Control-Allow-Origin, so its button is hidden (see hideDownload).
+    // atsu's button used to be hidden on web: cdn.atsu.moe sends no CORS
+    // header, so the browser could never read the bytes. Its pages now come
+    // through the same-origin /api/manga-page/ proxy instead.
     const existing = offlineMap[ch.id];
     if (existing?.status === 'ready') {
       setToast('Chapter already downloaded');
@@ -676,6 +1063,16 @@ export default function MangaDetail() {
       return;
     }
 
+    // The button is hidden in both cases; these guard a stale tap.
+    if (!online) {
+      setToast("You're offline. Reconnect to download.");
+      return;
+    }
+    if (!canDownload(ch.id)) {
+      setToast('This chapter needs a Sakura Pass.');
+      return;
+    }
+
     if (existing?.status === 'paused') {
       if (scrapedSource) resumeScrapedChapterDownload(scrapedSource, mangaId, ch.id);
       else resumeMangaChapterDownload(mangaId, ch.id);
@@ -683,6 +1080,7 @@ export default function MangaDetail() {
     } else {
       setToast('Downloading chapter…');
     }
+    rememberTitle(true);
 
     try {
       const result = scrapedSource
@@ -709,61 +1107,133 @@ export default function MangaDetail() {
       setToast(e instanceof Error ? e.message : 'Download failed');
       refreshOffline();
     }
-  }, [manga, mangaId, offlineMap, refreshOffline, adapter]);
+  }, [manga, mangaId, offlineMap, refreshOffline, adapter, online, canDownload, rememberTitle]);
 
-  const runBatchDownload = useCallback(async () => {
-    if (!manga || chapters.length === 0) return;
+  /**
+   * The chapters of the batch last started from this page. Resume walks the
+   * same list again — the stores skip what is already downloaded — so its
+   * progress continues from "15/40" rather than restarting at "0/25".
+   */
+  const batchListRef = useRef<MangaChapter[] | null>(null);
+  useEffect(() => { batchListRef.current = null; }, [mangaId, adapter]);
+
+  /** What Download all would fetch: chapters this user may download that aren't downloaded yet. */
+  const pendingDownloads = useCallback(
+    () => chapters.filter((ch) => canDownload(ch.id) && offlineMap[ch.id]?.status !== 'ready'),
+    [chapters, canDownload, offlineMap],
+  );
+
+  const runBatchDownload = useCallback(async (list: MangaChapter[]) => {
+    if (!manga || list.length === 0) return;
+    batchListRef.current = list;
     setBulkDownloading(true);
-    setToast(`Downloading ${chapters.length} chapters… keep app open`);
+    setToast(
+      `Downloading ${list.length} ${list.length === 1 ? 'chapter' : 'chapters'}… ` +
+        (Platform.OS === 'web' ? 'keep this tab open' : 'keep the app open'),
+    );
+    rememberTitle(true);
+    const batch = {
+      title: manga.title,
+      cover: (manga as { image?: string }).image || manga.cover || '',
+      chapters: list.map((ch) => ({ id: ch.id, number: ch.number, title: ch.title })),
+    };
     try {
-      const { ok, failed, paused } = await downloadAllMangaChapters({
-        mangaId,
-        title: manga.title,
-        cover: manga.cover || '',
-        chapters: chapters.map((ch) => ({ id: ch.id, number: ch.number, title: ch.title })),
-      });
+      // Sequential in both stores: each chapter already keeps three pages in
+      // flight, which is one client's share of the droplet.
+      const { ok, failed, paused } = adapter
+        ? await downloadAllScrapedChapters({ source: adapter.key, contentId: mangaId, ...batch })
+        : await downloadAllMangaChapters({ mangaId, ...batch });
       if (paused) {
-        setToast(`Paused · ${ok} of ${chapters.length} downloaded`);
+        setToast(`Paused · ${ok} of ${list.length} downloaded`);
       } else {
-        setToast(failed > 0 ? `Downloaded ${ok} chapters (${failed} failed)` : `Downloaded ${ok} chapters`);
+        setToast(failed > 0
+          ? `Downloaded ${ok} of ${list.length} · ${failed} failed, tap ↓ on one to retry`
+          : `Downloaded ${ok} ${ok === 1 ? 'chapter' : 'chapters'}`);
       }
       refreshOffline();
     } catch (e) {
+      // On web a batch stops at an error every later chapter would hit too —
+      // out of space, offline — and stays paused, so Resume picks it up. The
+      // message says which.
       setToast(e instanceof Error ? e.message : 'Download failed');
+      refreshOffline();
     } finally {
-      if (!getMangaBatchState(mangaId)?.paused) {
+      if (!getBatchState()?.paused) {
         setBulkDownloading(false);
       }
     }
-  }, [manga, mangaId, chapters, refreshOffline]);
+  }, [manga, mangaId, adapter, refreshOffline, rememberTitle, getBatchState]);
 
   const handleDownloadAll = async () => {
     if (!manga || chapters.length === 0) return;
 
     if (batchPaused) {
       playTap();
-      resumeMangaBatchDownload(mangaId);
+      if (adapter) resumeScrapedBatchDownload(adapter.key, mangaId);
+      else resumeMangaBatchDownload(mangaId);
       setBatchPaused(false);
-      void runBatchDownload();
+      // Recompute access when resuming: the wallet or its pass may have changed.
+      void runBatchDownload((batchListRef.current ?? pendingDownloads()).filter((ch) => canDownload(ch.id)));
       return;
     }
 
     if (bulkDownloading) {
       playTap();
-      pauseMangaBatchDownload(mangaId);
-      setToast('Download paused');
+      if (adapter) pauseScrapedBatchDownload(adapter.key, mangaId);
+      else pauseMangaBatchDownload(mangaId);
+      // The batch checks its flag between chapters, so the one in flight
+      // finishes first; the toast after that says how far it got.
+      setToast('Pausing after this chapter…');
       return;
     }
 
     playTap();
-    await runBatchDownload();
+    const list = pendingDownloads();
+    if (list.length === 0) {
+      setToast(chapters.some((ch) => !canDownload(ch.id))
+        ? 'Everything you can download is already downloaded'
+        : 'All chapters are already downloaded');
+      return;
+    }
+
+    // Big batches ask first, with the count and a rough size, and on web with
+    // a warning when the browser's quota is clearly too small — the stores
+    // stop cleanly when space runs out, but a 2,000-chapter manhwa should not
+    // get as far as finding that out by accident.
+    const estimate =
+      list.reduce((sum, ch) => sum + (ch.pageCount > 0 ? ch.pageCount : EST_PAGES_PER_CHAPTER), 0) *
+      EST_PAGE_BYTES;
+    const free = await freeWebStorageBytes();
+    const short = free !== null && estimate > free;
+    if (list.length >= CONFIRM_BATCH_FROM || short) {
+      const lines = [`That's roughly ${approxBytes(estimate)}, downloaded one chapter at a time.`];
+      if (Platform.OS === 'web') lines.push('Keep this tab open until it finishes. You can pause and resume.');
+      if (short && free !== null) {
+        lines.push(`Your browser has only about ${approxBytes(free)} free for downloads, so this will likely stop partway.`);
+      }
+      const proceed = await confirmAction(
+        `Download ${list.length} ${list.length === 1 ? 'chapter' : 'chapters'}?`,
+        lines.join(' '),
+        'Download',
+      );
+      if (!proceed) return;
+    }
+    await runBatchDownload(list);
   };
 
   const handleSave = async () => {
     if (!manga) return;
     playTap();
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const next = await Library.toggle({ id: mangaId, title: manga.title, cover: manga.cover, type: 'manga', savedAt: 0 });
+    const next = await Library.toggle({
+      id: mangaId,
+      title: manga.title,
+      cover: manga.cover,
+      type: 'manga',
+      savedAt: 0,
+      // So Library reopens it on this source rather than as atsu.
+      ...(adapter ? { source: adapter.key } : {}),
+    });
     setSaved(next);
     setToast(next ? 'Added to library' : 'Removed from library');
   };
@@ -771,7 +1241,12 @@ export default function MangaDetail() {
   const handleShare = () => {
     if (!manga) return;
     playTap();
-    shareContentLink(`Check out "${manga.title}" on Sakura!`, `/manga/${encodeURIComponent(String(mangaId))}`);
+    // With the source, or a shared manhwa or comic opens as an atsu title —
+    // the same mistake Library used to make.
+    shareContentLink(
+      `Check out "${manga.title}" on Sakura!`,
+      `/manga/${encodeURIComponent(String(mangaId))}${adapter ? `?source=${adapter.key}` : ''}`,
+    );
   };
 
   const backAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: backScale.value }] }));
@@ -1060,6 +1535,22 @@ export default function MangaDetail() {
       backgroundColor: colors.surfaceSecondary,
       overflow: 'hidden',
     },
+
+    offlineNotice: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 14,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceSecondary,
+    },
+    offlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.warning },
+    offlineText: { flex: 1, fontSize: 12.5, lineHeight: 17, color: colors.text },
+    offlineAction: { fontSize: 12.5, fontWeight: FontWeight.bold, color: colors.primary },
   }), [colors, wide, W, HERO_H]);
 
   const chaptersAsc = useMemo(
@@ -1079,34 +1570,43 @@ export default function MangaDetail() {
     !!mangaProgress && isActiveReadingProgress(mangaProgress.progress);
   const resumeChapterId = canContinueManga ? mangaProgress!.chapterId : null;
 
+  // With no network, a chapter is only worth showing as openable if it is
+  // downloaded; the rest stay listed, dimmed, so the series still reads as a
+  // whole. Downloading needs the network too, so those buttons go.
+  const restrictToDownloads = !online;
+  // The cover stored with the snapshot whenever the page is not live — the
+  // remote one would not load, or (on a failed source) likely not either.
+  const displayCover = offlineCoverUri && (offlineMode || !online) ? offlineCoverUri : manga?.cover;
+
   const renderChapter = useCallback(
-    ({ item: ch }: ListRenderItemInfo<MangaChapter>) => (
-      <ChapterRow
-        ch={ch}
-        mangaId={mangaId}
-        mangaCover={manga?.cover}
-        offline={offlineMap[ch.id]}
-        onDownload={handleDownloadChapter}
-        onOpen={openMangaChapter}
-        isResume={canContinueManga && ch.id === resumeChapterId}
-        // Only scraped sources can be exported on web. cdn.atsu.moe sends no
-
-        // Access-Control-Allow-Origin and 403s the preflight, so reading works
-
-        // (an <img> needs no CORS) but fetching the bytes never can. Showing a
-
-        // button that can only ever produce "Failed to fetch" is worse than
-
-        // showing none.
-
-        hideDownload={Platform.OS === 'web' && !adapter}
-        disableThumbFetch={isExternal}
-        locked={gatedChapterIds.has(ch.id)}
-      />
-    ),
+    ({ item: ch }: ListRenderItemInfo<MangaChapter>) => {
+      const locked = gatedChapterIds.has(ch.id);
+      const downloaded = offlineMap[ch.id]?.status === 'ready';
+      return (
+        <ChapterRow
+          ch={ch}
+          mangaId={mangaId}
+          mangaCover={displayCover}
+          offline={offlineMap[ch.id]}
+          onDownload={handleDownloadChapter}
+          onOpen={openMangaChapter}
+          isResume={canContinueManga && ch.id === resumeChapterId}
+          // Every source can download on web now (atsu through the
+          // /api/manga-page/ proxy). Hidden only where a tap could not work:
+          // offline, or a pass-locked chapter without a pass — downloading it
+          // would sidestep the gate, since a downloaded chapter opens without
+          // a pass check.
+          hideDownload={restrictToDownloads || (locked && !passValid)}
+          disableThumbFetch={isExternal}
+          offlineOnly={restrictToDownloads}
+          unavailableReason={restrictToDownloads && !downloaded ? 'Not downloaded · needs a connection' : undefined}
+          locked={locked}
+        />
+      );
+    },
     [
       mangaId,
-      manga?.cover,
+      displayCover,
       offlineMap,
       handleDownloadChapter,
       openMangaChapter,
@@ -1114,7 +1614,14 @@ export default function MangaDetail() {
       resumeChapterId,
       isExternal,
       gatedChapterIds,
+      restrictToDownloads,
+      passValid,
     ],
+  );
+  // FlatList only re-renders rows when data or extraData change.
+  const chapterListExtra = useMemo(
+    () => [offlineMap, restrictToDownloads, passValid, displayCover],
+    [offlineMap, restrictToDownloads, passValid, displayCover],
   );
 
   const chapterKeyExtractor = useCallback((ch: MangaChapter) => ch.id, []);
@@ -1131,7 +1638,29 @@ export default function MangaDetail() {
   const resumeChapter = canContinueManga
     ? chapters.find((c) => c.id === mangaProgress!.chapterId) ?? null
     : null;
-  const playChapter = resumeChapter || firstChapter;
+  /**
+   * What Start/Continue opens. Live, that is the resume chapter or the first.
+   * From the offline copy it must be a chapter that will actually open: the
+   * resume chapter if it is downloaded, else the first downloaded one from
+   * there on, else the first downloaded at all. Fully offline with nothing
+   * downloaded there is nothing to start, so the button goes; when only the
+   * source failed, the live target is still worth a try.
+   */
+  const playChapter = useMemo(() => {
+    const live = resumeChapter || firstChapter;
+    if (!offlineMode && !restrictToDownloads) return live;
+    const isReady = (c: MangaChapter) => offlineMap[c.id]?.status === 'ready';
+    if (resumeChapter && isReady(resumeChapter)) return resumeChapter;
+    const ready = chaptersAsc.filter(isReady);
+    const next = resumeChapter ? ready.find((c) => c.number >= resumeChapter.number) : undefined;
+    return next ?? ready[0] ?? (restrictToDownloads ? null : live);
+  }, [resumeChapter, firstChapter, offlineMode, restrictToDownloads, offlineMap, chaptersAsc]);
+  const playLabel =
+    canContinueManga && resumeChapter && playChapter?.id === resumeChapter.id
+      ? `Continue · ${mangaProgress!.chapterLabel}`
+      : playChapter && firstChapter && playChapter.id !== firstChapter.id
+        ? `Read · ${playChapter.title}`
+        : 'Start Reading';
   const genres = manga ? (manga.genres.length > 0 ? manga.genres : [manga.type].filter(Boolean)) : [];
 
   const statusColor =
@@ -1139,15 +1668,22 @@ export default function MangaDetail() {
     (manga?.status || '').toLowerCase().includes('complet') ? '#3B82F6' :
     colors.textSecondary;
 
+  // Web has its own layout but follows the same offline rules as the native
+  // one below: every source can download (atsu through /api/manga-page/)
+  // unless the browser is offline — handleDownloadChapter still refuses a
+  // pass-locked chapter without a pass — the cover is the stored snapshot's
+  // when the page is not live, Continue only when the play target really is
+  // the resume chapter, and the discussion is network-only.
   if (Platform.OS === 'web') return <MangaDetailWeb
-    manga={manga} loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
+    manga={manga && displayCover && displayCover !== manga.cover ? { ...manga, cover: displayCover } : manga}
+    loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
     chapters={displayedChapters} sort={chapterSort} onSort={() => setChapterSort(value => value === 'oldest' ? 'newest' : 'oldest')}
     saved={saved} canSave={!isAdult} onSave={handleSave} onShare={handleShare}
     onBack={() => router.canGoBack() ? router.back() : router.replace('/home')}
     onRetry={() => setReloadAttempt(value => value + 1)} onOpen={openMangaChapter}
-    playChapter={playChapter} resume={canContinueManga && !!resumeChapter} progress={mangaProgress}
-    offline={offlineMap} canDownload={!!adapter} onDownload={handleDownloadChapter} gated={gatedChapterIds}
-    discussion={<CommentsSection contentId={`manga:${mangaId}`} title="Discussion" />}
+    playChapter={playChapter} resume={canContinueManga && !!playChapter && playChapter.id === resumeChapterId} progress={mangaProgress}
+    offline={offlineMap} canDownload={!restrictToDownloads} onDownload={handleDownloadChapter} gated={gatedChapterIds}
+    discussion={online ? <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" /> : null}
     feedback={<Toast message={toast} visible={!!toast} onHide={() => { setToast(''); setToastDuration(undefined); }} durationMs={toastDuration} />}
   />;
 
@@ -1169,9 +1705,14 @@ export default function MangaDetail() {
         <TouchableOpacity accessibilityRole="button" onPress={() => setReloadAttempt((value) => value + 1)} style={{ padding: 16 }}>
           <Text style={{ color: colors.primary, fontWeight: '700' }}>Try again</Text>
         </TouchableOpacity>
-        {adapter?.key === 'comics' && (
+        {adapter?.key === 'comics' && online && (
           <TouchableOpacity accessibilityRole="button" onPress={() => router.push('/browse')} style={{ padding: 12 }}>
             <Text style={{ color: colors.primary }}>Browse comics</Text>
+          </TouchableOpacity>
+        )}
+        {!online && (
+          <TouchableOpacity accessibilityRole="button" onPress={() => router.push('/downloads')} style={{ padding: 12 }}>
+            <Text style={{ color: colors.primary }}>Open your downloads</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -1258,7 +1799,7 @@ export default function MangaDetail() {
         {/* ── Hero ── */}
         <View style={s.heroWrap}>
           <CoverImage
-            source={{ uri: manga.cover }}
+            source={{ uri: displayCover || manga.cover }}
             thumbnailWidth={512}
             priority="high"
             style={s.heroImg}
@@ -1284,6 +1825,25 @@ export default function MangaDetail() {
 
         {/* ── Content card ── */}
         <View style={s.card}>
+
+          {/* In flow rather than floating, so it pushes the page down instead
+              of covering it. Offline it explains the dimmed rows; online it
+              means the source failed and this is the downloaded copy. */}
+          {(!online || offlineMode) && (
+            <View style={s.offlineNotice} accessibilityRole="summary">
+              <View style={s.offlineDot} />
+              <Text style={s.offlineText}>
+                {!online
+                  ? "You're offline — showing your downloaded chapters."
+                  : "Couldn't reach this title's source — showing your downloaded chapters."}
+              </Text>
+              {online ? (
+                <TouchableOpacity accessibilityRole="button" onPress={onTap(retryLive)} hitSlop={8}>
+                  <Text style={s.offlineAction}>Retry</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          )}
 
           {/* Meta pills */}
           <Animated.View entering={FadeInDown.delay(40).duration(300)} style={s.metaRow}>
@@ -1401,7 +1961,7 @@ export default function MangaDetail() {
                 windowSize={5}
                 removeClippedSubviews
                 getItemLayout={getChapterLayout}
-                extraData={offlineMap}
+                extraData={chapterListExtra}
                 scrollEnabled={displayedChapters.length * CHAPTER_ITEM_H > chapterListHeight}
               />
             </View>
@@ -1412,7 +1972,8 @@ export default function MangaDetail() {
             <CreatorTab creatorWallet={creatorWallet} />
           )} */}
 
-          <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" />
+          {/* Network-only: offline it would sit on a spinner and then fail. */}
+          {online ? <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" /> : null}
 
           <View style={{ height: insets.bottom + (playChapter ? 118 : 24) }} />
         </View>
@@ -1423,16 +1984,17 @@ export default function MangaDetail() {
           <View style={s.bottomCtaRow}>
             <GlowButton
               flex
-              label={
-                canContinueManga && resumeChapter
-                  ? `Continue · ${mangaProgress!.chapterLabel}`
-                  : 'Start Reading'
-              }
+              label={playLabel}
               onPress={() =>
-                openMangaChapter(playChapter, canContinueManga && !!resumeChapter)
+                openMangaChapter(playChapter, canContinueManga && playChapter.id === resumeChapterId)
               }
             />
-            {chapters.length > 0 && !isExternal && (
+            {/* Every source: scraped sources used to have no batch download at
+                all (runBatchDownload routes them through scraped-offline).
+                Hidden offline, and on the offline copy of a title whose source
+                just failed, unless a batch is already under way. Web renders
+                MangaDetailWeb above, so this bar is native-only. */}
+            {chapters.length > 0 && online && (!offlineMode || bulkDownloading || batchPaused) && (
               <TouchableOpacity
                 style={s.dlOutlineBtn}
                 activeOpacity={0.85}

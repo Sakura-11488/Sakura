@@ -1,13 +1,13 @@
-// Web-only download helpers. On the web build there is no native filesystem, so
-// offline "downloads" instead stream content into the browser's own Downloads
-// folder: novels as a .txt file, image chapters (manga/comics/18+) as a .cbz of
-// pages. Call sites must branch on `Platform.OS === 'web'` before importing/using
-// these — the functions assume a browser environment (document/fetch/Blob).
+// Web-only "Save a copy" helpers: they write something the user already
+// downloaded into the browser's own Downloads folder — novels as a .txt file,
+// image chapters (manga/comics/manhwa/18+) as a .cbz of pages. Call sites must
+// branch on `Platform.OS === 'web'` before importing/using these — the
+// functions assume a browser environment (document/fetch/Blob).
 //
-// This is an EXPORT, not a library. The file lands in the browser's Downloads
-// folder and Sakura can never read it back — unlike native, where downloads live
-// under the app's control and the reader silently prefers them. Anything in the
-// UI that implies otherwise is a lie.
+// This is an EXPORT, not the library. Offline reading on web is served from
+// Cache Storage by the *-offline.web.ts stores; the file this writes lands in
+// the browser's Downloads folder and Sakura can never read it back. Its value
+// is that the browser cannot evict it, where it can evict Cache Storage.
 
 function ensureWebEnv(): void {
   if (typeof document === 'undefined' || typeof fetch === 'undefined') {
@@ -38,7 +38,7 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
  * flag — so "呪術廻戦 - Ch 12" became "- Ch 12" and every non-Latin series
  * collided on one filename. Unicode letter/number classes keep the title.
  */
-function sanitize(name: string): string {
+export function sanitizeDownloadName(name: string): string {
   let out = (name || 'sakura')
     // One allowlist, deliberately. Pairing this with a separate blocklist for
     // path separators and control characters was both redundant — nothing
@@ -56,9 +56,16 @@ function sanitize(name: string): string {
   if (!out || RESERVED.test(out)) out = `sakura${out ? `-${out}` : ''}`;
   return out;
 }
-/** Extension from a MIME type, or '' when it says nothing useful. */
+/**
+ * Extension from a MIME type, or '' when it says nothing useful.
+ *
+ * AVIF matters: every atsu page is image/avif, and without this arm they would
+ * be named .jpg inside the .cbz — comic readers go by the extension, not the
+ * bytes, and refuse to decode them.
+ */
 function extFromMime(mime: string | undefined): string {
   const type = (mime || '').toLowerCase();
+  if (type.includes('avif')) return 'avif';
   if (type.includes('webp')) return 'webp';
   if (type.includes('png')) return 'png';
   if (type.includes('gif')) return 'gif';
@@ -70,7 +77,7 @@ function extFromMime(mime: string | undefined): string {
 export function saveTextFile(baseName: string, text: string): void {
   ensureWebEnv();
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  triggerBrowserDownload(blob, `${sanitize(baseName)}.txt`);
+  triggerBrowserDownload(blob, `${sanitizeDownloadName(baseName)}.txt`);
 }
 
 // --- Minimal store-only (uncompressed) ZIP writer -------------------------
@@ -241,7 +248,7 @@ export async function saveCbzFromBlobs(
   ensureWebEnv();
   if (!pages.length) throw new Error('Nothing to save.');
 
-  const folder = sanitize(baseName);
+  const folder = sanitizeDownloadName(baseName);
   const filename = `${folder}.cbz`;
   const pad = (n: number) => String(n).padStart(4, '0');
   const writer = new StoreZipWriter();

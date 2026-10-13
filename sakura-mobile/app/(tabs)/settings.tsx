@@ -14,7 +14,7 @@ import Constants from 'expo-constants';
 import { useTheme, AppColors } from '@/lib/theme';
 import { AppSettings } from '@/lib/settings';
 import { useContentPrefs } from '@/lib/content-prefs';
-import { confirmDestructive } from '@/lib/confirm-alert';
+import { confirmDestructive, showAlert } from '@/lib/confirm-alert';
 import {
   getNotificationPermissionStatus,
   openNotificationSettings,
@@ -32,11 +32,10 @@ import { clearAnimeSessionCache } from '@/lib/anime';
 import InstallGuideModal, { detectInstallFlavor } from '@/components/InstallGuideModal';
 import { usePwaInstall } from '@/lib/use-pwa-install';
 import { requestInstall } from '@/lib/pwa-install';
-import { clearAllWatchProgress } from '@/lib/watch-progress';
-import { clearAllReadingProgress } from '@/lib/reader-progress';
 import { clearAllOfflineEpisodes } from '@/lib/anime-offline';
 import { clearAllOfflineManga } from '@/lib/manga-offline';
 import { clearAllOfflineNovel } from '@/lib/novel-offline';
+import { clearAllScrapedOffline } from '@/lib/scraped-offline';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import * as Sound from '@/lib/sound';
 import bs58 from 'bs58';
@@ -101,20 +100,50 @@ async function getCacheSize(): Promise<string> {
   } catch { return '—'; }
 }
 
+/**
+ * "Clear Cache" clears caches. It used to delete downloads too — anime, atsu
+ * manga and novels, but not comics, manhwa or 18+ — under a confirmation that
+ * quoted only the API and file-cache size, so the number never mentioned the
+ * gigabytes about to go. On web that became a real trap once atsu downloads
+ * existed there: one "clear cache" for a misbehaving page and the offline
+ * library was gone, some sources and not others.
+ *
+ * Downloads are not cache. They are what someone deliberately kept for when
+ * there is no network, and they have their own screen. So this no longer
+ * touches any store, on any platform, and removing every download is its own
+ * row below with its own warning (deleteAllDownloads), covering every source.
+ */
 async function clearCache(): Promise<void> {
   try {
     clearAnimeSessionCache();
-    await clearAllWatchProgress();
-    await clearAllReadingProgress();
-    await clearAllOfflineEpisodes();
-    await clearAllOfflineManga();
-    await clearAllOfflineNovel();
     await clearApiCache();
+    // The web filesystem shim shares document/cache keys. A cache-directory
+    // sweep there would erase the library and preferences as well.
+    if (Platform.OS === 'web') return;
     const dir = FileSystem.cacheDirectory;
     if (!dir) return;
     const files = await FileSystem.readDirectoryAsync(dir);
     await Promise.all(files.map((f) => FileSystem.deleteAsync(dir + f, { idempotent: true })));
   } catch { }
+}
+
+/**
+ * Clear every store, including its active batches. Let all stores finish
+ * before reporting an error, so one failure does not prevent other cleanup.
+ */
+async function deleteAllDownloads(): Promise<void> {
+  const results = await Promise.allSettled([
+    clearAllOfflineEpisodes(),
+    clearAllOfflineManga(),
+    clearAllOfflineNovel(),
+    clearAllScrapedOffline(),
+  ]);
+  // Each store removes its own snapshots after successful deletion. Preserve
+  // metadata for anything that could not be removed, and report the failure.
+  const failures = results.filter((result) => result.status === 'rejected');
+  if (failures.length) {
+    throw new Error('Some downloads could not be deleted. Open Downloads and try again.');
+  }
 }
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -271,6 +300,7 @@ export default function SettingsScreen() {
   // ── Storage ──
   const [cacheSize, setCacheSize] = useState('');
   const [clearingCache, setClearingCache] = useState(false);
+  const [deletingDownloads, setDeletingDownloads] = useState(false);
   // Explicit installs remain available after dismissing the optional banner.
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const installState = usePwaInstall();
@@ -449,6 +479,24 @@ export default function SettingsScreen() {
       setClearingCache(false);
     });
   }, [cacheSize]);
+
+  const handleDeleteDownloads = useCallback(() => {
+    confirmDestructive(
+      'Delete All Downloads',
+      'Remove every downloaded episode and chapter from this device? To remove only some, use Downloads instead.',
+    ).then(async (ok) => {
+      if (!ok) return;
+      setDeletingDownloads(true);
+      try {
+        await deleteAllDownloads();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch (error) {
+        showAlert('Could not delete all downloads', error instanceof Error ? error.message : 'Please try again.');
+      } finally {
+        setDeletingDownloads(false);
+      }
+    });
+  }, []);
 
   const version = Constants.expoConfig?.version ?? '1.9.0';
   const s = useMemo(() => makeStyles(colors), [colors]);
@@ -811,6 +859,16 @@ export default function SettingsScreen() {
               destructive
               colors={colors}
               right={clearingCache ? <ActivityIndicator size="small" color={colors.textSecondary} /> : undefined}
+            />
+            <Divider colors={colors} />
+            <TapRow
+              badge={<Badge bg="#FF3B30"><I.Download c="#fff" /></Badge>}
+              label="Delete All Downloads"
+              sub="Episodes and chapters saved for offline"
+              onPress={deletingDownloads ? undefined : handleDeleteDownloads}
+              destructive
+              colors={colors}
+              right={deletingDownloads ? <ActivityIndicator size="small" color={colors.textSecondary} /> : undefined}
             />
           </Group>
 

@@ -6,6 +6,8 @@ import {
   type StreamingSource,
 } from '@/lib/anime';
 import { runEmbedBridge } from '@/lib/anime-download-bridge';
+// Moved out unchanged so the browser downloader shares them; see that file.
+import { pickMediaPlaylistUrl, planLocalPlaylist, resolveUrl } from '@/lib/hls-local-playlist';
 
 export type OfflineEpisodeStatus = 'downloading' | 'paused' | 'ready' | 'error';
 
@@ -26,6 +28,28 @@ export interface OfflineEpisode {
   localPlaylistUri?: string;
   error?: string;
   updatedAt: number;
+  /*
+   * Everything below is optional and written only by the browser store
+   * (lib/anime-offline.web.ts). It is declared here too because shared
+   * screens type-check against this file, and the two variants must export
+   * the same shape. Native never sets these fields; readers treat them as
+   * absent.
+   */
+  /** 'mp4' = one progressive file (Sakura Originals); 'hls' = playlist + segments. */
+  format?: 'mp4' | 'hls';
+  /** Names stored for this episode (offlineEpisodeFileUrl), for delete and size. */
+  files?: string[];
+  /** Caption tracks stored with the episode; `uri` is a same-origin URL. */
+  subtitles?: Array<{ lang: string; label: string; uri: string }>;
+  intro?: { start: number; end: number };
+  outro?: { start: number; end: number };
+  /** The rendition kept, e.g. '720p'. */
+  quality?: string;
+  /** Shape of the media playlist, to recognise it again on resume (hls-local-playlist.ts). */
+  fingerprint?: string;
+  /** Same-origin copies of the artwork, for pages rendered with no network. */
+  offlineCover?: string;
+  offlineThumbnail?: string;
 }
 
 type Manifest = {
@@ -79,41 +103,6 @@ async function persist() {
   } catch {
     // ignore
   }
-}
-
-function resolveUrl(base: string, relative: string): string {
-  const t = relative.trim();
-  if (!t) return base;
-  if (t.startsWith('http://') || t.startsWith('https://')) return t;
-  if (t.startsWith('/')) {
-    const u = new URL(base);
-    return `${u.origin}${t}`;
-  }
-  const baseDir = base.includes('/') ? base.replace(/[^/]*$/, '') : `${base}/`;
-  return `${baseDir}${t}`;
-}
-
-function pickMediaPlaylistUrl(masterText: string, masterUrl: string): string {
-  const lines = masterText.split('\n').map((l) => l.trim());
-  let bestUrl = '';
-  let bestBw = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.startsWith('#EXT-X-STREAM-INF')) continue;
-    const bwMatch = line.match(/BANDWIDTH=(\d+)/i);
-    const bw = bwMatch ? Number(bwMatch[1]) : 0;
-    const next = lines[i + 1];
-    if (!next || next.startsWith('#')) continue;
-    if (bw >= bestBw) {
-      bestBw = bw;
-      bestUrl = resolveUrl(masterUrl, next);
-    }
-  }
-  if (bestUrl) return bestUrl;
-  for (const line of lines) {
-    if (line && !line.startsWith('#')) return resolveUrl(masterUrl, line);
-  }
-  return '';
 }
 
 function parseSegmentUrls(mediaText: string, playlistUrl: string): string[] {
@@ -656,76 +645,6 @@ async function performDirectFileDownload(
   };
   await patchManifest(current);
   return current;
-}
-
-function extFromUrl(url: string): string {
-  const clean = url.split('?')[0].split('#')[0];
-  const m = /\.([a-z0-9]{1,5})$/i.exec(clean);
-  return m ? m[1].toLowerCase() : '';
-}
-
-/**
- * Turn a remote HLS media playlist into a fully-local one: every resource
- * (AES-128 key, fMP4 init segment via #EXT-X-MAP, and each media segment) is
- * scheduled for download and rewritten to a local filename, while ALL playlist
- * tags — real #EXTINF durations, #EXT-X-TARGETDURATION, #EXT-X-KEY (IV/METHOD),
- * #EXT-X-BYTERANGE — are preserved verbatim. This lets ExoPlayer/expo-video
- * decrypt encrypted streams from the local key and seek correctly, instead of
- * the old approach that threw on encryption and faked 10s segment durations.
- */
-function planLocalPlaylist(
-  mediaText: string,
-  mediaUrl: string,
-): { outLines: string[]; downloads: { url: string; name: string }[] } {
-  const outLines: string[] = [];
-  const downloads: { url: string; name: string }[] = [];
-  const seen = new Map<string, string>();
-  let keyIdx = 0;
-  let mapIdx = 0;
-  let segIdx = 0;
-
-  const localFor = (absUrl: string, kind: 'key' | 'map' | 'seg'): string => {
-    const existing = seen.get(absUrl);
-    if (existing) return existing;
-    const ext = extFromUrl(absUrl);
-    let name: string;
-    if (kind === 'key') name = `key${keyIdx++}.key`;
-    else if (kind === 'map') name = `init${mapIdx++}.${ext || 'mp4'}`;
-    else name = `seg${String(segIdx++).padStart(5, '0')}.${ext || 'ts'}`;
-    seen.set(absUrl, name);
-    downloads.push({ url: absUrl, name });
-    return name;
-  };
-
-  const rewriteUri = (line: string, kind: 'key' | 'map'): string => {
-    const uriMatch = /URI="([^"]+)"/i.exec(line);
-    if (!uriMatch) return line;
-    const abs = resolveUrl(mediaUrl, uriMatch[1]);
-    const local = localFor(abs, kind);
-    return line.replace(/URI="[^"]+"/i, `URI="${local}"`);
-  };
-
-  for (const rawLine of mediaText.split('\n')) {
-    const line = rawLine.replace(/\r$/, '');
-    const t = line.trim();
-    if (!t) continue;
-    if (/^#EXT-X-KEY/i.test(t)) {
-      outLines.push(/METHOD=NONE/i.test(t) ? t : rewriteUri(t, 'key'));
-      continue;
-    }
-    if (/^#EXT-X-MAP/i.test(t)) {
-      outLines.push(rewriteUri(t, 'map'));
-      continue;
-    }
-    if (t.startsWith('#')) {
-      outLines.push(t); // preserve EXTINF, TARGETDURATION, BYTERANGE, etc.
-      continue;
-    }
-    outLines.push(localFor(resolveUrl(mediaUrl, t), 'seg'));
-  }
-
-  if (!outLines.some((l) => /#EXT-X-ENDLIST/i.test(l))) outLines.push('#EXT-X-ENDLIST');
-  return { outLines, downloads };
 }
 
 async function performDownload(
