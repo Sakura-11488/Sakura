@@ -249,8 +249,9 @@ export function createComicBookPlus({ upstream, htmlCache, minGapMs = 1000, cata
                 ? { ok: false, reason: "comicbookplus soft-404" }
                 : { ok: true, value: h })),
             referer: CBP_REFERER,
-            // Comic Book Plus is not Cloudflare-challenged, so an escalation here
-            // could only ever spend a credit to repeat a failure we already have.
+            // Never escalate. Since late September 2026 Comic Book Plus serves a
+            // Cloudflare managed challenge to every non-browser client; that is
+            // the site's choice, and paying a proxy to get past it is not.
             allowProxy: false,
         }));
         if (cacheKey) htmlCache.set(cacheKey, body, ttl ? { ttl } : undefined);

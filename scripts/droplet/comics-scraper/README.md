@@ -27,7 +27,7 @@ Every `<id>` comes from a previous response — do not hand-construct them.
 
 | Source | `source=` | ID shape | Current state |
 | --- | --- | --- | --- |
-| Internet Archive | `archive` (default) | `ia-LittleNemo1905-1914ByWinsorMccay` | Three curated original-era comic collections; public IIIF reader |
+| Internet Archive | `archive` (default) | `ia-LittleNemo1905-1914ByWinsorMccay` | 22 curated original-era comic books; public IIIF reader |
 | Comic Book Plus | `cbp` | `cbp-1325` | Upstream challenges HTML requests; previously cached titles may remain available |
 | XOXO Comics | `xoxo` | `invincible` | Legacy catalogue; its reader remains unavailable |
 
@@ -51,6 +51,16 @@ restart. Empty parses and broken-reader verdicts are not persisted. Both deploy
 and rollback preserve this directory alongside `img-cache/`. Caching cannot
 recover a title that was never successfully loaded, or guarantee uncached
 images during an outage; those failures remain explicit and retryable.
+
+**Catalogue (2026-10-13):** grown to 22 titles — Bringing Up Father, Barney
+Google, Foxy Grandpa, Wilhelm Busch, A. B. Frost, Töpffer, Caran d'Ache and
+more. Each was checked for the bar in the comment above `ARCHIVE_CATALOG`
+(original edition published by 1930, creators dead before 1956, freely
+viewable, not a Google scan) and loaded end to end through this adapter.
+Comic Book Plus has served a Cloudflare managed challenge to every
+non-browser client since late September 2026, so its titles cannot be read;
+`comicbookplus.js` keeps `allowProxy: false` rather than paying a proxy to get past a
+block the site chose to put up.
 
 **Validation (2026-10-07):** catalogue, chapters, verified pages and actual JPEG
 responses passed locally for Little Nemo (421 scans), Buster Brown, His Dog
