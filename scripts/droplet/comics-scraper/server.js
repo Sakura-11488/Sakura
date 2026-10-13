@@ -1267,11 +1267,18 @@ app.get("/pages", async (req, res) => {
                 const candidates = [pages[0]];
                 if (pages.length > 1) candidates.push(pages[Math.floor(pages.length / 2)]);
                 let invalid = 0;
+                let inconclusive = 0;
                 await Promise.all(candidates.map(async (candidate) => {
                     try {
                         await loadImage(candidate, { allowProxy: false, minBytes: MIN_PAGE_IMAGE_BYTES });
                     } catch (err) {
                         if (err instanceof UpstreamError && err.code === "INVALID") invalid += 1;
+                        // Archive page lists come from its IIIF manifest and the app
+                        // loads the images from Internet Archive directly, with its
+                        // own retry. A sample that merely could not finish (IIIF
+                        // 5xx, timeout) is not proof of a broken chapter — the same
+                        // rule as sakura-web's /api/public-domain-comics.
+                        else if (src === archive) inconclusive += 1;
                         else throw err;
                     }
                 }));
@@ -1280,6 +1287,12 @@ app.get("/pages", async (req, res) => {
                         pages: [], droppedCount: pages.length, totalDiscovered: pages.length,
                         verified: true, readerBroken: true,
                     };
+                }
+                if (inconclusive > 0) {
+                    console.warn(`[pages] ${slug} ${chapterId}: sample inconclusive; serving the list unverified`);
+                    // verified:false keeps it out of the cache, so the next
+                    // request samples again.
+                    return { pages, droppedCount: 0, totalDiscovered: pages.length, verified: false };
                 }
                 return { pages, droppedCount: 0, totalDiscovered: pages.length, verified: true };
             },

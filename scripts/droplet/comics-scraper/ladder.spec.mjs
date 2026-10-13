@@ -210,6 +210,22 @@ console.log("\n--- dead-image memo: a repeat view costs zero network ---");
     ok(up.stats().deadImageShortCircuits === 10, "short-circuits counted");
 }
 
+console.log("\n--- a 5xx image is transient: not INVALID, not memoised, never metered ---");
+{
+    // Measured 2026-10-13: Internet Archive's IIIF renderer 500'd a Max and
+    // Maurice page three times running, then served it fine minutes later.
+    // Calling that INVALID memoised it dead and cached the chapter as broken.
+    originMode = "500";
+    const up = makeUpstream();
+    const url = `${O()}/comic/x/issue-1/1/7.jpg`;
+    const first = await code(() => up.fetchImage(url, { isImage: isJpeg }));
+    ok(first === "HTTP", "unchallenged 500 on an image -> HTTP, not INVALID", `got ${first}`);
+    ok(counters.proxy === 0, "a 5xx image never reaches the paid tier", `proxyHits=${counters.proxy}`);
+    originMode = "healthy";
+    const second = await code(() => up.fetchImage(url, { isImage: isJpeg }));
+    ok(second === "NO_ERROR", "the same image loads once the origin recovers (not memoised dead)", `got ${second}`);
+}
+
 console.log("\n--- single-flight probe ---");
 {
     const up = makeUpstream({ blockCooldownMs: 100 });

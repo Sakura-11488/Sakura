@@ -782,6 +782,7 @@ export function createUpstream(options = {}) {
         let directErr = null;
         let directClass = "escalate";
         let reachedOrigin = false;
+        let transient = null;
 
         if (tryDirect) {
             try {
@@ -805,6 +806,17 @@ export function createUpstream(options = {}) {
                     enterBlockedMode("image", `image HTTP ${res.status} challenge`);
                     directErr = new UpstreamError("BLOCKED", "bot challenge on image fetch", { status: res.status });
                     directClass = "escalate";
+                } else if (res.status >= 500) {
+                    // An unchallenged 5xx is the origin struggling, not a dead
+                    // image: Internet Archive's IIIF renderer 500s pages it serves
+                    // fine a minute later. Not INVALID and not memoised — callers
+                    // cache INVALID as "chapter broken" — and not escalated
+                    // either, so a flaky origin can never spend a credit.
+                    reachedOrigin = true;
+                    clearBlock("image");
+                    transient = new UpstreamError("HTTP", `upstream HTTP ${res.status} for image`, {
+                        status: res.status,
+                    });
                 } else {
                     // Rules 1 + 6: a soft-404 / dead image. Free, final, memoised
                     // — and it PROVES the origin is reachable, so clear the block.
@@ -834,6 +846,10 @@ export function createUpstream(options = {}) {
             } finally {
                 if (isProbe) releaseDirectProbe("image", reachedOrigin);
             }
+        }
+        if (transient) {
+            recordFailure(transient, { probe });
+            throw transient;
         }
 
         const stop = paidTierGate({
