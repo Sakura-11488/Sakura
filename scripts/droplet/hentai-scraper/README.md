@@ -36,10 +36,30 @@ All responses are JSON and CORS-open.
 | GET    | `/details?id=<galleryId>`             | Cover, title, authors, tags, pageCount           |
 | GET    | `/chapters?id=<galleryId>`            | Always one synthetic `gallery` issue             |
 | GET    | `/pages?id=<galleryId>&chapterId=gallery` | Image URLs for the whole gallery             |
-| GET    | `/img?u=<encoded image url>`          | Streams image bytes with a Referer header        |
+| GET    | `/img?u=<encoded image url>`          | Streams image bytes; signed URLs only (below)    |
 
 `<galleryId>` is the numeric id from the URLs the service emits — do not
-hand-construct it.
+hand-construct it. Anything non-numeric is a 400.
+
+## Content policy
+
+Nothing that sexualises minors is listed, opened or proxied. `server.js`
+("Content policy") has the detail; in short:
+
+- List cards are dropped by HentaiFox tag ID (lolicon, shotacon, mesugaki...),
+  by parody ID for a few series whose cast are young children, and by title.
+  A gallery with no tags at all is dropped too: it has not been curated.
+- `/details` and `/pages` refuse (404 `UNAVAILABLE`) a gallery whose tag or
+  parody slugs or title are blocked, or which has no tags.
+- `/img` only serves images whose URL carries the `sk` signature this service
+  adds to every cover and page URL it hands out. Unsigned or altered URLs are
+  a 403. The key lives in `img-key.txt` next to `server.js` (created on first
+  start, kept by `deploy.sh`; `HENTAI_IMG_KEY` overrides it). Deleting it
+  invalidates every image link clients hold until they refetch.
+- More IDs or slugs without a code change: `HENTAI_BLOCKED_TAG_IDS`,
+  `HENTAI_BLOCKED_TAG_SLUGS`, `HENTAI_BLOCKED_PARODY_IDS`,
+  `HENTAI_BLOCKED_PARODY_SLUGS` (comma-separated). A tag's ID is the one ID
+  shared by every card's `data-tags` on its `/tag/<slug>/` page.
 
 ## One-time deploy
 

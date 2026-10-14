@@ -68,6 +68,29 @@ export function looksLikeChallenge({ status, headers, html }) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Read a WHATWG body stream into a Buffer, giving up past `maxBytes`. Returns
+ * null when the cap is hit (the stream is cancelled, so the connection is
+ * dropped instead of drained). Works for undici and impit responses alike.
+ */
+export async function readBodyCapped(body, maxBytes = Infinity) {
+    if (!body) return Buffer.alloc(0);
+    const reader = body.getReader();
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) {
+            await reader.cancel().catch(() => {});
+            return null;
+        }
+        chunks.push(value);
+    }
+    return Buffer.concat(chunks, size);
+}
+
+/**
  * impit accepts anything with tough-cookie's two async methods. This 25-line
  * in-memory jar carries Cloudflare's __cf_bm / cf_clearance and HentaiFox's
  * PHPSESSID across requests — the most un-browserlike trait left after the TLS
@@ -318,17 +341,30 @@ export function createUpstream(options = {}) {
      * Binary fetch used ONLY as the /img fallback. The image CDN is unprotected
      * today; this exists so that if it ever starts scoring us the way the HTML
      * host does, images recover automatically instead of going blank.
+     *
+     * Redirects are NOT followed: the caller has already held every hop to its
+     * host allowlist, and a followed redirect here would let an allowed URL
+     * bounce anywhere (impit follows up to 5 by default). A 3xx is a failure.
+     * The body is read under `maxBytes`, never buffered whole first.
      */
-    async function fetchBinary(url, { timeoutMs: perCall } = {}) {
+    async function fetchBinary(url, { timeoutMs: perCall, maxBytes = Infinity } = {}) {
         await limiter.acquire();
         try {
             const res = await getClient().fetch(url, {
                 method: "GET",
                 timeout: perCall || timeoutMs,
-                redirect: "follow",
+                redirect: "manual",
             });
-            const buf = Buffer.from(await res.arrayBuffer());
-            if (!res.ok) throw new UpstreamError("HTTP", `upstream HTTP ${res.status}`, { status: res.status });
+            if (!res.ok) {
+                await res.body?.cancel().catch(() => {});
+                throw new UpstreamError("HTTP", `upstream HTTP ${res.status}`, { status: res.status });
+            }
+            if (Number(res.headers.get("content-length")) > maxBytes) {
+                await res.body?.cancel().catch(() => {});
+                throw new UpstreamError("INVALID", `body over ${maxBytes} bytes`);
+            }
+            const buf = await readBodyCapped(res.body, maxBytes);
+            if (!buf) throw new UpstreamError("INVALID", `body over ${maxBytes} bytes`);
             return { buf, contentType: res.headers.get("content-type") || "" };
         } finally {
             limiter.release();
