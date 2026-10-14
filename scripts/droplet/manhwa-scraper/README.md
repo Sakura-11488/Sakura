@@ -77,13 +77,13 @@ Paths below are post-nginx-strip; publicly they are `/manhwa/v1/<route>`.
 | Route | Params | Response |
 |---|---|---|
 | `GET /healthz` | — | `{ ok, upstream: { mangaread, comizy }, cacheSize }` |
-| `GET /popular` | `limit` (1–60, def 24) | `{ items: ListItem[] }` |
+| `GET /popular` | `limit` (1–60, def 24), `offset` (≤200) | `{ items: ListItem[] }` |
 | `GET /search` | `q`, `limit`, `offset` | `{ items: ListItem[] }` — merged, relevance-ordered |
 | `GET /details` | `id` (prefixed) | `{ comic: Detail }` |
 | `GET /chapters` | `id`, `limit` (≤2000), `offset` | `{ issues: Issue[] }`, reading order |
 | `GET /pages` | `id`, `chapterId` | `{ pages, droppedCount, totalDiscovered, fallbackToRaw }` |
 | `GET /img` | `u` (encoded absolute URL) | raw image bytes |
-| `GET /debug/probe` | `adapter` (`mr`/`cz`), `path` | operator only |
+| `GET /debug/probe` | `adapter` (`mr`/`cz`), `path` | operator only: answers direct requests to `127.0.0.1:3102` over SSH, 404 through nginx |
 
 An unprefixed `id` is a 400, never a guess.
 
@@ -104,7 +104,9 @@ location inside a sibling, which nginx rejects with
 `max_memory_restart` is 160M rather than the siblings' 256M — the droplet has
 961MB total and roughly 340MB free with comics and hentai already running.
 `MANHWA_CACHE_MAX` is 400 rather than 1000 because a mangaread chapter-list
-response is 60–110KB.
+response is 60–110KB, and `MANHWA_CACHE_MAX_BYTES` (24MB of JSON) bounds the
+cache by size too: a parsed 3,864-chapter list is ~670KB of heap, so 400 long
+series alone would blow through the 160M restart line.
 
 ## Smoke test
 

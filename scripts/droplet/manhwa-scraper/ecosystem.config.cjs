@@ -21,8 +21,15 @@ module.exports = {
                 // Chapter-list responses run 60-110KB, so cache far fewer
                 // entries than the sibling scrapers do.
                 MANHWA_CACHE_MAX: "400",
+                // ...and by size: one long series' parsed list is ~670KB of heap,
+                // so the entry count alone allowed ~270MB. ~24MB of JSON is ~45MB
+                // of heap, inside the 160M restart line with the process's ~70MB.
+                MANHWA_CACHE_MAX_BYTES: String(24 * 1024 * 1024),
                 MANHWA_CACHE_TTL_MS: String(15 * 60 * 1000),
-                MANHWA_REQUEST_TIMEOUT_MS: "25000",
+                // Per attempt; all attempts share the budget, which has to end
+                // before nginx's 30s proxy_read_timeout or nginx answers 504 HTML.
+                MANHWA_REQUEST_TIMEOUT_MS: "12000",
+                MANHWA_REQUEST_BUDGET_MS: "26000",
             },
         },
     ],
