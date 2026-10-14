@@ -25,6 +25,7 @@ import {
 } from '@/lib/reading-history';
 import { subscribeReadingProgress } from '@/lib/reader-progress';
 import { subscribeWatchProgress } from '@/lib/watch-progress';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 import { confirmDestructive } from '@/lib/confirm-alert';
 import { onTap, playTap } from '@/lib/sound';
 
@@ -71,14 +72,10 @@ export default function ReadingHistoryScreen() {
     }, [refresh]),
   );
 
-  React.useEffect(() => {
-    const unsubRead = subscribeReadingProgress(refresh);
-    const unsubWatch = subscribeWatchProgress(refresh);
-    return () => {
-      unsubRead();
-      unsubWatch();
-    };
-  }, [refresh]);
+  // Only while focused: the reader and player save progress every few
+  // seconds, and the focus effect above already reloads on return.
+  useFocusedSubscription(subscribeReadingProgress, refresh);
+  useFocusedSubscription(subscribeWatchProgress, refresh);
 
   const filtered = useMemo(() => {
     if (tab === 'All') return items;

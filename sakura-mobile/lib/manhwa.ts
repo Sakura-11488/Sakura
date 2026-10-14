@@ -121,8 +121,9 @@ export function manhwaTitleKey(title: string | null | undefined): string {
 /*
  * The catalogue.
  *
- * The scraper has no "list everything" endpoint. `/popular` is a fixed,
- * hand-picked ~19 titles whatever `limit` / `offset` say, and `/search` caps
+ * The scraper has no "list everything" endpoint. `/popular` was a fixed,
+ * hand-picked ~19 titles whatever `limit` / `offset` said (live in Oct 2026
+ * it answers up to 60), and `/search` caps
  * one query at ~36 hits (12 from mangaread, up to 24 from comizy), also
  * whatever `limit` says. Showing only `/popular` is why the Manhwa tab and
  * "View all" stopped at 19 titles. So the catalogue is grown from `/popular`
@@ -147,7 +148,7 @@ const DISCOVERY_CONCURRENCY = 3;
 const DISCOVERY_QUERY_LIMIT = 48;
 /** Roughly how many NEW titles one word adds after dedupe; sizes a browse page. */
 const DISCOVERY_YIELD_PER_QUERY = 30;
-/** `/popular` ignores this today; asking for more costs nothing if it ever stops. */
+/** `/popular` honours this (up to 60) since the scraper's Oct 2026 update. */
 const POPULAR_LIMIT = 60;
 
 /**
@@ -253,14 +254,28 @@ const discoveryLoaders = (queries: readonly string[]) =>
 
 /**
  * The first `limit` titles of the catalogue: `/popular` first, topped up from
- * the discovery words in order. Resolves [] when nothing at all could be
- * loaded (the rejection is caught outside every cache, as before).
+ * the discovery words in order only when it falls short. Resolves [] when
+ * nothing at all could be loaded (the rejection is caught outside every
+ * cache, as before).
+ *
+ * `/popular` alone used to be a fixed ~19 titles, so this always went on to
+ * the words; live it now answers the full POPULAR_LIMIT (60), and starting
+ * 'martial' and 'level' alongside it cost every cold Manhwa tab two scraper
+ * searches (each 0.8–1.3 s at the droplet) for titles it never showed.
  */
 export async function fetchTrendingManhwa(limit = 24): Promise<ContentItem[]> {
-  return collectInOrder(
-    [fetchPopularManhwaList, ...discoveryLoaders(MANHWA_DISCOVERY_QUERIES)],
-    limit,
-  ).catch(() => [] as ContentItem[]);
+  let popularError: unknown = null;
+  const popular = await collectInOrder([fetchPopularManhwaList], limit).catch((error) => {
+    popularError = error;
+    return [] as ContentItem[];
+  });
+  if (popular.length >= limit) return popular;
+  // The top-up runs in the same waves as before, /popular in the first slot:
+  // answered from the cache when it loaded, or as its failure without asking
+  // again — so a /popular outage plus a failed first wave still stops after
+  // one wave, as collectInOrder intends.
+  const head = popularError ? () => Promise.reject(popularError) : fetchPopularManhwaList;
+  return collectInOrder([head, ...discoveryLoaders(MANHWA_DISCOVERY_QUERIES)], limit).catch(() => popular);
 }
 
 /** One `/search` page. An empty page is the end of the results, never cached. */
@@ -360,9 +375,66 @@ export async function searchManhwa(query: string, limit = 24): Promise<ContentIt
  * the old key would keep serving "Could not load" until they did. Bump the
  * version again whenever a release has cached something wrong under these.
  */
+/** Upstream tags that name the FORMAT, not a genre. */
+const FORMAT_TAGS: Record<string, string> = {
+  manhwa: 'Manhwa',
+  manhua: 'Manhua',
+  manga: 'Manga',
+  webtoon: 'Webtoon',
+  webtoons: 'Webtoon',
+};
+
+/**
+ * mangaread prefixes every synopsis with its own boilerplate — "A brief
+ * description of the manhwa Solo Max-Level Newbie: …" — which the series
+ * page showed verbatim as the first words of every synopsis.
+ */
+const SYNOPSIS_BOILERPLATE = /^\s*a brief description of the (?:manhwa|manhua|manga|webtoon|comic)\s[^:]{0,200}:\s*/i;
+
+/** mangaread's statuses as readers expect them ("OnGoing" → "Ongoing"). */
+export function normalizeManhwaStatus(status: string | null | undefined): string {
+  const raw = String(status || '').trim();
+  const key = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  if (!key) return '';
+  if (key === 'ongoing' || key === 'releasing' || key === 'publishing') return 'Ongoing';
+  if (key === 'completed' || key === 'complete' || key === 'end' || key === 'finished') return 'Completed';
+  if (key === 'onhold' || key === 'hiatus') return 'Hiatus';
+  if (key === 'canceled' || key === 'cancelled' || key === 'dropped') return 'Cancelled';
+  return raw;
+}
+
+/** Strip mangaread's synopsis preamble. */
+export function cleanManhwaSynopsis(text: string | null | undefined): string {
+  return String(text || '').replace(SYNOPSIS_BOILERPLATE, '').trim();
+}
+
+/**
+ * Split the upstream tags into the format (Manhwa / Manhua / Manga) and the
+ * real genres. The source serves all three formats, and calling everything
+ * 'Manhwa' mislabelled Martial Peak (a manhua) and One Piece (a manga); the
+ * format tag also used to sit among the genres.
+ */
+export function splitManhwaTags(tags: readonly (string | null | undefined)[] | null | undefined): { type: string; genres: string[] } {
+  let type = '';
+  const genres: string[] = [];
+  for (const tag of tags || []) {
+    const name = String(tag || '').trim();
+    if (!name) continue;
+    const format = FORMAT_TAGS[name.toLowerCase()];
+    if (format) {
+      if (!type || (type === 'Webtoon' && format !== 'Webtoon')) type = format;
+      continue;
+    }
+    if (!genres.includes(name)) genres.push(name);
+  }
+  return { type: type === 'Webtoon' || !type ? 'Manhwa' : type, genres };
+}
+
 export async function fetchManhwaDetail(id: string): Promise<MangaDetail | null> {
   return getOrSetCached<MangaDetail>(
-    `manhwa:detail:v2:${id}`,
+    // v3: format split out of the genres, status and synopsis cleaned, and
+    // authors as their own field instead of "Manhwa · authors" in `type`.
+    `manhwa:detail:v3:${id}`,
     30 * 60 * 1000,
     async () => {
       const params = new URLSearchParams({ id });
@@ -372,18 +444,22 @@ export async function fetchManhwaDetail(id: string): Promise<MangaDetail | null>
         (data as { manga?: ProxyDetail }).manga ||
         (data as ProxyDetail);
       if (!detail || !detail.id) throw new Error('Manhwa not found.');
-      const authors =
-        Array.isArray(detail.authors) && detail.authors.length
-          ? detail.authors.join(', ')
-          : detail.author || '';
+      const authors = (Array.isArray(detail.authors) && detail.authors.length
+        ? detail.authors
+        : String(detail.author || '').split(','))
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+      const { type, genres } = splitManhwaTags(detail.tags);
       return {
         id: detail.id,
         title: detail.title || detail.id,
         cover: proxyManhwaImage(detail.cover),
-        description: detail.description || '',
-        genres: Array.isArray(detail.tags) ? detail.tags.filter(Boolean) : [],
-        status: detail.status || '',
-        type: authors ? `Manhwa · ${authors}` : 'Manhwa',
+        description: cleanManhwaSynopsis(detail.description),
+        genres,
+        status: normalizeManhwaStatus(detail.status),
+        type,
+        ...(authors.length ? { authors: [...new Set(authors)] } : {}),
+        ...(typeof detail.year === 'number' && detail.year > 1900 ? { year: detail.year } : {}),
       };
     },
     { staleIfError: true },

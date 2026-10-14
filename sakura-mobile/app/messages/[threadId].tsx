@@ -14,7 +14,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Haptics from 'expo-haptics';
 import { Fonts, FontSize, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';

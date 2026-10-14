@@ -9,6 +9,8 @@ import {
   StatusBar,
   Platform,
   FlatList,
+  Alert,
+  ScrollView,
   type ListRenderItemInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -40,12 +42,12 @@ import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
 import { Library } from '@/lib/storage';
 import {
-  fetchMangaDetail,
-  fetchMangaChapters,
-  fetchMangaChapterThumbnail,
+  atsuGenreId,
   MangaDetail as MangaData,
   MangaChapter,
+  type MangaRelatedTitle,
 } from '@/lib/manga';
+import { getMangaPreview, loadMangaChapters, loadMangaDetail, runWhenIdle } from '@/lib/manga-prefetch';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
 import { formatReleaseDate } from '@/lib/format-release-date';
 import {
@@ -81,7 +83,8 @@ import {
   type OfflineTitleDetail,
   type OfflineTitleSnapshot,
 } from '@/lib/offline-titles';
-import { fetchOfflineChapterList } from '@/lib/chapter-pages';
+import { fetchOfflineChapterList, prefetchChapterPages } from '@/lib/chapter-pages';
+import { warmReaderImage } from '@/components/reader/warm-reader-image';
 import { isOnline, useOnline } from '@/lib/use-online';
 import { confirmAction } from '@/lib/confirm-alert';
 import { useWallet } from '@/lib/wallet/context';
@@ -90,12 +93,25 @@ import { playTap, onTap } from '@/lib/sound';
 import {
   getMangaReadProgress,
   subscribeReadingProgress,
-  isActiveReadingProgress,
   type MangaProgress,
 } from '@/lib/reader-progress';
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
+import ContentCard from '@/components/ui/ContentCard';
+import { getReadChapterIds, setChaptersRead, subscribeChapterReadState } from '@/lib/chapter-read-state';
+import {
+  chapterReadPercent,
+  chapterTime,
+  effectiveReadIds,
+  isNewChapter,
+  previousChapterIds,
+  resolveResume,
+  sortChaptersAsc,
+} from '@/lib/chapter-progress';
+import { noteSeriesChapters, seedReadMarksFromProgress } from '@/lib/library-updates';
+import { readStore, writeStore } from '@/lib/kv-store';
 import CommentsSection from '@/components/social/CommentsSection';
 import { useFocusEffect } from 'expo-router';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 // import CreatorTab from '@/components/ui/CreatorTab';
 import { supabase } from '@/lib/supabase';
 import { getGatedChapterIds } from '@/lib/pass-gate';
@@ -160,6 +176,32 @@ function useDetailMetrics() {
 const CHAPTER_ITEM_H = 64;
 
 type ChapterSort = 'oldest' | 'newest';
+type ChapterFilter = 'all' | 'unread' | 'downloaded';
+
+/**
+ * The chapter order you last chose, per source. It used to reset to "Oldest
+ * first" on every visit, so a reader on chapter 280 of 281 who prefers the
+ * newest at the top had to flip it each time.
+ */
+const SORT_STORE = 'sakura_chapter_sort.json';
+let sortPrefs: Record<string, ChapterSort> | null = null;
+async function loadSortPref(source: string): Promise<ChapterSort | null> {
+  if (!sortPrefs) {
+    try {
+      const raw = await readStore(SORT_STORE);
+      const parsed = raw ? JSON.parse(raw) : null;
+      sortPrefs = parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      sortPrefs = {};
+    }
+  }
+  const value = sortPrefs?.[source];
+  return value === 'oldest' || value === 'newest' ? value : null;
+}
+function saveSortPref(source: string, sort: ChapterSort): void {
+  sortPrefs = { ...(sortPrefs ?? {}), [source]: sort };
+  void writeStore(SORT_STORE, JSON.stringify(sortPrefs));
+}
 
 // ─── Download-all sizing ──────────────────────────────────────────────────────
 /**
@@ -436,79 +478,76 @@ function GlowButton({
 const ChapterRow = memo(function ChapterRow({
   ch,
   mangaId,
-  mangaCover,
   offline,
   onDownload,
   isResume,
   onOpen,
+  onMenu,
   hideDownload,
-  disableThumbFetch,
   offlineOnly,
   unavailableReason,
   locked,
+  read,
+  readPercent,
+  isNew,
 }: {
   ch: MangaChapter;
   mangaId: string;
-  mangaCover?: string;
   offline?: OfflineMangaChapter | null;
   onDownload: (ch: MangaChapter) => void;
   isResume?: boolean;
   onOpen: (ch: MangaChapter, resume: boolean) => void;
+  /** Long press: mark read / unread / previous as read. Absent where marks are not kept (18+). */
+  onMenu?: (ch: MangaChapter) => void;
   hideDownload?: boolean;
-  /** No chapter thumbnails at all (scraped sources, which have no thumbnail API). */
-  disableThumbFetch?: boolean;
   /** No network: only a thumbnail already on the device may be shown. */
   offlineOnly?: boolean;
   /** Why this row cannot be opened right now; dims it and replaces the status line. */
   unavailableReason?: string;
   locked?: boolean;
+  /** Finished: dimmed, with a check in the number tile. */
+  read?: boolean;
+  /** The part-read chapter: how far in, 1–100. */
+  readPercent?: number | null;
+  /** Released in the last week. */
+  isNew?: boolean;
 }) {
   const { colors } = useTheme();
   const [thumbUri, setThumbUri] = useState<string | null>(
     offlineOnly ? null : (ch.coverUrl ?? null),
   );
 
-  // "12 pages · Jul 18, 2026", or whichever half exists. Both are optional:
-  // some sources report no page count until a chapter is opened, and
-  // synthesised chapters and offline-rebuilt lists carry no date.
+  // "NEW · 12 pages · Jul 18, 2026", or whichever parts exist. Page count and
+  // date are both optional: some sources report no page count until a
+  // chapter is opened, and synthesised and offline-rebuilt lists carry no
+  // date. One line on purpose — see the note on the row height below.
   const metaLine = [
+    readPercent ? `${readPercent}% read` : read ? 'Read' : '',
     ch.pageCount > 0 ? `${ch.pageCount} pages` : '',
     formatReleaseDate(ch.createdAt),
   ]
     .filter(Boolean)
     .join(' · ');
 
+  // No network here, ever. Rows used to fill their thumbnail by asking atsu
+  // for the chapter's page list and then loading its whole first page
+  // (100–250 KB) — 12+ API calls and 1–3 MB on every series open, more as
+  // the list scrolled — for a 40 px picture of a speech bubble. A thumbnail
+  // the list already carries (ch.coverUrl) or a downloaded first page on the
+  // device is still shown; everything else gets its number.
   useEffect(() => {
     let cancelled = false;
-    // Offline, ch.coverUrl and the thumbnail API are both network URLs. A
-    // remote thumbnail would render as an empty box and the API call would
-    // just fail, row after row; the downloaded first page, or else the series
-    // cover stored with the downloads, is at least the right picture.
     if (ch.coverUrl && !offlineOnly) {
       setThumbUri(ch.coverUrl);
       return;
     }
-    if (disableThumbFetch) {
-      setThumbUri(null);
-      return;
-    }
-    (async () => {
-      const local = offline?.status === 'ready'
-        ? await getOfflineMangaPageUris(mangaId, ch.id).catch(() => null)
-        : null;
-      if (local?.[0]) {
-        if (!cancelled) setThumbUri(local[0]);
-        return;
-      }
-      if (offlineOnly) {
-        if (!cancelled) setThumbUri(null);
-        return;
-      }
-      const url = await fetchMangaChapterThumbnail(mangaId, ch.id);
-      if (!cancelled && url) setThumbUri(url);
-    })();
+    setThumbUri(null);
+    if (offline?.status !== 'ready') return;
+    void getOfflineMangaPageUris(mangaId, ch.id)
+      .then((local) => { if (!cancelled && local?.[0]) setThumbUri(local[0]); })
+      .catch(() => {});
     return () => { cancelled = true; };
-  }, [mangaId, ch.id, ch.coverUrl, offline?.status, disableThumbFetch, offlineOnly]);
+  }, [mangaId, ch.id, ch.coverUrl, offline?.status, offlineOnly]);
 
   const ch_s = useMemo(() => StyleSheet.create({
     row: {
@@ -534,20 +573,38 @@ const ChapterRow = memo(function ChapterRow({
     thumbFallbackNum: {
       fontFamily: Fonts.display,
       fontWeight: FontWeight.heavy,
-      fontSize: 10,
+      fontSize: 11,
       color: colors.primary,
     },
+    thumbCheck: {
+      position: 'absolute',
+      right: 3,
+      bottom: 3,
+      fontSize: 10,
+      fontWeight: FontWeight.heavy,
+      color: colors.success,
+    },
     info: { flex: 1, minWidth: 0 },
+    titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     title: {
+      flexShrink: 1,
       fontSize: FontSize.sm,
       fontWeight: FontWeight.semibold,
       color: colors.text,
       marginBottom: 1,
     },
+    newPill: {
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 4,
+      backgroundColor: colors.primary,
+    },
+    newPillText: { fontSize: 8, fontWeight: FontWeight.heavy, color: '#fff', letterSpacing: 0.4 },
     sub: {
       fontSize: 10,
       color: colors.textTertiary,
     },
+    subProgress: { color: colors.primary, fontWeight: FontWeight.semibold },
     dlLabel: {
       fontSize: 10,
       color: colors.primary,
@@ -559,6 +616,7 @@ const ChapterRow = memo(function ChapterRow({
       marginTop: 2,
     },
     dimmed: { opacity: 0.45 },
+    readDim: { opacity: 0.55 },
     dlBtn: {
       padding: 6,
       marginLeft: 4,
@@ -595,38 +653,50 @@ const ChapterRow = memo(function ChapterRow({
     },
   }), [colors]);
 
-  const thumbSource = thumbUri || mangaCover || '';
+  const numberLabel = Number.isFinite(ch.number) ? String(ch.number) : '';
+  const a11yState = readPercent ? `, ${readPercent}% read` : read ? ', read' : isNew ? ', new' : '';
 
   return (
     <TouchableOpacity
       onPress={() => onOpen(ch, !!isResume)}
+      onLongPress={onMenu ? () => onMenu(ch) : undefined}
+      delayLongPress={350}
       activeOpacity={0.85}
-      accessibilityHint={unavailableReason}
+      accessibilityLabel={`${ch.title}${a11yState}`}
+      accessibilityHint={unavailableReason ?? (onMenu ? 'Long press for read options' : undefined)}
       style={[
         ch_s.row,
         isResume && { borderWidth: 1, borderColor: `${colors.primary}55` },
         !!unavailableReason && ch_s.dimmed,
       ]}
     >
-      {thumbSource ? (
-        <Image
-          source={{ uri: thumbSource }}
-          style={ch_s.thumb}
-          contentFit="cover"
-          transition={200}
-          recyclingKey={`${mangaId}-${ch.id}`}
-        />
-      ) : (
-        <View style={[ch_s.thumb, ch_s.thumbFallback]}>
-          <Text style={ch_s.thumbFallbackNum}>{ch.number}</Text>
+      <View style={read && !unavailableReason ? ch_s.readDim : undefined}>
+        {thumbUri ? (
+          <Image
+            source={{ uri: thumbUri }}
+            style={ch_s.thumb}
+            contentFit="cover"
+            transition={200}
+            recyclingKey={`${mangaId}-${ch.id}`}
+          />
+        ) : (
+          <View style={[ch_s.thumb, ch_s.thumbFallback]}>
+            <Text style={ch_s.thumbFallbackNum} numberOfLines={1}>{numberLabel}</Text>
+          </View>
+        )}
+        {read ? <Text style={ch_s.thumbCheck}>✓</Text> : null}
+      </View>
+      <View style={[ch_s.info, read && !unavailableReason && !isResume ? ch_s.readDim : null]}>
+        <View style={ch_s.titleRow}>
+          <Text style={ch_s.title} numberOfLines={1}>{ch.title}</Text>
+          {isNew && !read ? (
+            <View style={ch_s.newPill}><Text style={ch_s.newPillText}>NEW</Text></View>
+          ) : null}
         </View>
-      )}
-      <View style={ch_s.info}>
-        <Text style={ch_s.title} numberOfLines={1}>{ch.title}</Text>
         {/* One line, not two: the row height is fixed by CHAPTER_ITEM_H, which
             also feeds getItemLayout, so a third line would clip and
             desynchronise scroll offsets. */}
-        {!!metaLine && <Text style={ch_s.sub}>{metaLine}</Text>}
+        {!!metaLine && <Text style={[ch_s.sub, readPercent ? ch_s.subProgress : null]} numberOfLines={1}>{metaLine}</Text>}
         {/* The status line. "tap to pause" used to follow these, but tapping
             the row opens the reader; only the download icon pauses. */}
         {unavailableReason ? (
@@ -645,9 +715,9 @@ const ChapterRow = memo(function ChapterRow({
             {offline?.status === 'ready' && <Text style={[ch_s.dlLabel, { color: '#34C759' }]}>Downloaded</Text>}
           </>
         )}
-        {isResume && (
+        {isResume && !offline?.status && (
           <View style={ch_s.resumeBadge}>
-            <Text style={ch_s.resumeBadgeText}>Continue here</Text>
+            <Text style={ch_s.resumeBadgeText}>{readPercent ? 'Continue here' : 'Up next'}</Text>
           </View>
         )}
         {locked && (
@@ -700,6 +770,14 @@ export default function MangaDetail() {
   const [manga, setManga] = useState<MangaData | null>(null);
   const [chapters, setChapters] = useState<MangaChapter[]>([]);
   const [loading, setLoading] = useState(true);
+  /**
+   * Each half of the page is still on its way. The live detail and chapter
+   * list are drawn as each arrives rather than when both have (the page used
+   * to wait for the slower of two ~660 ms proxy calls), so each half has its
+   * own skeleton.
+   */
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [chaptersLoading, setChaptersLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [chaptersError, setChaptersError] = useState('');
   const [reloadAttempt, setReloadAttempt] = useState(0);
@@ -730,11 +808,32 @@ export default function MangaDetail() {
   const [batchPaused, setBatchPaused] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [mangaProgress, setMangaProgress] = useState<MangaProgress | null>(null);
-  const [chapterSort, setChapterSort] = useState<ChapterSort>('oldest');
+  const [chapterSort, setChapterSortState] = useState<ChapterSort>('oldest');
+  const [chapterFilter, setChapterFilter] = useState<ChapterFilter>('all');
+  /**
+   * Chapters marked read (lib/chapter-read-state). Never for 18+ titles: the
+   * store refuses them, and the page shows no read state there at all.
+   */
+  const [readIds, setReadIds] = useState<ReadonlySet<string>>(() => new Set());
   /** Only checked while some chapter is pass-gated; see lib/pass-gate.ts. */
   const [passValid, setPassValid] = useState(false);
   // const [activeTab, setActiveTab] = useState<'chapters' | 'author'>('chapters');
   // const [creatorWallet, setCreatorWallet] = useState<string | null>(null);
+
+  /**
+   * What the card that opened this page already showed: title and cover,
+   * from lib/manga-prefetch. Drawn in the first frame, before any request
+   * returns, and only while the live load is out — a title that then fails
+   * to load says so rather than keeping a preview of nothing.
+   */
+  const preview = useMemo(() => getMangaPreview(mangaId, adapter?.key ?? null), [mangaId, adapter]);
+  const shownManga = useMemo<MangaData | null>(() => manga ?? (loading && preview
+    ? { id: mangaId, title: preview.title, cover: preview.cover, description: '', genres: [], status: '', type: '' }
+    : null), [manga, loading, preview, mangaId]);
+  /** Only the title's own details are missing (the hero is a preview). */
+  const detailPending = detailLoading && !manga;
+  /** The chapter list has not arrived and nothing has failed yet. */
+  const chaptersPending = chaptersLoading && chapters.length === 0 && !chaptersError;
 
   const backScale = useSharedValue(1);
   const scrollY = useSharedValue(0);
@@ -746,12 +845,14 @@ export default function MangaDetail() {
   const silentReloadRef = useRef(false);
 
   useEffect(() => {
-    if (!mangaId) { setLoading(false); return; }
+    if (!mangaId) { setLoading(false); setDetailLoading(false); setChaptersLoading(false); return; }
     let active = true;
     const silent = silentReloadRef.current;
     silentReloadRef.current = false;
     if (!silent) {
       setLoading(true);
+      setDetailLoading(true);
+      setChaptersLoading(true);
       setLoadError('');
       setChaptersError('');
       setManga(null);
@@ -767,9 +868,10 @@ export default function MangaDetail() {
       // visit knows better, so record it.
       if (isSaved && adapter) void Library.setSource(mangaId, 'manga', adapter.key).catch(() => {});
     };
-    const showOfflineCopy = (copy: OfflineCopy, detail: MangaData, list: MangaChapter[]) => {
-      setManga(detail);
-      setChapters(sortChapters(list));
+    /** null keeps that half as it is: a live half already on screen. */
+    const showOfflineCopy = (copy: OfflineCopy, detail: MangaData | null, list: MangaChapter[] | null) => {
+      if (detail) setManga(detail);
+      if (list) setChapters(sortChapters(list));
       setOfflineCoverUri(copy.snapshot?.coverUri ?? null);
       setOfflineMode(true);
       setLoadError('');
@@ -790,6 +892,8 @@ export default function MangaDetail() {
           setLoadError("You're offline, and this title isn't downloaded on this device. Reconnect and try again.");
         }
         setLoading(false);
+        setDetailLoading(false);
+        setChaptersLoading(false);
       });
       return () => { active = false; };
     }
@@ -797,22 +901,56 @@ export default function MangaDetail() {
     // navigator.onLine can stay true while a source or connection hangs.
     // Show the saved title immediately, then replace it only with a live result.
     let liveLoadFinished = false;
+    // The halves of the live answer already on screen (see detailLoading).
+    // The downloaded copy, which usually resolves first, must not replace one
+    // that happens to come back before it.
+    let liveDetailShown = false;
+    let liveChaptersShown = false;
     const offlineCopy = loadOfflineCopy(scraped, mangaId);
     void offlineCopy.then((copy) => {
       if (!active || liveLoadFinished) return;
       const detail = detailFromCopy(copy, mangaId);
       if (!detail) return;
-      showOfflineCopy(copy, detail, chaptersFromCopy(copy));
+      const copyChapters = chaptersFromCopy(copy);
+      showOfflineCopy(
+        copy,
+        liveDetailShown ? null : detail,
+        liveChaptersShown ? null : copyChapters,
+      );
       setLoading(false);
+      setDetailLoading(false);
+      if (liveChaptersShown || copyChapters.length) setChaptersLoading(false);
     });
-    const detailFetch = adapter ? adapter.detail(mangaId) : fetchMangaDetail(mangaId);
-    const chaptersFetch = adapter ? adapter.chapters(mangaId) : fetchMangaChapters(mangaId);
+    // Through lib/manga-prefetch, so a prefetch started by hovering or
+    // pressing the card is joined rather than repeated. A Retry asks afresh.
+    const fresh = reloadAttempt > 0;
+    const detailFetch = loadMangaDetail(mangaId, scraped, { fresh });
+    const chaptersFetch = loadMangaChapters(mangaId, scraped, { fresh });
+    // Each half shows as soon as it arrives. Not on a silent reload: that
+    // refetch replaces the downloaded copy on screen only once BOTH halves
+    // have loaded, below.
+    if (!silent) {
+      detailFetch.then((detail) => {
+        if (!active || liveLoadFinished || !detail) return;
+        liveDetailShown = true;
+        setManga(detail);
+        setDetailLoading(false);
+      }, () => {});
+      chaptersFetch.then((list) => {
+        if (!active || liveLoadFinished || !list?.length) return;
+        liveChaptersShown = true;
+        setChapters(sortChapters(list));
+        setChaptersLoading(false);
+      }, () => {});
+    }
     setLiveChecking(true);
     Promise.allSettled([detailFetch, chaptersFetch, savedFetch]).then(async ([detail, chapterResult, savedResult]) => {
       liveLoadFinished = true;
       // A superseded load leaves the flag to the run that replaced it.
       if (!active) return;
       setLiveChecking(false);
+      setDetailLoading(false);
+      setChaptersLoading(false);
       noteSaved(savedResult.status === 'fulfilled' && savedResult.value);
       // The fetchers report failure as a rejection or as null/[], so both
       // count as "did not load" here — and below, where nothing on the
@@ -822,7 +960,7 @@ export default function MangaDetail() {
 
       if (liveDetail && liveChapters.length > 0) {
         setManga(liveDetail);
-        setChapters(sortChapters(liveChapters));
+        if (!liveChaptersShown) setChapters(sortChapters(liveChapters));
         setOfflineMode(false);
         setOfflineCoverUri(null);
         setLoadError('');
@@ -954,16 +1092,47 @@ export default function MangaDetail() {
     getMangaReadProgress(mangaId).then(setMangaProgress);
   }, [mangaId]);
 
-  useEffect(() => {
-    loadMangaProgress();
-    return subscribeReadingProgress(loadMangaProgress);
-  }, [loadMangaProgress]);
-
+  // Listening only while this page is focused: the reader opened from it
+  // saves progress on every page turn, and each save used to re-render this
+  // whole page underneath it. Focus reloads it (including the first focus).
+  useFocusedSubscription(subscribeReadingProgress, loadMangaProgress);
   useFocusEffect(
     useCallback(() => {
       loadMangaProgress();
     }, [loadMangaProgress]),
   );
+
+  /** The read-marks store's key for this series: the route's source, 'manga' for atsu. */
+  const readSource = adapter?.key ?? 'manga';
+  const tracksRead = !isAdult;
+  const loadReadIds = useCallback(() => {
+    if (!mangaId || !tracksRead) { setReadIds(new Set()); return; }
+    void getReadChapterIds(readSource, mangaId).then(setReadIds, () => {});
+  }, [mangaId, readSource, tracksRead]);
+  // Same focus rule as progress: the reader marks chapters while this page
+  // sits underneath it, and the focus reload picks them up on return.
+  useFocusedSubscription(subscribeChapterReadState, loadReadIds);
+  useFocusEffect(
+    useCallback(() => {
+      loadReadIds();
+    }, [loadReadIds]),
+  );
+
+  // The order you last chose for this source. Not for 18+: a saved
+  // preference under that source's name would itself be a trace of it.
+  useEffect(() => {
+    if (isAdult) return;
+    let cancelled = false;
+    void loadSortPref(readSource).then((pref) => { if (!cancelled && pref) setChapterSortState(pref); });
+    return () => { cancelled = true; };
+  }, [readSource, isAdult]);
+  const toggleChapterSort = useCallback(() => {
+    setChapterSortState((prev) => {
+      const next = prev === 'oldest' ? 'newest' : 'oldest';
+      if (!isAdult) saveSortPref(readSource, next);
+      return next;
+    });
+  }, [readSource, isAdult]);
 
   // Latest chapters of an ongoing series sit behind the monthly pass. Comics
   // are never gated (separate catalogue, no editorial ongoing signal).
@@ -1025,7 +1194,7 @@ export default function MangaDetail() {
   }, [hasDownloads, rememberTitle]);
 
   const openMangaChapter = useCallback((ch: MangaChapter, resume = false) => {
-    if (!manga) return;
+    if (!shownManga) return;
     const off = offlineMap[ch.id];
     const downloaded = off?.status === 'ready';
     if (!online && !downloaded) {
@@ -1036,8 +1205,8 @@ export default function MangaDetail() {
       pathname: '/chapter/[id]',
       params: {
         id: `${mangaId}~${ch.id}`,
-        title: manga.title,
-        cover: (manga as { image?: string }).image || manga.cover || '',
+        title: shownManga.title,
+        cover: (shownManga as { image?: string }).image || shownManga.cover || '',
         chapter: ch.title,
         ...(isExternal ? { source } : {}),
         // A downloaded chapter opens without the pass check. Downloading it
@@ -1055,10 +1224,10 @@ export default function MangaDetail() {
         ...(downloaded ? { offline: '1' } : {}),
       },
     });
-  }, [manga, mangaId, offlineMap, mangaProgress, router, isExternal, source, gatedChapterIds, online]);
+  }, [shownManga, mangaId, offlineMap, mangaProgress, router, isExternal, source, gatedChapterIds, online]);
 
   const handleDownloadChapter = useCallback(async (ch: MangaChapter) => {
-    if (!manga) return;
+    if (!shownManga) return;
     playTap();
     // Every source downloads on web and native alike, through stores that
     // export the native module's exact surface: lib/scraped-offline.web.ts for
@@ -1075,7 +1244,7 @@ export default function MangaDetail() {
       setToast('Chapter already downloaded');
       return;
     }
-    const cover = (manga as { image?: string }).image || manga.cover || '';
+    const cover = (shownManga as { image?: string }).image || shownManga.cover || '';
     // Scraped sources persist through the scraped-offline store; atsu manga
     // through manga-offline. Both expose the same status shape so the row UI is
     // shared.
@@ -1115,7 +1284,7 @@ export default function MangaDetail() {
             chapterId: ch.id,
             chapterNumber: ch.number,
             chapterTitle: ch.title,
-            title: manga.title,
+            title: shownManga.title,
             cover,
           })
         : await downloadMangaChapter({
@@ -1123,7 +1292,7 @@ export default function MangaDetail() {
             chapterId: ch.id,
             chapterNumber: ch.number,
             chapterTitle: ch.title,
-            title: manga.title,
+            title: shownManga.title,
             cover,
           });
       setToast(result.paused ? 'Download paused' : 'Chapter downloaded');
@@ -1132,7 +1301,7 @@ export default function MangaDetail() {
       setToast(e instanceof Error ? e.message : 'Download failed');
       refreshOffline();
     }
-  }, [manga, mangaId, offlineMap, refreshOffline, adapter, online, canDownload, rememberTitle]);
+  }, [shownManga, mangaId, offlineMap, refreshOffline, adapter, online, canDownload, rememberTitle]);
 
   /**
    * The chapters of the batch last started from this page. Resume walks the
@@ -1149,7 +1318,7 @@ export default function MangaDetail() {
   );
 
   const runBatchDownload = useCallback(async (list: MangaChapter[]) => {
-    if (!manga || list.length === 0) return;
+    if (!shownManga || list.length === 0) return;
     batchListRef.current = list;
     setBulkDownloading(true);
     setToast(
@@ -1158,8 +1327,8 @@ export default function MangaDetail() {
     );
     rememberTitle(true);
     const batch = {
-      title: manga.title,
-      cover: (manga as { image?: string }).image || manga.cover || '',
+      title: shownManga.title,
+      cover: (shownManga as { image?: string }).image || shownManga.cover || '',
       chapters: list.map((ch) => ({ id: ch.id, number: ch.number, title: ch.title })),
     };
     try {
@@ -1187,10 +1356,10 @@ export default function MangaDetail() {
         setBulkDownloading(false);
       }
     }
-  }, [manga, mangaId, adapter, refreshOffline, rememberTitle, getBatchState]);
+  }, [shownManga, mangaId, adapter, refreshOffline, rememberTitle, getBatchState]);
 
   const handleDownloadAll = async () => {
-    if (!manga || chapters.length === 0) return;
+    if (!shownManga || chapters.length === 0) return;
 
     if (batchPaused) {
       playTap();
@@ -1247,13 +1416,13 @@ export default function MangaDetail() {
   };
 
   const handleSave = async () => {
-    if (!manga) return;
+    if (!shownManga) return;
     playTap();
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const next = await Library.toggle({
       id: mangaId,
-      title: manga.title,
-      cover: manga.cover,
+      title: shownManga.title,
+      cover: shownManga.cover,
       type: 'manga',
       savedAt: 0,
       // So Library reopens it on this source rather than as atsu.
@@ -1264,12 +1433,12 @@ export default function MangaDetail() {
   };
 
   const handleShare = () => {
-    if (!manga) return;
+    if (!shownManga) return;
     playTap();
     // With the source, or a shared manhwa or comic opens as an atsu title —
     // the same mistake Library used to make.
     shareContentLink(
-      `Check out "${manga.title}" on Sakura!`,
+      `Check out "${shownManga.title}" on Sakura!`,
       `/manga/${encodeURIComponent(String(mangaId))}${adapter ? `?source=${adapter.key}` : ''}`,
     );
   };
@@ -1553,6 +1722,54 @@ export default function MangaDetail() {
       fontWeight: FontWeight.semibold,
       color: colors.primary,
     },
+    latestLine: {
+      fontSize: 11.5,
+      color: colors.textSecondary,
+      marginTop: -4,
+      marginBottom: 10,
+    },
+    filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
+    filterChip: {
+      paddingHorizontal: 11,
+      paddingVertical: 6,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    filterChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+    filterChipText: { fontSize: 11.5, fontWeight: FontWeight.semibold, color: colors.textSecondary },
+    filterChipTextActive: { color: '#fff' },
+    emptyFilter: { fontSize: 12.5, color: colors.textSecondary, paddingVertical: 14 },
+    credits: { fontSize: 12.5, color: colors.textSecondary, marginBottom: 12, lineHeight: 18 },
+    creditsName: { color: colors.text, fontWeight: FontWeight.semibold },
+    altTitles: { fontSize: 11.5, color: colors.textTertiary, lineHeight: 17, marginTop: 6 },
+    tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 8 },
+    tagChip: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: Radius.full,
+      backgroundColor: colors.surfaceSecondary,
+    },
+    tagChipText: { fontSize: 10.5, color: colors.textSecondary },
+    railSection: { marginTop: 6, marginBottom: 18, marginHorizontal: -16 },
+    railTitle: {
+      fontFamily: Fonts.display,
+      fontWeight: FontWeight.heavy,
+      fontSize: 17,
+      color: colors.text,
+      paddingHorizontal: 16,
+      marginBottom: 10,
+    },
+    railList: { paddingHorizontal: 16, gap: 8, paddingBottom: 4 },
+    relationLabel: {
+      fontSize: 10,
+      fontWeight: FontWeight.bold,
+      color: colors.primary,
+      marginTop: 4,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+    },
     chaptersListBox: {
       borderRadius: Radius.md,
       borderWidth: 1,
@@ -1578,32 +1795,51 @@ export default function MangaDetail() {
     offlineAction: { fontSize: 12.5, fontWeight: FontWeight.bold, color: colors.primary },
   }), [colors, wide, W, HERO_H]);
 
-  const chaptersAsc = useMemo(
-    () => [...chapters].sort((a, b) => a.number - b.number),
-    [chapters],
+  const chaptersAsc = useMemo(() => sortChaptersAsc(chapters), [chapters]);
+  /** Marks plus what the progress row says was finished (lib/chapter-progress). */
+  const readSet = useMemo(
+    () => (tracksRead ? effectiveReadIds(chaptersAsc, readIds, mangaProgress) : new Set<string>()),
+    [tracksRead, chaptersAsc, readIds, mangaProgress],
   );
-  const displayedChapters = useMemo(
-    () => (chapterSort === 'oldest' ? chaptersAsc : [...chaptersAsc].reverse()),
-    [chaptersAsc, chapterSort],
+  /**
+   * Where Start / Continue opens: the part-read chapter, else the next unread
+   * one after the last read, else (all read) the newest. Finishing a chapter
+   * used to turn this back into "Start Reading" at chapter 0.
+   */
+  const resume = useMemo(
+    () => resolveResume(chaptersAsc, readSet, tracksRead ? mangaProgress : null),
+    [chaptersAsc, readSet, tracksRead, mangaProgress],
   );
+  const unreadCount = useMemo(
+    () => (tracksRead ? chaptersAsc.reduce((n, c) => n + (readSet.has(c.id) ? 0 : 1), 0) : 0),
+    [tracksRead, chaptersAsc, readSet],
+  );
+  const downloadedCount = useMemo(
+    () => chaptersAsc.reduce((n, c) => n + (offlineMap[c.id]?.status === 'ready' ? 1 : 0), 0),
+    [chaptersAsc, offlineMap],
+  );
+  // A filter whose chips are gone (no downloads left) must not leave an empty list.
+  const activeFilter: ChapterFilter =
+    chapterFilter === 'downloaded' && downloadedCount === 0 ? 'all' :
+    chapterFilter === 'unread' && !tracksRead ? 'all' : chapterFilter;
+  const displayedChapters = useMemo(() => {
+    const filtered = activeFilter === 'unread'
+      ? chaptersAsc.filter((c) => !readSet.has(c.id))
+      : activeFilter === 'downloaded'
+        ? chaptersAsc.filter((c) => offlineMap[c.id]?.status === 'ready')
+        : chaptersAsc;
+    return chapterSort === 'oldest' ? filtered : [...filtered].reverse();
+  }, [chaptersAsc, chapterSort, activeFilter, readSet, offlineMap]);
   const firstChapter = chaptersAsc[0] ?? null;
   const chapterListHeight = Math.min(
-    displayedChapters.length * CHAPTER_ITEM_H,
+    Math.max(1, displayedChapters.length) * CHAPTER_ITEM_H,
     CHAPTER_LIST_MAX_H,
   );
-  const canContinueManga =
-    !!mangaProgress && isActiveReadingProgress(mangaProgress.progress);
-  // By id first, then by number: a chapter filled in from another scanlation
-  // group changes id once the main group uploads its own copy (see
-  // MangaProgress.chapterNumber), and Continue must still find it.
-  const resumeChapter = canContinueManga
-    ? chapters.find((c) => c.id === mangaProgress!.chapterId) ??
-      (mangaProgress!.chapterNumber
-        ? chapters.find((c) => c.number === mangaProgress!.chapterNumber)
-        : undefined) ??
-      null
-    : null;
-  const resumeChapterId = resumeChapter?.id ?? (canContinueManga ? mangaProgress!.chapterId : null);
+  /** A chapter is part-read: Continue, with its page. */
+  const canContinueManga = resume.kind === 'continue';
+  /** The chapter Continue / Up next points at, highlighted in the list and the target of Jump to current. */
+  const resumeChapter = resume.kind === 'continue' || resume.kind === 'next' ? resume.chapter : null;
+  const resumeChapterId = resumeChapter?.id ?? null;
 
   // With no network, a chapter is only worth showing as openable if it is
   // downloaded; the rest stay listed, dimmed, so the series still reads as a
@@ -1611,7 +1847,64 @@ export default function MangaDetail() {
   const restrictToDownloads = !online;
   // The cover stored with the snapshot whenever the page is not live — the
   // remote one would not load, or (on a failed source) likely not either.
-  const displayCover = offlineCoverUri && (offlineMode || !online) ? offlineCoverUri : manga?.cover;
+  const displayCover = offlineCoverUri && (offlineMode || !online) ? offlineCoverUri : shownManga?.cover;
+
+  /**
+   * Mark chapters read or unread, showing the change at once. The store
+   * notifies subscribers (this page included) once it has written.
+   */
+  const markChapters = useCallback((ids: string[], read: boolean, message?: string) => {
+    if (!tracksRead || !mangaId || ids.length === 0) return;
+    setReadIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (read) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+    void setChaptersRead(readSource, mangaId, ids, read).catch(() => loadReadIds());
+    if (message) setToast(message);
+  }, [tracksRead, mangaId, readSource, loadReadIds]);
+
+  const markChapterRead = useCallback((ch: MangaChapter, read: boolean) => {
+    markChapters([ch.id], read, read ? 'Marked as read' : 'Marked as unread');
+  }, [markChapters]);
+
+  const markPreviousRead = useCallback((ch: MangaChapter) => {
+    const ids = previousChapterIds(chaptersAsc, ch.id);
+    if (!ids.length) {
+      setToast('No earlier chapters');
+      return;
+    }
+    markChapters(ids, true, `Marked ${ids.length} earlier ${ids.length === 1 ? 'chapter' : 'chapters'} as read`);
+  }, [chaptersAsc, markChapters]);
+
+  /** Native: long-press a row. Web has its own row menu (MangaDetailWeb). */
+  const openChapterMenu = useCallback((ch: MangaChapter) => {
+    const isRead = readSet.has(ch.id);
+    const hasPrevious = previousChapterIds(chaptersAsc, ch.id).length > 0;
+    void Haptics.selectionAsync().catch(() => {});
+    Alert.alert(ch.title || `Chapter ${ch.number}`, undefined, [
+      { text: isRead ? 'Mark as unread' : 'Mark as read', onPress: () => markChapterRead(ch, !isRead) },
+      ...(hasPrevious ? [{ text: 'Mark previous as read', onPress: () => markPreviousRead(ch) }] : []),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  }, [readSet, chaptersAsc, markChapterRead, markPreviousRead]);
+
+  // History from before per-chapter marks existed becomes marks once (see
+  // seedReadMarksFromProgress), and a saved series hands the library its
+  // fresh list — which also clears its NEW badge, since opening the series is
+  // how you see what is new. Live lists only: the downloaded copy may be old.
+  useEffect(() => {
+    if (!tracksRead || !mangaId || offlineMode || chaptersAsc.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      if (mangaProgress) await seedReadMarksFromProgress(readSource, mangaId, chaptersAsc, mangaProgress);
+      if (saved && !cancelled) await noteSeriesChapters(readSource, mangaId, chaptersAsc, { seen: true });
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [tracksRead, mangaId, readSource, chaptersAsc, mangaProgress, saved, offlineMode]);
 
   const renderChapter = useCallback(
     ({ item: ch }: ListRenderItemInfo<MangaChapter>) => {
@@ -1621,43 +1914,69 @@ export default function MangaDetail() {
         <ChapterRow
           ch={ch}
           mangaId={mangaId}
-          mangaCover={displayCover}
           offline={offlineMap[ch.id]}
           onDownload={handleDownloadChapter}
           onOpen={openMangaChapter}
-          isResume={canContinueManga && ch.id === resumeChapterId}
+          onMenu={tracksRead ? openChapterMenu : undefined}
+          isResume={ch.id === resumeChapterId}
           // Every source can download on web now (atsu through the
           // /api/manga-page/ proxy). Hidden only where a tap could not work:
           // offline, or a pass-locked chapter without a pass — downloading it
           // would sidestep the gate, since a downloaded chapter opens without
           // a pass check.
           hideDownload={restrictToDownloads || (locked && !passValid)}
-          disableThumbFetch={isExternal}
           offlineOnly={restrictToDownloads}
           unavailableReason={restrictToDownloads && !downloaded ? 'Not downloaded · needs a connection' : undefined}
           locked={locked}
+          read={readSet.has(ch.id)}
+          readPercent={tracksRead ? chapterReadPercent(ch, mangaProgress) : null}
+          isNew={isNewChapter(ch)}
         />
       );
     },
     [
       mangaId,
-      displayCover,
       offlineMap,
       handleDownloadChapter,
       openMangaChapter,
-      canContinueManga,
+      openChapterMenu,
+      tracksRead,
       resumeChapterId,
-      isExternal,
       gatedChapterIds,
       restrictToDownloads,
       passValid,
+      readSet,
+      mangaProgress,
     ],
   );
   // FlatList only re-renders rows when data or extraData change.
   const chapterListExtra = useMemo(
-    () => [offlineMap, restrictToDownloads, passValid, displayCover],
-    [offlineMap, restrictToDownloads, passValid, displayCover],
+    () => [offlineMap, restrictToDownloads, passValid, readSet, mangaProgress, resumeChapterId],
+    [offlineMap, restrictToDownloads, passValid, readSet, mangaProgress, resumeChapterId],
   );
+
+  /**
+   * Bring the chapter you are on into view. The list used to open at
+   * chapter 0 whatever you were reading, so someone on chapter 280 of 281
+   * scrolled the whole series to get back to it.
+   */
+  const chapterListRef = useRef<FlatList<MangaChapter>>(null);
+  const jumpToCurrent = useCallback((animated = true) => {
+    if (!resumeChapterId) return false;
+    const index = displayedChapters.findIndex((c) => c.id === resumeChapterId);
+    if (index < 0) return false;
+    chapterListRef.current?.scrollToIndex({ index, viewPosition: 0.35, animated });
+    return true;
+  }, [resumeChapterId, displayedChapters]);
+  // Once per title, when the list and the reader's place are both known.
+  const autoJumpedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (Platform.OS === 'web' || !resumeChapterId || autoJumpedRef.current === mangaId) return;
+    const timer = setTimeout(() => {
+      if (jumpToCurrent(false)) autoJumpedRef.current = mangaId;
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [resumeChapterId, mangaId, jumpToCurrent]);
 
   const chapterKeyExtractor = useCallback((ch: MangaChapter) => ch.id, []);
 
@@ -1679,21 +1998,95 @@ export default function MangaDetail() {
    * source failed, the live target is still worth a try.
    */
   const playChapter = useMemo(() => {
-    const live = resumeChapter || firstChapter;
+    const live = resume.chapter || firstChapter;
     if (!offlineMode && !restrictToDownloads) return live;
     const isReady = (c: MangaChapter) => offlineMap[c.id]?.status === 'ready';
-    if (resumeChapter && isReady(resumeChapter)) return resumeChapter;
+    if (live && isReady(live)) return live;
     const ready = chaptersAsc.filter(isReady);
-    const next = resumeChapter ? ready.find((c) => c.number >= resumeChapter.number) : undefined;
+    const next = live ? ready.find((c) => c.number >= live.number) : undefined;
     return next ?? ready[0] ?? (restrictToDownloads ? null : live);
-  }, [resumeChapter, firstChapter, offlineMode, restrictToDownloads, offlineMap, chaptersAsc]);
-  const playLabel =
-    canContinueManga && resumeChapter && playChapter?.id === resumeChapter.id
-      ? `Continue · ${mangaProgress!.chapterLabel}`
-      : playChapter && firstChapter && playChapter.id !== firstChapter.id
-        ? `Read · ${playChapter.title}`
-        : 'Start Reading';
-  const genres = manga ? (manga.genres.length > 0 ? manga.genres : [manga.type].filter(Boolean)) : [];
+  }, [resume.chapter, firstChapter, offlineMode, restrictToDownloads, offlineMap, chaptersAsc]);
+  /**
+   * Fetch what Start/Continue opens before it is tapped: the chapter's page
+   * list (a ~600 ms proxy call plus its preflight on the live site, which the
+   * reader used to wait on before it could even request page 1) and the page
+   * it opens on, so the reader starts from memory and the HTTP cache. Tap to
+   * first page measured 1.2–1.4 s before this.
+   *
+   * At idle, after this page's own requests. Never for 18+ titles, for a
+   * pass-gated chapter (the reader checks the pass before loading it), or
+   * from the downloaded copy; prefetchChapterPages itself skips a chapter
+   * that is downloaded, since the reader opens that from disk.
+   */
+  const playChapterId = playChapter?.id ?? null;
+  const playPage = playChapterId && mangaProgress?.chapterId === playChapterId && mangaProgress.page > 1
+    ? mangaProgress.page
+    : 1;
+  const playGated = !!playChapterId && gatedChapterIds.has(playChapterId);
+  useEffect(() => {
+    if (!playChapterId || isAdult || playGated || !online || offlineMode) return;
+    let cancelled = false;
+    const idle = runWhenIdle(() => {
+      void prefetchChapterPages({ contentId: mangaId, chapterId: playChapterId, source: adapter?.key ?? null })
+        .then((urls) => {
+          if (cancelled || !urls?.length) return;
+          warmReaderImage(urls[Math.min(playPage, urls.length) - 1]);
+        });
+    }, 1500);
+    return () => {
+      cancelled = true;
+      idle.cancel();
+    };
+  }, [mangaId, adapter, playChapterId, playPage, isAdult, playGated, online, offlineMode]);
+
+  const playTitle = playChapter ? playChapter.title || `Chapter ${playChapter.number}` : '';
+  const playIsResume = !!playChapter && playChapter.id === resume.chapter?.id;
+  const playLabel = !playChapter
+    ? ''
+    : playIsResume && resume.kind === 'continue'
+      ? `Continue · ${playTitle}`
+      : playIsResume && resume.kind === 'next'
+        ? `Up next · ${playTitle}`
+        : playIsResume && resume.kind === 'caught-up'
+          ? `Caught up · ${playTitle}`
+          : firstChapter && playChapter.id !== firstChapter.id
+            ? `Read · ${playTitle}`
+            : 'Start Reading';
+  /** "Chapter 280 · 3d ago · 2 unread": the state of the series at a glance. */
+  const latest = chaptersAsc[chaptersAsc.length - 1] ?? null;
+  const latestSummary = latest
+    ? [
+        `Latest: ${latest.title || `Chapter ${latest.number}`}`,
+        chapterTime(latest.createdAt) ? formatReleaseDate(latest.createdAt) : '',
+        tracksRead && readSet.size > 0 ? (unreadCount > 0 ? `${unreadCount} unread` : 'all read') : '',
+      ].filter(Boolean).join(' · ')
+    : '';
+  const genres = shownManga ? (shownManga.genres.length > 0 ? shownManga.genres : [shownManga.type].filter(Boolean)) : [];
+  /** "Story: Chu-Gong · Art: Seong-Rak Jang", or just the names when there is no separate art credit. */
+  const credits = useMemo(() => {
+    const story = shownManga?.authors ?? [];
+    const art = shownManga?.artists ?? [];
+    if (!story.length && !art.length) return '';
+    if (!art.length) return `By ${story.join(', ')}`;
+    return [story.length ? `Story: ${story.join(', ')}` : '', `Art: ${art.join(', ')}`].filter(Boolean).join(' · ');
+  }, [shownManga?.authors, shownManga?.artists]);
+  const toCard = useCallback((r: MangaRelatedTitle, badge?: string) => ({
+    id: r.id,
+    title: r.title,
+    cover: r.cover,
+    type: 'manga' as const,
+    ...(badge ? { badge } : {}),
+    ...(typeof r.rating === 'number' && r.rating > 0 ? { score: r.rating } : {}),
+  }), []);
+  // atsu titles only: relations and similar ids are atsu ids.
+  const relatedCards = useMemo(
+    () => (isExternal ? [] : (shownManga?.related ?? []).map((r) => toCard(r, r.relation?.toUpperCase()))),
+    [isExternal, shownManga?.related, toCard],
+  );
+  const similarCards = useMemo(
+    () => (isExternal ? [] : (shownManga?.similar ?? []).map((r) => toCard(r))),
+    [isExternal, shownManga?.similar, toCard],
+  );
 
   const statusColor =
     (manga?.status || '').toLowerCase().includes('ongoing') ? colors.success :
@@ -1734,9 +2127,17 @@ export default function MangaDetail() {
   if (Platform.OS === 'web') {
     const browseComics = { label: 'Browse comics', onPress: () => router.push('/browse') };
     return <MangaDetailWeb
-      manga={manga && displayCover && displayCover !== manga.cover ? { ...manga, cover: displayCover } : manga}
-      loading={loading} error={loadError || ''} chaptersError={chaptersError || ''}
-      chapters={displayedChapters} sort={chapterSort} onSort={() => setChapterSort(value => value === 'oldest' ? 'newest' : 'oldest')}
+      manga={shownManga && displayCover && displayCover !== shownManga.cover ? { ...shownManga, cover: displayCover } : shownManga}
+      loading={loading && !shownManga} error={loadError || ''} chaptersError={chaptersError || ''}
+      detailPending={detailPending} chaptersPending={chaptersPending} placeholderCover={preview?.cover}
+      chapters={displayedChapters} sort={chapterSort} onSort={toggleChapterSort}
+      totalChapters={chapters.length}
+      filter={activeFilter} onFilter={setChapterFilter} unreadCount={unreadCount} downloadedCount={downloadedCount}
+      readEnabled={tracksRead} readIds={readSet} onMarkRead={markChapterRead} onMarkPrevious={markPreviousRead}
+      currentChapterId={resumeChapterId} resumeKind={resume.kind} playLabel={playLabel} latestSummary={latestSummary}
+      sourceLabel={adapter?.label ?? 'Manga'} credits={credits} showRelated={!isExternal && online}
+      browsableGenre={isExternal ? undefined : (name) => atsuGenreId(name) !== null}
+      onBrowseGenre={(name) => { const genre = atsuGenreId(name); if (genre) router.push({ pathname: '/browse', params: { title: name, source: 'manga', genre } } as any); }}
       saved={saved} canSave={!isAdult} onSave={handleSave} onShare={handleShare}
       onBack={() => router.canGoBack() ? router.back() : router.replace('/home')}
       onRetry={() => setReloadAttempt(value => value + 1)} onOpen={openMangaChapter}
@@ -1759,9 +2160,11 @@ export default function MangaDetail() {
     />;
   }
 
-  if (loading) return <DetailSkeleton />;
+  // Only when there is nothing at all to draw; a preview (the card's title
+  // and cover) or either half of the live answer is drawn straight away.
+  if (loading && !shownManga) return <DetailSkeleton />;
 
-  if (!manga) {
+  if (!shownManga) {
     return (
       <View style={[s.root, { alignItems: 'center', justifyContent: 'center' }]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
@@ -1811,7 +2214,7 @@ export default function MangaDetail() {
             <BackIcon />
           </TouchableOpacity>
           <Animated.Text style={[s.navTitle, headerOpacity]} numberOfLines={1}>
-            {manga.title}
+            {shownManga.title}
           </Animated.Text>
           <View style={{ flexDirection: 'row', gap: 6 }}>
             <TouchableOpacity style={s.navBtn} onPress={handleShare} activeOpacity={0.8}>
@@ -1871,13 +2274,16 @@ export default function MangaDetail() {
         {/* ── Hero ── */}
         <View style={s.heroWrap}>
           <CoverImage
-            source={{ uri: displayCover || manga.cover }}
+            source={{ uri: displayCover || shownManga.cover }}
             thumbnailWidth={512}
             priority="high"
             style={s.heroImg}
             contentFit="cover"
             transition={400}
-            placeholder={{ blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
+            // The card's cover, already in expo-image's cache, until the
+            // page's own (larger) cover arrives.
+            placeholder={preview?.cover ? { uri: preview.cover } : { blurhash: 'L6PZfSi_.AyE_3t7t7R**0o#DgR4' }}
+            placeholderContentFit="cover"
           />
           <LinearGradient
             colors={['transparent', 'rgba(0,0,0,0.12)', 'rgba(0,0,0,0.68)', 'rgba(0,0,0,0.92)']}
@@ -1885,12 +2291,12 @@ export default function MangaDetail() {
             style={s.heroGrad}
           />
           <View style={s.heroContent}>
-            <Text style={s.heroTitle} numberOfLines={2}>{manga.title}</Text>
+            <Text style={s.heroTitle} numberOfLines={2}>{shownManga.title}</Text>
             <View style={s.heroMeta}>
-              {manga.status ? <View style={[s.statusDot, { backgroundColor: statusColor }]} /> : null}
-              {manga.status ? <Text style={s.heroMetaTxt}>{manga.status}</Text> : null}
-              {manga.status && manga.type ? <Text style={s.heroMetaSep}>·</Text> : null}
-              {manga.type ? <Text style={s.heroMetaTxt}>{manga.type}</Text> : null}
+              {shownManga.status ? <View style={[s.statusDot, { backgroundColor: statusColor }]} /> : null}
+              {shownManga.status ? <Text style={s.heroMetaTxt}>{shownManga.status}</Text> : null}
+              {shownManga.status && shownManga.type ? <Text style={s.heroMetaSep}>·</Text> : null}
+              {shownManga.type ? <Text style={s.heroMetaTxt}>{shownManga.type}</Text> : null}
             </View>
           </View>
         </View>
@@ -1914,10 +2320,10 @@ export default function MangaDetail() {
 
           {/* Meta pills */}
           <Animated.View entering={FadeInDown.delay(40).duration(300)} style={s.metaRow}>
-            {manga.rating != null && (
+            {shownManga.rating != null && (
               <View style={s.metaPill}>
                 <StarIcon goldColor={colors.gold} />
-                <Text style={s.metaRating}>{manga.rating.toFixed(1)}</Text>
+                <Text style={s.metaRating}>{shownManga.rating.toFixed(1)}</Text>
                 <Text style={s.metaRatingSub}>/10</Text>
               </View>
             )}
@@ -1927,23 +2333,58 @@ export default function MangaDetail() {
                 <Text style={s.metaTxt}>{chapters.length} ch.</Text>
               </View>
             )}
+            {shownManga.views ? (
+              <View style={s.metaPill}>
+                <Text style={s.metaTxt}>{shownManga.views} views</Text>
+              </View>
+            ) : null}
+            {shownManga.year ? (
+              <View style={s.metaPill}>
+                <Text style={s.metaTxt}>{shownManga.year}</Text>
+              </View>
+            ) : null}
           </Animated.View>
 
-          {/* Genre chips */}
+          {credits ? <Text style={s.credits} numberOfLines={2}>{credits}</Text> : null}
+
+          {/* Genre chips. atsu genres open that genre's shelf in Browse. */}
           {genres.length > 0 && (
             <Animated.View entering={FadeInDown.delay(70).duration(300)} style={s.genreRow}>
-              {genres.slice(0, 7).map((g) => (
-                <View key={g} style={s.genreChip}>
-                  <Text style={s.genreChipText}>{g}</Text>
-                </View>
-              ))}
+              {genres.slice(0, 7).map((g) => {
+                const genreId = !isExternal ? atsuGenreId(g) : null;
+                return genreId ? (
+                  <TouchableOpacity
+                    key={g}
+                    style={s.genreChip}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Browse ${g}`}
+                    onPress={() => router.push({ pathname: '/browse', params: { title: g, source: 'manga', genre: genreId } } as any)}
+                  >
+                    <Text style={s.genreChipText}>{g}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View key={g} style={s.genreChip}>
+                    <Text style={s.genreChipText}>{g}</Text>
+                  </View>
+                );
+              })}
             </Animated.View>
           )}
 
           {/* Synopsis */}
-          {manga.description ? (
+          {shownManga.description ? (
             <Animated.View entering={FadeInDown.delay(100).duration(300)} style={s.synWrap}>
-              <Text style={s.syn} numberOfLines={expanded ? undefined : 3}>{manga.description}</Text>
+              <Text style={s.syn} numberOfLines={expanded ? undefined : 3}>{shownManga.description}</Text>
+              {expanded && shownManga.altTitles?.length ? (
+                <Text style={s.altTitles}>Also known as: {shownManga.altTitles.join(' · ')}</Text>
+              ) : null}
+              {expanded && shownManga.tags?.length ? (
+                <View style={s.tagRow}>
+                  {shownManga.tags.map((tag) => (
+                    <View key={tag} style={s.tagChip}><Text style={s.tagChipText}>{tag}</Text></View>
+                  ))}
+                </View>
+              ) : null}
               <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
                 <Text style={s.seeMore}>{expanded ? 'Show less ↑' : 'See more ↓'}</Text>
               </TouchableOpacity>
@@ -1993,30 +2434,93 @@ export default function MangaDetail() {
               )}
             </View>
           ) : null}
+          {/* The list is still on its way while the rest of the page shows. */}
+          {chaptersPending && (
+            <View style={s.chaptersSection} accessibilityLabel="Loading chapters">
+              {[0, 1, 2].map((row) => (
+                <View
+                  key={row}
+                  style={{ height: CHAPTER_ITEM_H - 6, borderRadius: Radius.sm, backgroundColor: colors.surfaceSecondary, marginBottom: 6 }}
+                />
+              ))}
+            </View>
+          )}
           {chapters.length > 0 && (
             <View style={s.chaptersSection}>
               <View style={s.secHeader}>
                 <Text style={s.secTitle}>Chapters</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={s.countBadge}>
+                  <Text style={s.countTxt}>{chapters.length}</Text>
+                </View>
+                <View style={{ flex: 1 }} />
+                {resumeChapterId ? (
                   <TouchableOpacity
                     style={s.sortLink}
                     activeOpacity={0.7}
+                    accessibilityRole="button"
                     onPress={() => {
-                      Haptics.selectionAsync();
-                      setChapterSort((prev) => (prev === 'oldest' ? 'newest' : 'oldest'));
+                      void Haptics.selectionAsync().catch(() => {});
+                      if (!jumpToCurrent() && activeFilter !== 'all') {
+                        setChapterFilter('all');
+                        setTimeout(() => jumpToCurrent(), 60);
+                      }
                     }}
                   >
-                    <SortIcon color={colors.primary} />
-                    <Text style={s.sortLinkText}>
-                      {chapterSort === 'oldest' ? 'Oldest first' : 'Newest first'}
-                    </Text>
+                    <Text style={s.sortLinkText}>Jump to current</Text>
                   </TouchableOpacity>
-                  <View style={s.countBadge}>
-                    <Text style={s.countTxt}>{chapters.length}</Text>
-                  </View>
-                </View>
+                ) : null}
+                <TouchableOpacity
+                  style={s.sortLink}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Chapter order: ${chapterSort === 'oldest' ? 'oldest first' : 'newest first'}`}
+                  onPress={() => {
+                    void Haptics.selectionAsync().catch(() => {});
+                    toggleChapterSort();
+                  }}
+                >
+                  <SortIcon color={colors.primary} />
+                  <Text style={s.sortLinkText}>
+                    {chapterSort === 'oldest' ? 'Oldest' : 'Newest'}
+                  </Text>
+                </TouchableOpacity>
               </View>
+              {latestSummary ? <Text style={s.latestLine} numberOfLines={1}>{latestSummary}</Text> : null}
+              {(tracksRead || downloadedCount > 0) && (
+                <View style={s.filterRow} accessibilityRole="tablist">
+                  {([
+                    ['all', `All`],
+                    ...(tracksRead ? [['unread', `Unread${unreadCount ? ` · ${unreadCount}` : ''}`]] : []),
+                    ...(downloadedCount > 0 ? [['downloaded', `Downloaded · ${downloadedCount}`]] : []),
+                  ] as [ChapterFilter, string][]).map(([value, label]) => {
+                    const active = activeFilter === value;
+                    return (
+                      <TouchableOpacity
+                        key={value}
+                        accessibilityRole="tab"
+                        accessibilityState={{ selected: active }}
+                        onPress={() => setChapterFilter(value)}
+                        style={[s.filterChip, active && s.filterChipActive]}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[s.filterChipText, active && s.filterChipTextActive]}>{label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+              {displayedChapters.length === 0 ? (
+                <Text style={s.emptyFilter}>
+                  {activeFilter === 'unread' ? "You're all caught up — every chapter is read." : 'No chapters here.'}
+                </Text>
+              ) : null}
+              {displayedChapters.length > 0 ? (
               <FlatList
+                ref={chapterListRef}
+                onScrollToIndexFailed={({ index }) => {
+                  // Rows past the rendered window: jump by offset (rows have a fixed height).
+                  chapterListRef.current?.scrollToOffset({ offset: index * CHAPTER_ITEM_H, animated: false });
+                }}
                 data={displayedChapters}
                 keyExtractor={chapterKeyExtractor}
                 renderItem={renderChapter}
@@ -2031,6 +2535,7 @@ export default function MangaDetail() {
                 extraData={chapterListExtra}
                 scrollEnabled={displayedChapters.length * CHAPTER_ITEM_H > chapterListHeight}
               />
+              ) : null}
             </View>
           )}
 
@@ -2038,6 +2543,25 @@ export default function MangaDetail() {
           {/* {activeTab === 'author' && creatorWallet && (
             <CreatorTab creatorWallet={creatorWallet} />
           )} */}
+
+          {/* Sequels and similar series, from data the detail call already
+              returned. Network-only: their covers and pages need it. */}
+          {online && relatedCards.length > 0 ? (
+            <View style={s.railSection}>
+              <Text style={s.railTitle}>Related</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.railList}>
+                {relatedCards.map((item) => <ContentCard key={item.id} item={item} />)}
+              </ScrollView>
+            </View>
+          ) : null}
+          {online && similarCards.length > 0 ? (
+            <View style={s.railSection}>
+              <Text style={s.railTitle}>More like this</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.railList}>
+                {similarCards.map((item) => <ContentCard key={item.id} item={item} />)}
+              </ScrollView>
+            </View>
+          ) : null}
 
           {/* Network-only: offline it would sit on a spinner and then fail. */}
           {online ? <CommentsSection contentId={`manga:${mangaId}`} title="Discussion" /> : null}

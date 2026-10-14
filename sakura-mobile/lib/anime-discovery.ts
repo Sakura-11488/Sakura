@@ -99,6 +99,50 @@ export async function fetchAnimeDiscovery(id: string, options: DiscoveryOptions 
     }
   });
 }
+/**
+ * Seed the title shelves from the title page's own AniList answer, which
+ * carries the same recommendations and relations. The "Seasons & related" and
+ * "More like this" rows then render without a second request against
+ * AniList's 30-per-minute limit.
+ */
+export function primeAnimeDiscovery(id: string, payload: unknown): void {
+  if (!validId(id)) return;
+  const media = object(object(object(payload).data).Media);
+  if (!('recommendations' in media) && !('relations' in media)) return;
+  const key = `title:${id}`;
+  cache.delete(key);
+  cache.set(key, { value: clone(parseAnimeDiscovery(payload)), expires: Date.now() + 60 * 60 * 1000 });
+  while (cache.size > 64) cache.delete(cache.keys().next().value!);
+}
+
+export type AiringStatus = { id: string; status: string; episodes: number | null; nextEpisode: number | null; nextAiringAt: number | null; title: string; image: string };
+const AIRING_QUERY = `query SakuraAiring($ids:[Int]){Page(perPage:50){media(idMal_in:$ids,type:ANIME){idMal status episodes title{english romaji} coverImage{large} nextAiringEpisode{episode airingAt}}}}`;
+
+export function parseAiringStatus(payload: unknown): AiringStatus[] {
+  const rows: AiringStatus[] = [];
+  for (const value of array(object(object(object(payload).data).Page).media)) {
+    const media = object(value), id = String(media.idMal ?? '');
+    if (!validId(id)) continue;
+    const next = object(media.nextAiringEpisode);
+    const nextEpisode = Number.isSafeInteger(next.episode) && next.episode > 0 ? next.episode as number : null;
+    const nextAiringAt = Number.isSafeInteger(next.airingAt) && next.airingAt > 0 ? (next.airingAt as number) * 1000 : null;
+    rows.push({ id, status: text(media.status, 30), episodes: Number.isSafeInteger(media.episodes) && media.episodes > 0 ? media.episodes : null,
+      nextEpisode, nextAiringAt, title: text(object(media.title).english) || text(object(media.title).romaji), image: cover(object(media.coverImage).large) });
+  }
+  return rows;
+}
+
+/**
+ * Airing state for the titles a viewer follows, in one request (50 per page).
+ * Cached for 15 minutes, keyed by the id set, so the Anime tab can refresh its
+ * "New episodes" shelf on every visit without spending AniList's rate limit.
+ */
+export async function fetchAnimeAiringStatus(ids: string[], options: DiscoveryOptions = {}): Promise<AiringStatus[]> {
+  const unique = [...new Set(ids.filter(validId))].sort((a, b) => Number(a) - Number(b)).slice(0, 50);
+  if (!unique.length) return [];
+  return cached(`airing:${unique.join(',')}`, options, async () => parseAiringStatus(await graphql(AIRING_QUERY, { ids: unique.map(Number) }, options)), 15 * 60 * 1000);
+}
+
 export async function fetchAnimeRecommendations(id: string, options: DiscoveryOptions = {}) { return (await fetchAnimeDiscovery(id, options)).recommendations; }
 export async function fetchAnimeRelations(id: string, options: DiscoveryOptions = {}) { return (await fetchAnimeDiscovery(id, options)).relations; }
 

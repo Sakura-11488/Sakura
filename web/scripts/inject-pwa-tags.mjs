@@ -14,7 +14,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const indexPath = path.join(root, 'dist', 'index.html');
+// Optional export directory argument; the build uses web/dist.
+const distDir = path.resolve(process.argv[2] || path.join(root, 'dist'));
+const indexPath = path.join(distDir, 'index.html');
 
 if (!fs.existsSync(indexPath)) {
   console.error('[inject-pwa-tags] Missing', indexPath, '— run the export first.');
@@ -40,14 +42,17 @@ if (!fs.existsSync(indexPath)) {
 const USED_WEIGHTS = ['400Regular', '600SemiBold', '700Bold', '800ExtraBold'];
 
 function preloadLinks() {
-  const relativeBase = ['assets/vendor/@expo-google-fonts/nunito', 'assets/node_modules/@expo-google-fonts/nunito',
-    'assets/_sakura-mobile/node_modules/@expo-google-fonts/nunito']
-    .find((candidate) => fs.existsSync(path.join(root, 'dist', candidate)));
+  // Only paths without node_modules: the host does not serve those, and the
+  // old fallback to assets/_sakura-mobile/node_modules/... is how every page
+  // load ended up preloading four fonts that 404ed. See
+  // scripts/public-asset-paths.cjs for where these directories come from.
+  const relativeBase = ['assets/vendor/@expo-google-fonts/nunito', 'assets/_sakura-mobile/vendor/@expo-google-fonts/nunito']
+    .find((candidate) => fs.existsSync(path.join(distDir, candidate)));
   if (!relativeBase) {
     console.warn('[inject-pwa-tags] Nunito assets not found — skipping font preload.');
     return '';
   }
-  const base = path.join(root, 'dist', relativeBase);
+  const base = path.join(distDir, relativeBase);
   const links = [];
   for (const weight of USED_WEIGHTS) {
     const dir = path.join(base, weight);
@@ -68,7 +73,44 @@ function preloadLinks() {
   return links.join(String.fromCharCode(10));
 }
 
+/**
+ * Open the connection to the Supabase project while the bundle downloads.
+ *
+ * Every catalogue list on home is a POST to its edge function, and on a cold
+ * load each one first paid for a new connection (~314 ms TLS on the live site)
+ * that could only start once the bundle had run. `crossorigin` because those
+ * are CORS requests without credentials, which use a separate connection pool
+ * from a plain preconnect. The only origin worth it: covers and pages are
+ * same-origin (/api/cover-image/, /api/manga-page/).
+ *
+ * Read the way check-public-env.mjs reads it: the environment first, then the
+ * web/.env* files the export itself loads.
+ */
+function supabasePreconnect() {
+  const values = { ...process.env };
+  for (const file of ['.env', '.env.production', '.env.local', '.env.production.local']) {
+    const full = path.join(root, file);
+    if (!fs.existsSync(full)) continue;
+    for (const line of fs.readFileSync(full, 'utf8').split(/\r?\n/)) {
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+      if (match && !values[match[1]]) values[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+    }
+  }
+  let origin;
+  try {
+    origin = new URL(values.EXPO_PUBLIC_SUPABASE_URL || '').origin;
+  } catch {
+    origin = '';
+  }
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(origin)) {
+    console.warn('[inject-pwa-tags] No Supabase URL — skipping preconnect.');
+    return '';
+  }
+  return `    <link rel="preconnect" href="${origin}" crossorigin />`;
+}
+
 const TAGS = `
+${supabasePreconnect()}
     <link rel="manifest" href="/app/manifest.json" />
     <meta name="theme-color" content="#0F0F13" />
     <meta name="application-name" content="Sakura" />
@@ -137,9 +179,13 @@ let html = fs.readFileSync(indexPath, 'utf8');
 // build id. Stamp it into the page and publish it at /app/version.json; the web
 // app polls that file and offers a hard refresh when it no longer matches the
 // build the tab is running.
-const bundle = (html.match(/index-([a-f0-9]{16,})\.js/) || [])[1] || String(Date.now());
+//
+// Matched on the <script> tag: with the bundle split, screens such as
+// novel/index also emit chunks named index-<hash>.js, and the document lists
+// those too (scripts/defer-common-chunk.mjs). The build id is the entry's.
+const bundle = (html.match(/<script src="[^"]*\/index-([a-f0-9]{16,})\.js"/) || [])[1] || String(Date.now());
 fs.writeFileSync(
-  path.join(root, 'dist', 'version.json'),
+  path.join(distDir, 'version.json'),
   JSON.stringify({ build: bundle, builtAt: new Date().toISOString() }) + '\n',
 );
 const BUILD_STAMP = `\n    <script>window.__SAKURA_BUILD__=${JSON.stringify(bundle)};</script>`;

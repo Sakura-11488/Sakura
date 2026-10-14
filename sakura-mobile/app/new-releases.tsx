@@ -16,11 +16,24 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { playTap, onTap } from '@/lib/sound';
-import { fetchMangaPagedList, toContentItem } from '@/lib/manga';
+import { fetchRecentlyUpdatedManga, toContentItem } from '@/lib/manga';
+import { formatReleaseDate } from '@/lib/format-release-date';
+import { rememberMangaPreviews } from '@/lib/manga-prefetch';
+import BrowseCatalogWeb from '@/components/discovery/BrowseCatalogWeb';
 import { useTheme } from '@/lib/theme';
 import { Spacing, Radius, FontSize, FontWeight, Colors, Shadow } from '@/constants/theme';
 import { ContentItem } from '@/components/ui/ContentCard';
 import { contentWidth } from '@/constants/layout';
+
+/**
+ * Titles that just got a new chapter, newest first, with how long ago.
+ *
+ * This screen used to list atsu's POPULAR titles under the name "New
+ * Releases" (Witch Hat Atelier, The Knight Only Lives Today…), and the
+ * new-releases push opens it. It now reads atsu's recently-updated feed
+ * (lib/manga fetchRecentlyUpdatedManga, comics only), 40 a page.
+ */
+const PAGE_SIZE = 40;
 
 const COLS = 3;
 const H_PAD = Spacing.md;
@@ -77,18 +90,30 @@ export default function NewReleasesScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState('');
 
   const loadPage = useCallback(async (p: number) => {
+    setError('');
     try {
-      const raw = await fetchMangaPagedList('popular', p);
+      const raw = await fetchRecentlyUpdatedManga(p, PAGE_SIZE);
       if (raw.length === 0) {
         setHasMore(false);
         return;
       }
-      const mapped = raw.map((i) => toContentItem(i));
-      setItems((prev) => (p === 0 ? mapped : [...prev, ...mapped]));
+      // The badge says when: "12m ago", "Yesterday".
+      const mapped = raw.map((i) => toContentItem(i, i.updatedAt ? formatReleaseDate(i.updatedAt) : undefined));
+      rememberMangaPreviews(mapped);
+      setItems((prev) => {
+        const all = p === 0 ? mapped : [...prev, ...mapped];
+        // A title updated again between two page loads moves up the feed and
+        // would show twice; keep its newest position.
+        const seen = new Set<string>();
+        return all.filter((item) => (seen.has(item.id) ? false : (seen.add(item.id), true)));
+      });
+      setPage(p);
+      setHasMore(raw.length >= PAGE_SIZE);
     } catch {
-      setHasMore(false);
+      setError('Latest updates could not load. Please try again.');
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -99,13 +124,21 @@ export default function NewReleasesScreen() {
     loadPage(0);
   }, [loadPage]);
 
+  const nextPage = items.length ? page + 1 : 0;
   const loadMore = useCallback(() => {
-    if (loadingMore || !hasMore || loading) return;
-    const next = page + 1;
-    setPage(next);
+    if (loadingMore || !hasMore || loading || error) return;
     setLoadingMore(true);
-    loadPage(next);
-  }, [loadingMore, hasMore, loading, page, loadPage]);
+    loadPage(nextPage);
+  }, [loadingMore, hasMore, loading, error, nextPage, loadPage]);
+
+  const retry = useCallback(() => {
+    if (!items.length) setLoading(true); else setLoadingMore(true);
+    void loadPage(nextPage);
+  }, [items.length, nextPage, loadPage]);
+
+  if (Platform.OS === 'web') {
+    return <BrowseCatalogWeb title="Latest updates" eyebrow="New chapters, newest first" source="manga" items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} badgeSubtitle onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={retry} onLoadMore={loadMore}/>;
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -122,7 +155,7 @@ export default function NewReleasesScreen() {
               />
             </Svg>
           </TouchableOpacity>
-          <Text style={[s.headerTitle, { color: colors.text }]}>New Releases</Text>
+          <Text style={[s.headerTitle, { color: colors.text }]}>Latest Updates</Text>
           <View style={{ width: 40 }} />
         </View>
 
@@ -141,10 +174,27 @@ export default function NewReleasesScreen() {
             onEndReachedThreshold={0.5}
             showsVerticalScrollIndicator={false}
             renderItem={({ item }) => <GridCard item={item} />}
+            ListEmptyComponent={
+              <View style={s.center}>
+                <Text style={{ color: colors.textSecondary }}>{error || 'Nothing new yet.'}</Text>
+                {!!error && (
+                  <TouchableOpacity onPress={onTap(retry)} style={{ padding: 12 }} hitSlop={8}>
+                    <Text style={{ color: colors.primary, fontWeight: FontWeight.semibold }}>Try again</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            }
             ListFooterComponent={
               loadingMore ? (
                 <View style={s.footer}>
                   <ActivityIndicator color={colors.primary} size="small" />
+                </View>
+              ) : error && items.length > 0 ? (
+                <View style={s.footer}>
+                  <Text style={{ color: colors.textSecondary }}>{error}</Text>
+                  <TouchableOpacity onPress={onTap(retry)} style={{ padding: 12 }} hitSlop={8}>
+                    <Text style={{ color: colors.primary, fontWeight: FontWeight.semibold }}>Try again</Text>
+                  </TouchableOpacity>
                 </View>
               ) : null
             }
@@ -178,6 +228,7 @@ const s = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingTop: 80,
   },
   grid: {
     padding: H_PAD,

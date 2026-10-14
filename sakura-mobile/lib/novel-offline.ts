@@ -249,7 +249,9 @@ export async function downloadNovelChapter(opts: {
   await patch(record);
 
   try {
-    const content = await parseChapterContent(opts.chapterPath);
+    // Not into the shared API cache: the text is stored right here (see
+    // fetchNovelChapterPage in lib/allnovel.ts for what a batch used to evict).
+    const content = await parseChapterContent(opts.chapterPath, { persist: false });
     if (!content?.trim()) throw new Error('Chapter has no content.');
 
     const dir = `${ROOT}${encodeURIComponent(opts.novelPath)}/`;

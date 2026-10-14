@@ -13,7 +13,10 @@
  *
  * What goes in (every URL is content-hashed, so precaching cannot pin a stale
  * build — see RULE 2 in public/sw.js):
- *   - the scripts and stylesheets dist/index.html loads (always, no size cap)
+ *   - the scripts and stylesheets dist/index.html loads, and every lazy chunk
+ *     it names (always, no size cap). The bundle is split per screen, and the
+ *     reader, the player and Downloads only exist offline if their chunks are
+ *     here; scripts/defer-common-chunk.mjs writes them into the document.
  *   - every font index.html preloads (the Nunito weights the app registers)
  *   - the icon fonts of the @expo/vector-icons families the source imports
  *   - other assets the bundle references, under a per-file size cap
@@ -22,9 +25,9 @@
  * caps, and anything past the total budget. Those are still cached on first
  * use by the worker's hashed-asset route; they just are not fetched up front.
  *
- * Runs last in `npm run build`, after inject-pwa-tags.mjs (which writes the
- * font preloads and version.json this reads). Idempotent: re-running replaces
- * the previous list.
+ * Runs last in `npm run build`, after defer-common-chunk.mjs (which lists the
+ * lazy chunks) and inject-pwa-tags.mjs (which writes the font preloads and
+ * version.json this reads). Idempotent: re-running replaces the previous list.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,7 +43,7 @@ export const LIMITS = {
   fontBytes: 2 * 1024 * 1024,
   /** Images, sounds and everything else. Keeps the hero banners and posters out. */
   assetBytes: 512 * 1024,
-  /** All assets together, not counting the entry bundle. */
+  /** All assets together, not counting the bundle and its chunks. */
   totalBytes: 12 * 1024 * 1024,
 };
 
@@ -48,7 +51,10 @@ const FONT = /\.(?:ttf|otf|woff2?)$/i;
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const ICON_FONT = /\/@expo\/vector-icons\/.*\/Fonts\/([A-Za-z0-9]+?)(?:_[A-Za-z]+)?\.[0-9a-f]{32}\.ttf$/;
 
-/** Hashed scripts and stylesheets the document loads. */
+/**
+ * Hashed scripts and stylesheets the document loads, plus the lazy chunks it
+ * names in non-fetching <link> tags. Same rule as shellEntries in public/sw.js.
+ */
 export function shellEntries(html) {
   return [...new Set([...html.matchAll(/(?:src|href)="(\/app\/_expo\/static\/[^"]+)"/g)].map((m) => m[1]))];
 }
@@ -149,7 +155,9 @@ export function collectPrecache({
   } catch {
     // inject-pwa-tags.mjs not run: fall back to the bundle's own hash.
   }
-  build ||= /index-([a-f0-9]{16,})\.js/.exec(entries.join(' '))?.[1] || null;
+  // The entry <script>, not the first index-<hash>.js: lazy screens such as
+  // novel/index emit chunks with that name too.
+  build ||= /<script src="[^"]*\/index-([a-f0-9]{16,})\.js"/.exec(html)?.[1] || null;
   if (!build) throw new Error('could not determine the build id');
 
   const preloaded = new Set(preloadedFonts(html));
@@ -229,7 +237,7 @@ function main() {
   const mb = (n) => `${(n / 1024 / 1024).toFixed(2)}MB`;
   console.log(
     `[write-precache-manifest] build ${manifest.build}: precaching ${manifest.urls.length} files ` +
-      `(${mb(manifest.bytes.entries)} bundle + ${mb(manifest.bytes.assets)} assets) into sw.js`,
+      `(${mb(manifest.bytes.entries)} bundle and chunks + ${mb(manifest.bytes.assets)} assets) into sw.js`,
   );
   if (manifest.excluded.length) {
     console.log(`[write-precache-manifest] left ${manifest.excluded.length} referenced assets to runtime caching:`);

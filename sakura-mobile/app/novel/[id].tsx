@@ -41,6 +41,7 @@ import {
   isActiveReadingProgress,
   type NovelProgress,
 } from '@/lib/reader-progress';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import CommentsSection from '@/components/social/CommentsSection';
 import NovelExtDetail from './ext';
@@ -463,9 +464,21 @@ function ChapterRow({
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Every novel opens the real detail page (./ext), on native as on web.
+ *
+ * ./ext resolves both Sakura originals (by slug, from the database) and
+ * novelfull titles (by path). The native body below only ever had hard-coded
+ * entries: any id it did not know — e.g. an AI-recommended novel routed as
+ * /novel/<path> by older builds of lib/sakura-ai.ts and app/ai.tsx — showed a
+ * placeholder "Sword Art Online" with made-up reader counts, and HUMOR ME
+ * itself rendered nothing (see the early return in NativeNovelDetail).
+ * NativeNovelDetail and its mock data below are now unused; they are left in
+ * place only so this change does not collide with concurrent edits to them,
+ * and can be deleted in a follow-up.
+ */
 export default function NovelDetail() {
-  if (Platform.OS === 'web') return <NovelExtDetail />;
-  return <NativeNovelDetail />;
+  return <NovelExtDetail />;
 }
 
 function NativeNovelDetail() {
@@ -490,10 +503,10 @@ function NativeNovelDetail() {
     findNovelProgressForSeries(novelId).then(setNovelProgress);
   }, [novelId]);
 
-  useEffect(() => {
-    loadNovelProgress();
-    return subscribeReadingProgress(loadNovelProgress);
-  }, [loadNovelProgress]);
+  // Only while focused: the reader above this page saves progress every few
+  // seconds, and the focus effect below reloads on return (including the
+  // first focus).
+  useFocusedSubscription(subscribeReadingProgress, loadNovelProgress);
 
   useFocusEffect(
     useCallback(() => {

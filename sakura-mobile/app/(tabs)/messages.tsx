@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect, useScrollToTop } from 'expo-router';
 import Image from '@/components/ui/CoverImage';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';

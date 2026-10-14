@@ -26,6 +26,13 @@ export interface AtsuItem {
   largeImage?: string;
   mediumImage?: string;
   type?: string;
+  /** MangaBaka score out of 10, on list rows (trending, popular, updates). */
+  mbRating?: number;
+  /** Abbreviated view count as atsu prints it ("3.1M"). */
+  views?: string;
+  /** ms since epoch: when a chapter last landed (recently-updated rows only). */
+  updatedAt?: number;
+  isAdult?: boolean;
 }
 
 function imgUrl(item: AtsuItem, size: 'medium' | 'large' = 'large'): string {
@@ -213,6 +220,9 @@ export function toContentItem(item: AtsuItem, badge?: string) {
     cover: imgUrl(item, 'medium'),
     type: 'manga' as const,
     badge,
+    // List rows carry atsu's score; dropping it here is why the web cards'
+    // ★ badge (MangaHomeWeb) never showed for atsu titles.
+    ...(typeof item.mbRating === 'number' && item.mbRating > 0 ? { score: Math.round(item.mbRating * 10) / 10 } : {}),
   };
 }
 
@@ -225,6 +235,28 @@ export function toBannerItem(item: AtsuItem) {
   };
 }
 
+/**
+ * atsu spells Korean webtoons 'Manwha'. Kept here rather than imported from
+ * lib/chapter-progress (which has the same rule for screens) so this module's
+ * tests can load it with no other app modules.
+ */
+function displayMangaType(type: unknown): string {
+  const t = typeof type === 'string' ? type.trim() : '';
+  return /^manwha$/i.test(t) ? 'Manhwa' : t;
+}
+
+/** A title linked from a series page: a sequel, prequel or similar series. */
+export interface MangaRelatedTitle {
+  id: string;
+  title: string;
+  cover: string;
+  /** Display type: 'Manga', 'Manhwa', 'Manhua', 'OEL'. */
+  type?: string;
+  /** For relations: 'Sequel', 'Prequel', 'Spin-off', … as atsu names them. */
+  relation?: string;
+  rating?: number;
+}
+
 export interface MangaDetail {
   id: string;
   title: string;
@@ -234,6 +266,27 @@ export interface MangaDetail {
   status: string;
   type: string;
   rating?: number;
+  /*
+   * Everything below is optional: atsu's /api/manga/page returns it (and
+   * Sakura used to throw it away), the scrapers mostly do not, and offline
+   * snapshots never kept it. Screens show each part only when present.
+   */
+  /** Story credits. */
+  authors?: string[];
+  /** Art credits, when atsu lists them separately from the story. */
+  artists?: string[];
+  /** Other names the series goes by (original script, translations), deduped. */
+  altTitles?: string[];
+  /** Trope tags beyond the genres ("Regression", "Weak to Strong"), strongest first. */
+  tags?: string[];
+  /** "9.5M", as atsu prints it. */
+  views?: string;
+  /** Year of first publication. */
+  year?: number;
+  /** Sequels, prequels and other relations. */
+  related?: MangaRelatedTitle[];
+  /** atsu's recommendations and similar series, merged and deduped. */
+  similar?: MangaRelatedTitle[];
 }
 
 export interface MangaChapter {
@@ -447,7 +500,10 @@ export async function fetchMangaChapterThumbnail(
  */
 export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> {
   return getOrSetCached<MangaDetail>(
-    `manga:detail:v2:${id}`,
+    // v3: credits, alternative titles, tags, relations and similar titles, the
+    // real rating (avgRating), and 'Manwha' shown as 'Manhwa'. A v2 entry
+    // lacks all of them and would hide them for its whole TTL.
+    `manga:detail:v3:${id}`,
     30 * 60 * 1000,
     async () => {
       try {
@@ -455,24 +511,7 @@ export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> 
         if (res.ok) {
           const json = await res.json();
           const p = json.mangaPage;
-          if (p?.title) {
-
-            // Cover is nested under poster — same as the capacitor app
-            const cover = absUrl(p.poster?.largeImage || p.poster?.mediumImage || p.poster?.image);
-
-            return {
-              id: p.id || id,
-              title: p.title || p.englishTitle || id,
-              cover,
-              description: p.synopsis || '',
-              genres: Array.isArray(p.genres)
-                ? p.genres.map((g: any) => (typeof g === 'string' ? g : g.name || '')).filter(Boolean)
-                : [],
-              status: p.status || '',
-              type: p.type || '',
-              rating: typeof p.rating === 'number' ? p.rating : undefined,
-            };
-          }
+          if (p?.title) return parseAtsuMangaPage(p, id);
         }
       } catch {
         // Fall through to MangaDex.
@@ -495,6 +534,109 @@ export async function fetchMangaDetail(id: string): Promise<MangaDetail | null> 
     },
     { staleIfError: true },
   ).catch(() => null);
+}
+
+/** Tag weights atsu marks as central to a series, strongest first. */
+const TAG_WEIGHT_ORDER: Record<string, number> = { Core: 0, Defining: 1, Recurrent: 2 };
+/** Enough to describe a series; the long tail of 50+ trope tags is noise on a title page. */
+const MAX_DETAIL_TAGS = 14;
+const MAX_ALT_TITLES = 12;
+const MAX_SIMILAR = 20;
+
+function nameList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry : (entry as { name?: unknown } | null)?.name))
+    .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+    .map((name) => name.trim());
+}
+
+function uniqueStrings(values: string[], exclude: string[] = []): string[] {
+  const seen = new Set(exclude.map((v) => v.toLocaleLowerCase()));
+  const out: string[] = [];
+  for (const value of values) {
+    const key = value.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+/** A list row (recommendation, relation) as a linkable title; null for adult or malformed rows. */
+function relatedTitle(raw: any, relation?: string): MangaRelatedTitle | null {
+  if (!raw || typeof raw !== 'object' || raw.isAdult === true) return null;
+  const id = typeof raw.id === 'string' ? raw.id : '';
+  const title = typeof raw.title === 'string' ? raw.title : '';
+  if (!id || !title) return null;
+  return {
+    id,
+    title,
+    cover: imgUrl(raw as AtsuItem, 'medium'),
+    ...(raw.type ? { type: displayMangaType(raw.type) } : {}),
+    ...(relation ? { relation } : {}),
+    ...(typeof raw.mbRating === 'number' && raw.mbRating > 0 ? { rating: Math.round(raw.mbRating * 10) / 10 } : {}),
+  };
+}
+
+/**
+ * atsu's /api/manga/page payload → MangaDetail. Exported for the tests, which
+ * pin it against a trimmed copy of a live answer.
+ *
+ * The payload is ~100–125 KB (forum reviews, commenter profiles, the newest
+ * 80 chapters); only what a title page shows is kept, so the cached entry
+ * stays a few KB.
+ */
+export function parseAtsuMangaPage(p: any, fallbackId: string): MangaDetail {
+  // Cover is nested under poster — same as the capacitor app
+  const cover = absUrl(p.poster?.largeImage || p.poster?.mediumImage || p.poster?.image);
+  const credits = Array.isArray(p.authors) ? p.authors : [];
+  const byRole = (role: string) => uniqueStrings(nameList(
+    credits.filter((c: any) => String(c?.type || '').toLowerCase() === role),
+  ));
+  const story = byRole('author');
+  const art = byRole('artist');
+  const rating = typeof p.avgRating === 'number' ? p.avgRating : typeof p.rating === 'number' ? p.rating : undefined;
+  const genres = nameList(p.genres);
+  const tags = (Array.isArray(p.tags) ? p.tags : [])
+    .filter((t: any) => t && typeof t.name === 'string' && t.weight in TAG_WEIGHT_ORDER)
+    .sort((a: any, b: any) => TAG_WEIGHT_ORDER[a.weight] - TAG_WEIGHT_ORDER[b.weight]);
+  const title = p.title || p.englishTitle || fallbackId;
+  const year = typeof p.released === 'number' && p.released > 0 ? new Date(p.released).getUTCFullYear() : undefined;
+  const related = (Array.isArray(p.relations) ? p.relations : [])
+    .map((r: any) => relatedTitle(r?.manga, typeof r?.type === 'string' ? r.type : undefined))
+    .filter(Boolean) as MangaRelatedTitle[];
+  const relatedIds = new Set([p.id || fallbackId, ...related.map((r) => r.id)]);
+  const similar: MangaRelatedTitle[] = [];
+  for (const raw of [...(Array.isArray(p.recommendations) ? p.recommendations : []), ...(Array.isArray(p.similarManga) ? p.similarManga : [])]) {
+    const item = relatedTitle(raw);
+    if (!item || relatedIds.has(item.id)) continue;
+    relatedIds.add(item.id);
+    similar.push(item);
+    if (similar.length >= MAX_SIMILAR) break;
+  }
+  return {
+    id: p.id || fallbackId,
+    title,
+    cover,
+    description: p.synopsis || '',
+    genres,
+    status: p.status || '',
+    type: displayMangaType(p.type),
+    ...(typeof rating === 'number' && rating > 0 ? { rating: Math.round(rating * 100) / 100 } : {}),
+    ...(story.length ? { authors: story } : {}),
+    // An artist who also wrote it is credited once, as the author.
+    ...(uniqueStrings(art, story).length ? { artists: uniqueStrings(art, story) } : {}),
+    ...(() => {
+      const alt = uniqueStrings(nameList(p.otherNames).concat(p.englishTitle ? [p.englishTitle] : []), [title]).slice(0, MAX_ALT_TITLES);
+      return alt.length ? { altTitles: alt } : {};
+    })(),
+    ...(tags.length ? { tags: uniqueStrings(tags.map((t: any) => t.name.trim()), genres).slice(0, MAX_DETAIL_TAGS) } : {}),
+    ...(typeof p.views === 'string' && p.views ? { views: p.views } : {}),
+    ...(year && year > 1900 ? { year } : {}),
+    ...(related.length ? { related } : {}),
+    ...(similar.length ? { similar } : {}),
+  };
 }
 
 export async function fetchMangaChapters(id: string): Promise<MangaChapter[]> {
@@ -644,4 +786,226 @@ export async function searchManga(query: string, limit = 24): Promise<AtsuItem[]
     },
     { staleIfError: true },
   );
+}
+
+// ─── Genre browsing ──────────────────────────────────────────────────────────
+
+/**
+ * atsu's genres, by the ids its Typesense index files them under (genreIds,
+ * genreWeightKeys). The index cannot facet these fields, so the list is fixed:
+ * ids read off live documents (Oct 2026), which line up 1:1 with the names in
+ * each document's `tags`. Hentai (10), Smut (41) and Adult (46) are left out
+ * on purpose and also excluded from every query below.
+ *
+ * The home "genre" shelves used to be TITLE searches — searchManga('action')
+ * returned "Action Idols" and "Action Mask", and nothing tagged Action.
+ */
+export const ATSU_GENRES: readonly { id: string; name: string }[] = [
+  { id: '39', name: 'Action' },
+  { id: '37', name: 'Adventure' },
+  { id: '6', name: 'Comedy' },
+  { id: '31', name: 'Drama' },
+  { id: '36', name: 'Fantasy' },
+  { id: '9', name: 'Romance' },
+  { id: '7', name: 'Slice of Life' },
+  { id: '22', name: 'Supernatural' },
+  { id: '32', name: 'Mystery' },
+  { id: '18', name: 'Psychological' },
+  { id: '29', name: 'Martial Arts' },
+  { id: '1', name: 'Sci-Fi' },
+  { id: '45', name: 'Historical' },
+  { id: '44', name: 'Horror' },
+  { id: '19', name: 'Thriller' },
+  { id: '5', name: 'Tragedy' },
+  { id: '180', name: 'Boys Love' },
+  { id: '4', name: 'Girls Love' },
+];
+
+const EXCLUDED_GENRE_IDS = '10,41,46';
+
+/** The genre id for a name as atsu writes it ("Slice of Life"), or null when it is not one of ATSU_GENRES. */
+export function atsuGenreId(name: string | null | undefined): string | null {
+  const key = String(name || '').trim().toLowerCase();
+  return ATSU_GENRES.find((g) => g.name.toLowerCase() === key)?.id ?? null;
+}
+
+export type MangaBrowseSort = 'popular' | 'rating' | 'trending' | 'added';
+export type MangaBrowseStatus = 'Ongoing' | 'Completed' | 'Hiatus';
+
+export const MANGA_BROWSE_SORTS: readonly { id: MangaBrowseSort; label: string }[] = [
+  { id: 'popular', label: 'Most viewed' },
+  { id: 'trending', label: 'Trending' },
+  { id: 'rating', label: 'Top rated' },
+  { id: 'added', label: 'Recently added' },
+];
+
+const SORT_BY: Record<MangaBrowseSort, string> = {
+  popular: 'views:desc',
+  rating: 'mbRating:desc',
+  trending: 'trending:desc',
+  added: 'dateAdded:desc',
+};
+
+export interface MangaBrowseQuery {
+  /** One of ATSU_GENRES' ids. */
+  genreId?: string | null;
+  status?: MangaBrowseStatus | null;
+  sort?: MangaBrowseSort;
+}
+
+/** Typesense filter for a browse query. Exported for the tests. */
+export function mangaBrowseFilter(query: MangaBrowseQuery): string {
+  const parts = [
+    'hidden:!=true',
+    'isAdult:=false',
+    // Comics only: atsu also indexes light novels, which this reader cannot open.
+    'medium:=Comic',
+    `type:=[${TYPES}]`,
+    `genreIds:!=[${EXCLUDED_GENRE_IDS}]`,
+  ];
+  const genre = query.genreId && ATSU_GENRES.some((g) => g.id === query.genreId) ? query.genreId : null;
+  // "Defining" or "core" only: a genre atsu marks as merely present (Horror
+  // on The Greatest Estate Developer, Slice of Life on One Piece) put famous
+  // titles at the top of shelves they do not belong on. "Core" is atsu's
+  // strongest weight (Martial Arts on Lookism and Absolute Regression, Action
+  // on Solo Leveling: Arise); matching "defining" alone left those titles off
+  // the very shelf they are most about.
+  if (genre) parts.push(`genreWeightKeys:=[\`${genre}:core\`,\`${genre}:defining\`]`);
+  if (query.status === 'Ongoing' || query.status === 'Completed' || query.status === 'Hiatus') {
+    parts.push(`status:=${query.status}`);
+  }
+  return parts.join(' && ');
+}
+
+export interface MangaBrowsePage {
+  items: AtsuItem[];
+  /** Total matches atsu reports for the query. */
+  found: number;
+  hasMore: boolean;
+}
+
+/**
+ * One page (0-based) of atsu's catalogue filtered by genre and status, in the
+ * chosen order. Through the same Typesense proxy as searchManga, with q='*'.
+ * Rejects when atsu cannot be reached (a browse grid shows Retry); an empty
+ * page is a real answer.
+ */
+export async function browseManga(query: MangaBrowseQuery, page = 0, perPage = 30): Promise<MangaBrowsePage> {
+  const sort = query.sort && SORT_BY[query.sort] ? query.sort : 'popular';
+  const p = Math.max(0, Math.floor(page) || 0);
+  const size = Math.max(1, Math.min(60, Math.floor(perPage) || 30));
+  const filter = mangaBrowseFilter(query);
+  return getOrSetCached<MangaBrowsePage>(
+    `manga:browse:v1:${filter}:${sort}:${p}:${size}`,
+    10 * 60 * 1000,
+    async () => {
+      const params = new URLSearchParams({
+        q: '*',
+        filter_by: filter,
+        sort_by: SORT_BY[sort],
+        include_fields: 'id,title,englishTitle,poster,posterSmall,posterMedium,type,mbRating',
+        page: String(p + 1),
+        per_page: String(size),
+      });
+      const res = await atsuFetch(`/collections/manga/documents/search?${params.toString()}`);
+      if (!res.ok) throw new Error(`atsu browse ${res.status}`);
+      const json = await res.json();
+      if (!Array.isArray(json?.hits)) throw new Error('atsu browse: no hits');
+      const items = (json.hits as any[])
+        .map((h) => h?.document)
+        .filter((d) => d?.id && (d.title || d.englishTitle))
+        .map((d): AtsuItem => ({
+          id: d.id,
+          title: d.title || d.englishTitle,
+          image: d.posterSmall || d.poster,
+          mediumImage: d.posterMedium || d.poster,
+          largeImage: d.poster,
+          type: d.type,
+          ...(typeof d.mbRating === 'number' ? { mbRating: d.mbRating } : {}),
+        }));
+      const found = typeof json.found === 'number' ? json.found : items.length;
+      return { items, found, hasMore: (p + 1) * size < found && items.length > 0 };
+    },
+    { staleIfError: true },
+  );
+}
+
+// ─── Recently updated ────────────────────────────────────────────────────────
+
+/**
+ * Titles that just got a chapter, newest first, as atsu's own "Recently
+ * Updated" and "Hot Updates" shelves list them (/api/home2/*). Each row
+ * carries `updatedAt`.
+ *
+ * mediums=Comic matters: without it 31 of the first 40 recently-updated rows
+ * were light novels (atsu indexes those too), which this reader cannot open.
+ * The older /api/infinite/recentlyUpdated ignores every medium parameter.
+ */
+async function fetchUpdatesList(kind: 'recentlyUpdated' | 'hotUpdates', offset: number, limit: number): Promise<AtsuItem[]> {
+  const params = new URLSearchParams({
+    offset: String(Math.max(0, Math.floor(offset) || 0)),
+    limit: String(Math.max(1, Math.min(60, Math.floor(limit) || 40))),
+    types: TYPES,
+    mediums: 'Comic',
+  });
+  return getOrSetCached<AtsuItem[]>(
+    `manga:updates:v1:${kind}:${params.toString()}`,
+    // Short: the point of the list is what landed in the last few minutes.
+    3 * 60 * 1000,
+    async () => {
+      const res = await atsuFetch(`/api/home2/${kind}?${params.toString()}`);
+      if (!res.ok) throw new Error(`atsu ${kind} ${res.status}`);
+      const json = await res.json();
+      if (!Array.isArray(json?.items)) throw new Error(`atsu ${kind}: no items`);
+      return (json.items as AtsuItem[]).filter((item) => item?.id && item.title && item.isAdult !== true);
+    },
+    { staleIfError: true },
+  );
+}
+
+/** One page (0-based, 40 a page) of every comic that just got a chapter. Rejects when atsu is unreachable. */
+export function fetchRecentlyUpdatedManga(page = 0, perPage = 40): Promise<AtsuItem[]> {
+  return fetchUpdatesList('recentlyUpdated', page * perPage, perPage);
+}
+
+/** Popular titles that updated recently — atsu's "Hot Updates". Rejects when atsu is unreachable. */
+export function fetchHotUpdatedManga(limit = 20): Promise<AtsuItem[]> {
+  return fetchUpdatesList('hotUpdates', 0, limit);
+}
+
+// ─── Library update checks ───────────────────────────────────────────────────
+
+/** Ids per Typesense request; a filter list this long is still a short URL. */
+const COUNT_CHUNK = 50;
+const ATSU_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * atsu's chapter count per title, for many titles in one request per 50 ids.
+ *
+ * lib/library-updates uses it as a cheap "did anything change?" signal before
+ * downloading a full chapter list (Lookism's is 710 KB): a library of 40 atsu
+ * titles is one request instead of forty. It is a SIGNAL, not a number to
+ * show: atsu counts every scanlation group's extras (Lookism 642 against 628
+ * chapters in the merged list). Missing ids are absent from the answer.
+ */
+export async function fetchAtsuChapterCounts(ids: readonly string[]): Promise<Record<string, number>> {
+  const clean = [...new Set(ids.filter((id) => ATSU_ID_RE.test(id)))];
+  const out: Record<string, number> = {};
+  for (let i = 0; i < clean.length; i += COUNT_CHUNK) {
+    const chunk = clean.slice(i, i + COUNT_CHUNK);
+    const params = new URLSearchParams({
+      q: '*',
+      filter_by: `id:=[${chunk.join(',')}]`,
+      include_fields: 'id,chapterCount',
+      per_page: String(chunk.length),
+    });
+    const res = await atsuFetch(`/collections/manga/documents/search?${params.toString()}`);
+    if (!res.ok) throw new Error(`atsu counts ${res.status}`);
+    const json = await res.json();
+    for (const hit of Array.isArray(json?.hits) ? json.hits : []) {
+      const doc = hit?.document;
+      if (doc?.id && typeof doc.chapterCount === 'number') out[doc.id] = doc.chapterCount;
+    }
+  }
+  return out;
 }

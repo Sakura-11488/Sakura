@@ -2,3 +2,22 @@
 @media(max-width:767px){.nd-shell{padding:0 21px 105px}.nd-nav{min-height:64px;gap:12px}.nd-nav>span{font-size:8px;letter-spacing:.13em}.nd-introduction{grid-template-columns:88px minmax(0,1fr);gap:23px;padding:29px 0}.nd-copy h1{font-size:28px;line-height:1.15;letter-spacing:-.6px;margin-bottom:10px}.nd-eyebrow{font-size:8px;letter-spacing:.1em;margin-bottom:9px}.nd-author{font-size:13px;margin-bottom:11px}.nd-meta{font-size:10px;gap:7px 9px}.nd-meta>span+span{padding-left:9px}.nd-genres{font-size:10px;line-height:1.7;margin-top:10px}.nd-book{align-self:start;margin-top:3px}.nd-reading-action{margin-top:17px;gap:3px}.nd-primary{min-height:42px;font-size:11px!important;padding:10px 12px;gap:8px}.nd-download-all{font-size:10px!important;padding:9px 0;min-height:34px}.nd-synopsis{grid-template-columns:1fr;gap:13px;padding:22px 0;margin-bottom:26px}.nd-synopsis h2{font-size:21px}.nd-synopsis p{font-size:13px;line-height:1.85}.nd-chapter-heading{display:block}.nd-chapter-heading h2{font-size:25px}.nd-chapter-controls{margin-top:18px}.nd-search{flex:1;min-width:0;width:auto}.nd-search input{font-size:16px}.nd-chapter-controls select{max-width:125px;font-size:11px}.nd-chapter-list{grid-template-columns:1fr}.nd-open-chapter{padding:15px 7px 15px 0;gap:12px}.nd-chapter-copy strong{font-size:13px}.nd-download{min-width:38px}.nd-pagination{gap:12px;justify-content:space-between}.nd-pagination label span{display:none}.nd-pagination>button{font-size:11px;padding:8px 11px}.nd-resume p{display:block;font-size:10px}.nd-resume p span{display:block;margin-top:4px}.nd-loading{grid-template-columns:88px 1fr;gap:23px}.nd-loading-cover{height:132px}.nd-loading>div:last-child{padding-top:6px}.nd-loading span{height:13px}.nd-loading span:first-child{height:27px}.nd-toast{bottom:88px}.nd-empty{padding:55px 12px}.nd-empty h1{font-size:26px}}
 
 @media(min-width:768px) and (max-width:1050px){.nd-shell{padding-left:28px;padding-right:28px}.nd-introduction{grid-template-columns:130px minmax(0,1fr);gap:28px}.nd-synopsis{grid-template-columns:130px minmax(0,1fr);gap:28px}.nd-chapter-heading{display:block}.nd-chapter-controls{margin-top:18px}.nd-search{width:260px;max-width:100%;flex:1}.nd-chapter-list{grid-template-columns:minmax(0,1fr)}.nd-loading{grid-template-columns:130px 1fr;gap:28px}.nd-loading-cover{height:195px}}
+/* Download next N — a count picker beside the button; it starts at the chapter being read. */
+.nd-download-next{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px}
+.nd-download-next select{height:32px;background:#211a21;border:1px solid var(--nd-line);border-radius:3px;padding:0 6px;font-size:11px;color:var(--nd-muted)}
+.nd-download-from{font-size:10px;color:var(--nd-muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Jump to the chapter being read in a long list. */
+.nd-jump{display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 12px;border:1px solid var(--nd-line);border-radius:3px;background:none;font-size:11px;color:var(--nd-pink)!important;white-space:nowrap}
+.nd-jump:hover{border-color:var(--nd-pink)}
+/* Finished chapters recede; the current one stays bright. */
+.nd-chapter-row[data-read=true] .nd-chapter-copy strong{color:var(--nd-muted)}
+.nd-chapter-row[data-read=true] .nd-chapter-number{opacity:.55}
+.nd-chapter-row[data-read=true] .nd-open-chapter>svg{color:var(--nd-pink)}
+/* Chapter list placeholder while the list loads behind the rendered header. */
+.nd-chapter-skeleton{display:flex;align-items:center;gap:13px;min-height:67px;border-bottom:1px solid var(--nd-line)}
+.nd-chapter-skeleton span{display:block;height:12px;background:#30242e;border-radius:2px;animation:nd-pulse 1.4s ease-in-out infinite}
+.nd-chapter-skeleton span:first-child{width:22px}
+.nd-chapter-skeleton span:last-child{width:min(340px,60%)}
+@keyframes nd-pulse{50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.nd-chapter-skeleton span{animation:none}}
+@media(max-width:767px){.nd-jump{height:36px;padding:0 9px}.nd-download-from{max-width:160px}}

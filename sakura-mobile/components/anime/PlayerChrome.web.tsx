@@ -4,8 +4,9 @@ import type { SubtitleMode } from '@/lib/anime-playback-overrides';
 import type { PlayerChromeOptions } from './player-types';
 import PlayerIcon, { type PlayerIconName } from './PlayerIcon.web';
 import { readPlayerPreferences, savePlayerPreferences, type PlayerPreferences, type QualityPreference, type SubtitleLanguage } from './player-preferences';
-import { qualityLimit } from './player-media-preferences';
+import { preferredSubtitleIndex, qualityLimit } from './player-media-preferences';
 import { playerStyles } from './player-styles';
+import { autoSkipTarget, markerSpan, nextPlayerSpeed, PLAYER_SPEEDS, registerTap, shortcutFor, tapSide, validSkipMarker, type ShortcutTarget, type TapState } from './player-shortcuts';
 import useUpNext from './useUpNext.web';
 
 type Props = {
@@ -16,7 +17,29 @@ type Props = {
   onCaptionModeChange: (mode: SubtitleMode, language?: SubtitleLanguage) => void;
   onQualityChange: (choice: QualityPreference | number) => void;
 };
-type Menu = 'speed' | 'quality' | 'captions' | null;
+type Menu = 'speed' | 'quality' | 'captions' | 'keys' | null;
+type PipVideo = HTMLVideoElement & {
+  webkitSupportsPresentationMode?: (mode: string) => boolean;
+  webkitPresentationMode?: string;
+  webkitSetPresentationMode?: (mode: string) => void;
+};
+const MEDIA_ACTIONS: MediaSessionAction[] = ['play', 'pause', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack'];
+const SHORTCUTS: Array<[string, string]> = [
+  ['Space / K', 'Play or pause'], ['J / L', 'Back or forward 10 s'], ['← / →', 'Back or forward 5 s'],
+  ['↑ / ↓', 'Volume'], ['0–9', 'Jump to 0–90 %'], ['F', 'Fullscreen'], ['I', 'Picture-in-picture'],
+  ['M', 'Mute'], ['C', 'Captions on or off'], ['N', 'Next episode'], ['Shift + > / <', 'Faster or slower'],
+];
+
+/** Classifies the focused element so keys it handles natively are left to it (see shortcutFor). */
+function shortcutTarget(target: EventTarget | null): ShortcutTarget {
+  if (!(target instanceof HTMLElement)) return 'other';
+  if (target.isContentEditable || target.closest('textarea, select')) return 'text';
+  const input = target.closest('input');
+  if (input) return input.type === 'range' ? 'range' : 'text';
+  if (target.closest('[role="dialog"]')) return 'dialog';
+  if (target.closest('button, a, [role="button"], [role="switch"]')) return 'button';
+  return 'other';
+}
 type MediaState = {
   time: number; duration: number; buffered: number; paused: boolean; ended: boolean;
   volume: number; muted: boolean; speed: number; quality: number;
@@ -25,7 +48,7 @@ type MediaState = {
   captions: Array<{ index: number; label: string; language: string; selected: boolean }>;
 };
 const INITIAL: MediaState = { time: 0, duration: 0, buffered: 0, paused: true, ended: false, volume: 1, muted: false, speed: 1, quality: -1, levels: [], qualityManaged: false, captions: [] };
-const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
+const SPEEDS = PLAYER_SPEEDS;
 export function playerTime(seconds: number): string {
   const value = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const h = Math.floor(value / 3600), m = Math.floor(value % 3600 / 60), s = value % 60;
@@ -55,9 +78,29 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
   const [notice, setNotice] = useState('');
   const [preferences, setPreferences] = useState(readPlayerPreferences);
   const [qualityOverride, setQualityOverride] = useState<number | null>(null);
+  const [pipAvailable, setPipAvailable] = useState(false);
+  const [pip, setPip] = useState(false);
+  /** Brief centred feedback for keyboard and media-key actions ("+10 s", "1.25×"). */
+  const [osd, setOsd] = useState<{ text: string; key: number } | null>(null);
+  const [ripple, setRipple] = useState<{ side: -1 | 1; total: number; key: number } | null>(null);
+  const [skipped, setSkipped] = useState<{ label: string; back: number } | null>(null);
+  const osdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rippleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skippedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tapRef = useRef<TapState>(null);
+  /** Markers already auto-skipped (or undone) for this source; each is skipped at most once. */
+  const skipHandled = useRef(new Set<string>());
+  const optionsRef = useRef(options);
   const { upNext, autoplay, toggleAutoplay, playNext, cancelNext, clearNext } = useUpNext(
     videoRef, `${uri}|${options.episodeNumber ?? ''}|${options.title}`, options.nextEpisode,
   );
+  useEffect(() => { optionsRef.current = options; });
+  const hasNext = !!options.nextEpisode;
+  const flash = useCallback((text: string) => {
+    if (osdTimer.current) clearTimeout(osdTimer.current);
+    setOsd({ text, key: Date.now() });
+    osdTimer.current = setTimeout(() => setOsd(null), 900);
+  }, []);
   useEffect(() => { captionCallback.current = onCaptionModeChange; }, [onCaptionModeChange]);
   const closeMenu = useCallback(() => {
     setMenu(null);
@@ -121,7 +164,25 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     reveal();
   }, [videoRef, reveal]);
 
+  const togglePip = useCallback(async () => {
+    const video = videoRef.current as PipVideo | null;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') await video.requestPictureInPicture();
+      else if (typeof video.webkitSetPresentationMode === 'function') {
+        video.webkitSetPresentationMode(video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+      } else setNotice('Picture-in-picture is unavailable in this browser.');
+    } catch {
+      setNotice('Picture-in-picture is unavailable right now.');
+    }
+    reveal();
+  }, [videoRef, reveal]);
+
   useEffect(() => { menuRef.current = menu; reveal(); }, [menu, reveal]);
+  useEffect(() => () => {
+    for (const timer of [osdTimer, rippleTimer, skippedTimer]) if (timer.current) clearTimeout(timer.current);
+  }, []);
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -147,6 +208,13 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     setResumedAt(null);
     setMenu(null);
     setWaiting(true);
+    setSkipped(null);
+    skipHandled.current = new Set();
+    const pipVideo = video as PipVideo;
+    setPipAvailable((document.pictureInPictureEnabled === true && !video.disablePictureInPicture)
+      || pipVideo.webkitSupportsPresentationMode?.('picture-in-picture') === true);
+    let positionAt = 0;
+    const session = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
     const update = () => {
       if (disposed) return;
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -163,6 +231,12 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
         captions: Array.from(video.textTracks).filter(track => track.kind === 'subtitles' || track.kind === 'captions')
           .map(track => ({ index: Array.from(video.textTracks).indexOf(track), label: track.label || track.language || 'Subtitles', language: track.language, selected: track.mode === 'showing' })),
       });
+      // Lock-screen and OS media scrubbers draw from this; once a second is plenty.
+      const now = Date.now();
+      if (session?.setPositionState && duration > 0 && now - positionAt > 1000) {
+        positionAt = now;
+        try { session.setPositionState({ duration, playbackRate: video.playbackRate || 1, position: Math.min(video.currentTime, duration) }); } catch { /* invalid during a source swap */ }
+      }
     };
     const onMetadata = () => {
       // The engine applies its bookmark in its own metadata listener first.
@@ -178,8 +252,15 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
         update();
       });
     };
-    const onPlaying = () => { setWaiting(false); update(); reveal(); };
-    const onPause = () => { update(); setVisible(true); };
+    const onPlaying = () => {
+      setWaiting(false); update(); reveal();
+      if (session) try { session.playbackState = 'playing'; } catch { /* unsupported */ }
+    };
+    const onPause = () => {
+      update(); setVisible(true);
+      if (session) try { session.playbackState = 'paused'; } catch { /* unsupported */ }
+    };
+    const onPipChange = () => setPip(document.pictureInPictureElement === video || pipVideo.webkitPresentationMode === 'picture-in-picture');
     const onWaiting = () => { if (!video.paused) setWaiting(true); };
     const onVolume = () => { update(); savePlayerPreferences({ volume: video.volume, muted: video.muted }); };
     const onRate = () => { update(); if (metadataSeen) savePlayerPreferences({ speed: video.playbackRate }); };
@@ -202,6 +283,10 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     document.addEventListener('webkitfullscreenchange', fullscreenChanged);
     video.addEventListener('webkitbeginfullscreen', fullscreenChanged);
     video.addEventListener('webkitendfullscreen', fullscreenChanged);
+    video.addEventListener('enterpictureinpicture', onPipChange);
+    video.addEventListener('leavepictureinpicture', onPipChange);
+    video.addEventListener('webkitpresentationmodechanged', onPipChange);
+    onPipChange();
     update(); reveal();
     return () => {
       disposed = true;
@@ -219,32 +304,112 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
       document.removeEventListener('webkitfullscreenchange', fullscreenChanged);
       video.removeEventListener('webkitbeginfullscreen', fullscreenChanged);
       video.removeEventListener('webkitendfullscreen', fullscreenChanged);
+      video.removeEventListener('enterpictureinpicture', onPipChange);
+      video.removeEventListener('leavepictureinpicture', onPipChange);
+      video.removeEventListener('webkitpresentationmodechanged', onPipChange);
       if (hideTimer.current) clearTimeout(hideTimer.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
     };
   }, [uri, videoRef, hlsRef, reveal]);
 
+  /*
+   * OS media controls: lock screen, notification shade, hardware media keys,
+   * headphone buttons and the PiP window all act through the Media Session.
+   * Handlers read the latest options through a ref so a parent re-render does
+   * not tear down and re-register them.
+   */
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-      const target = event.target;
-      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, button, a, [role="dialog"]'))) return;
-      const video = videoRef.current;
-      if (!video) return;
-      switch (event.key.toLowerCase()) {
-        case ' ': case 'k': event.preventDefault(); togglePlay(); break;
-        case 'arrowleft': event.preventDefault(); seek(video.currentTime - 10); break;
-        case 'arrowright': event.preventDefault(); seek(video.currentTime + 10); break;
-        case 'm': event.preventDefault(); toggleMute(); break;
-        case 'f': event.preventDefault(); toggleFullscreen(); break;
-        case 'escape': closeMenu(); break;
-        default: return;
+    const session = typeof navigator !== 'undefined' ? navigator.mediaSession : undefined;
+    const video = videoRef.current;
+    if (!session || !video) return;
+    try {
+      if (typeof MediaMetadata !== 'undefined') {
+        session.metadata = new MediaMetadata({
+          title: options.episodeLabel || (options.episodeNumber ? `Episode ${options.episodeNumber}` : options.title || 'Sakura'),
+          artist: options.title || 'Sakura',
+          album: 'Sakura',
+          artwork: options.artwork ? [{ src: options.artwork }] : [],
+        });
       }
-      reveal();
+    } catch { /* metadata is decorative */ }
+    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler | null>> = {
+      play: () => { void video.play().catch(() => undefined); },
+      pause: () => video.pause(),
+      seekbackward: details => seek(video.currentTime - (details.seekOffset || 10)),
+      seekforward: details => seek(video.currentTime + (details.seekOffset || 10)),
+      seekto: details => { if (typeof details.seekTime === 'number') seek(details.seekTime); },
+      previoustrack: () => seek(0),
+      nexttrack: hasNext ? () => playNext() : null,
     };
+    for (const action of MEDIA_ACTIONS) {
+      try { session.setActionHandler(action, handlers[action] ?? null); } catch { /* action unsupported here */ }
+    }
+    return () => {
+      for (const action of MEDIA_ACTIONS) {
+        try { session.setActionHandler(action, null); } catch { /* action unsupported here */ }
+      }
+      try { session.metadata = null; } catch { /* metadata is decorative */ }
+    };
+  }, [videoRef, uri, options.title, options.episodeLabel, options.episodeNumber, options.artwork, hasNext, seek, playNext]);
+
+  /** Turns captions off, or on in the viewer's preferred language. */
+  const toggleCaptions = () => {
+    if (captionsOn) { changeCaptions(-1); flash('Captions off'); return; }
+    if (!media.captions.length) { flash('No captions for this episode'); return; }
+    const best = preferredSubtitleIndex(media.captions, preferences.subtitleLanguage);
+    const track = media.captions[Math.max(0, best)];
+    changeCaptions(track.index);
+    flash(`Captions · ${track.label}`);
+  };
+
+  // Rebuilt every render so the handler always sees current media state; the
+  // document listener itself is registered once.
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  keyHandler.current = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === 'Escape') { closeMenu(); return; }
+    const video = videoRef.current;
+    const action = video ? shortcutFor(event, shortcutTarget(event.target)) : null;
+    if (!video || !action) return;
+    event.preventDefault();
+    switch (action.type) {
+      case 'toggle-play': togglePlay(); break;
+      case 'seek-by':
+        seek(video.currentTime + action.seconds);
+        flash(`${action.seconds > 0 ? '+' : '−'}${Math.abs(action.seconds)} s`);
+        break;
+      case 'seek-fraction':
+        if (Number.isFinite(video.duration) && video.duration > 0) seek(video.duration * action.fraction);
+        break;
+      case 'volume': {
+        const volume = Math.round(Math.min(1, Math.max(0, (video.muted ? 0 : video.volume) + action.delta)) * 100) / 100;
+        video.volume = volume;
+        video.muted = volume === 0;
+        flash(`Volume ${Math.round(volume * 100)}%`);
+        break;
+      }
+      case 'speed': {
+        const speed = nextPlayerSpeed(video.playbackRate, action.step);
+        video.playbackRate = speed;
+        flash(speed === 1 ? 'Normal speed' : `${speed}×`);
+        break;
+      }
+      case 'mute': toggleMute(); flash(video.muted ? 'Muted' : 'Sound on'); break;
+      case 'fullscreen': toggleFullscreen(); break;
+      case 'pip': if (pipAvailable) void togglePip(); break;
+      case 'next':
+        if (optionsRef.current.nextEpisode) { flash(`Playing ${optionsRef.current.nextEpisode.label}`); playNext(); }
+        break;
+      case 'captions': toggleCaptions(); break;
+      case 'help': setMenu(current => current === 'keys' ? null : 'keys'); break;
+    }
+    reveal();
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => keyHandler.current(event);
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [videoRef, seek, togglePlay, toggleMute, toggleFullscreen, reveal, closeMenu]);
+  }, []);
 
   const changeCaptions = (index: number) => {
     const video = videoRef.current;
@@ -285,6 +450,47 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     : validMarker(options.outro) ? { label: 'Skip Ending', end: options.outro!.end } : null;
   const showChrome = visible || media.paused || !!menu;
   const countdownSeconds = Math.max(1, Math.ceil((upNext?.remainingMs ?? 0) / 1000));
+  const markers = ([['intro', options.intro], ['outro', options.outro]] as const)
+    .map(([kind, marker]) => ({ kind, span: markerSpan(marker, media.duration) }))
+    .filter((entry): entry is { kind: 'intro' | 'outro'; span: { left: number; width: number } } => !!entry.span);
+
+  /*
+   * Auto-skip (a saved preference, off by default). Each marker is skipped once
+   * per source; the toast's Undo returns to where the skip started and leaves
+   * that marker alone afterwards, as does seeking back into it by hand.
+   */
+  useEffect(() => {
+    if (!preferences.autoSkip) return;
+    for (const [kind, marker] of [['intro', options.intro], ['outro', options.outro]] as const) {
+      if (!validSkipMarker(marker, media.duration)) continue;
+      const key = `${kind}:${marker.start}:${marker.end}`;
+      const target = autoSkipTarget(media.time, media.duration, marker, skipHandled.current.has(key), !media.paused && !media.ended);
+      if (target === null) continue;
+      skipHandled.current.add(key);
+      const back = media.time;
+      seek(target);
+      if (skippedTimer.current) clearTimeout(skippedTimer.current);
+      setSkipped({ label: kind === 'intro' ? 'Skipped opening' : 'Skipped ending', back });
+      skippedTimer.current = setTimeout(() => setSkipped(null), 6000);
+      break;
+    }
+  }, [preferences.autoSkip, options.intro, options.outro, media.time, media.duration, media.paused, media.ended, seek]);
+
+  /** Double-tap the left or right third to seek 10 s; each extra quick tap adds 10 s. */
+  const onSurfaceTap = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType !== 'touch' || menu) return;
+    // Local coordinates, not screen ones: on phones held upright the player is
+    // rotated 90° into landscape (WatchViewport), and offsetX/offsetWidth follow
+    // the element's own axes where clientX would measure the screen's.
+    const { state, seekBy, total } = registerTap(tapRef.current, performance.now(), tapSide(event.nativeEvent.offsetX, event.currentTarget.offsetWidth));
+    tapRef.current = state;
+    const video = videoRef.current;
+    if (!seekBy || !video || !state || state.side === 0) return;
+    seek(video.currentTime + seekBy);
+    if (rippleTimer.current) clearTimeout(rippleTimer.current);
+    setRipple({ side: state.side, total, key: Date.now() });
+    rippleTimer.current = setTimeout(() => setRipple(null), 650);
+  };
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !showChrome) return;
@@ -339,7 +545,7 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
     onKeyDown={event => { if (event.key === 'Escape' && menu) { event.stopPropagation(); closeMenu(); } }}>
     <style>{playerStyles}</style>
     <button type="button" className="sc-surface" aria-label="Show playback controls" tabIndex={showChrome ? -1 : 0}
-      onPointerDown={event => { touchRef.current = event.pointerType === 'touch'; }}
+      onPointerDown={event => { touchRef.current = event.pointerType === 'touch'; }} onPointerUp={onSurfaceTap}
       onClick={() => { if (menu) { closeMenu(); reveal(); } else if (touchRef.current) reveal(); else togglePlay(); }} onDoubleClick={() => { if (!touchRef.current) toggleFullscreen(); }} />
     <div className="sc-shade" aria-hidden="true" />
     <div className="sc-top sc-chrome" inert={!showChrome}>
@@ -371,11 +577,18 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
       {upNext.remainingMs !== null && <div className="sc-up-next-progress" aria-hidden="true"><span style={{ transform: `scaleX(${upNext.remainingMs / 5000})` }} /></div>}
     </section>}
     {notice && <div className="sc-notice" role="status">{notice}</div>}
+    {osd && <div className="sc-osd" key={osd.key} role="status" aria-live="polite">{osd.text}</div>}
+    {ripple && <div className="sc-ripple" key={ripple.key} data-side={ripple.side < 0 ? 'left' : 'right'} aria-hidden="true"><span className="sc-ripple-arrows">{ripple.side < 0 ? '◂◂' : '▸▸'}</span><span>{ripple.side < 0 ? '−' : '+'}{ripple.total} s</span></div>}
+    {skipped && <div className="sc-resume sc-skipped" role="status"><span>{skipped.label}</span><button type="button" onClick={() => { seek(skipped.back); setSkipped(null); }}>Undo</button></div>}
     <div className="sc-bottom sc-chrome" inert={!showChrome}>
-      <input className="sc-timeline" type="range" min="0" max={media.duration || 1} step="0.1" value={Math.min(media.time, media.duration || 1)} disabled={!media.duration}
-        aria-label="Playback position" aria-valuetext={`${playerTime(media.time)} of ${playerTime(media.duration)}`}
-        style={{ '--sc-played': `${fraction}%`, '--sc-buffered': `${Math.max(fraction, bufferedFraction)}%` } as React.CSSProperties}
-        onChange={event => seek(Number(event.target.value))} />
+      <div className="sc-timeline-wrap">
+        <input className="sc-timeline" type="range" min="0" max={media.duration || 1} step="0.1" value={Math.min(media.time, media.duration || 1)} disabled={!media.duration}
+          aria-label="Playback position" aria-valuetext={`${playerTime(media.time)} of ${playerTime(media.duration)}`}
+          style={{ '--sc-played': `${fraction}%`, '--sc-buffered': `${Math.max(fraction, bufferedFraction)}%` } as React.CSSProperties}
+          onChange={event => seek(Number(event.target.value))} />
+        {/* Opening and ending spans, so viewers can see where they are and scrub past them. */}
+        {markers.map(({ kind, span }) => <span key={kind} className="sc-marker" data-kind={kind} aria-hidden="true" style={{ left: `${span.left}%`, width: `${span.width}%` }} />)}
+      </div>
       <div className="sc-footer">
         <IconButton icon={media.paused ? 'play' : 'pause'} label={media.paused ? 'Play' : 'Pause'} onClick={togglePlay} className="sc-footer-play" />
         <div className="sc-audio"><IconButton icon={media.muted || media.volume === 0 ? 'muted' : 'volume'} label={media.muted ? 'Unmute' : 'Mute'} onClick={toggleMute} />
@@ -388,12 +601,13 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
         <button type="button" className="sc-button sc-speed" onClick={event => toggleMenu('speed', event.currentTarget)} aria-label="Playback speed" aria-expanded={menu === 'speed'}>{media.speed}×</button>
         <button type="button" className={`sc-button${captionsOn ? ' sc-active' : ''}`} onClick={event => toggleMenu('captions', event.currentTarget)} aria-label="Captions" aria-expanded={menu === 'captions'}><PlayerIcon name="captions" /></button>
         <button type="button" className="sc-button" onClick={event => toggleMenu('quality', event.currentTarget)} aria-label="Playback settings" aria-expanded={!!menu}><PlayerIcon name="settings" /></button>
+        {pipAvailable && <IconButton icon={pip ? 'pip-exit' : 'pip'} label={pip ? 'Exit picture-in-picture' : 'Picture-in-picture'} onClick={() => { void togglePip(); }} active={pip} />}
         <IconButton icon={fullscreen ? 'collapse' : 'fullscreen'} label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen} />
       </div>
     </div>
     {menu && <div className="sc-menu" role="dialog" aria-label="Playback settings" onPointerDown={event => event.stopPropagation()}>
       <div className="sc-menu-heading"><span>Make it yours</span><button type="button" aria-label="Close playback settings" onClick={closeMenu}>×</button></div>
-      <div className="sc-tabs">{(['speed', 'quality', 'captions'] as const).map(tab => <button type="button" key={tab} aria-pressed={menu === tab} onClick={() => setMenu(tab)}>{tab === 'speed' ? 'Speed' : tab === 'quality' ? 'Quality' : 'Captions'}</button>)}</div>
+      <div className="sc-tabs">{(['speed', 'quality', 'captions', 'keys'] as const).map(tab => <button type="button" key={tab} aria-pressed={menu === tab} onClick={() => setMenu(tab)}>{{ speed: 'Speed', quality: 'Quality', captions: 'Captions', keys: 'Keys' }[tab]}</button>)}</div>
       <div className="sc-menu-options">
         {menu === 'speed' && SPEEDS.map(speed => <button type="button" key={speed} aria-pressed={media.speed === speed} onClick={() => { if (videoRef.current) { videoRef.current.playbackRate = speed; savePlayerPreferences({ speed }); } }}><span>{speed === 1 ? 'Normal' : `${speed}×`}</span>{media.speed === speed && <PlayerIcon name="check" />}</button>)}
         {menu === 'quality' && <>
@@ -419,7 +633,16 @@ export default function PlayerChrome({ videoRef, hlsRef, uri, options, onCaption
           <fieldset className="sc-caption-options"><legend>Background</legend><div>{(['none', 'soft', 'solid'] as const).map(background => <button type="button" key={background} aria-label={`${background} caption background`} aria-pressed={preferences.captionBackground === background} onClick={() => changeAppearance({ captionBackground: background })}>{background === 'none' ? 'None' : background === 'soft' ? 'Soft' : 'Solid'}</button>)}</div></fieldset>
           <div className="sc-caption-preview" aria-label="Caption preview" data-size={preferences.captionSize} data-background={preferences.captionBackground}><span>Your next story awaits.</span></div>
         </>}
+        {menu === 'keys' && <>
+          <p className="sc-option-heading">Keyboard shortcuts</p>
+          <dl className="sc-keys">{SHORTCUTS.map(([keys, action]) => <React.Fragment key={keys}><dt>{keys}</dt><dd>{action}</dd></React.Fragment>)}</dl>
+          <p>On a touch screen, double-tap the left or right side to skip back or ahead 10 seconds.</p>
+        </>}
       </div>
+      <button type="button" className="sc-autoplay-toggle" role="switch" aria-label="Skip openings and endings automatically" aria-checked={preferences.autoSkip}
+        onClick={() => { const autoSkip = !preferences.autoSkip; savePlayerPreferences({ autoSkip }); setPreferences(previous => ({ ...previous, autoSkip })); }}>
+        <span>Auto-skip openings &amp; endings</span><span className="sc-switch-track" aria-hidden="true"><span /></span>
+      </button>
       <button type="button" className="sc-autoplay-toggle" role="switch" aria-label="Autoplay next episode" aria-checked={autoplay} onClick={toggleAutoplay}>
         <span>Autoplay next episode</span><span className="sc-switch-track" aria-hidden="true"><span /></span>
       </button>

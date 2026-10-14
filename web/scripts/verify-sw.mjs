@@ -15,6 +15,7 @@
  *   node scripts/verify-sw.mjs          tests public/sw.js (stamped in memory)
  *   node scripts/verify-sw.mjs --dist   tests the built dist/sw.js, and checks
  *                                       its stamped list against the export
+ *                                       (--dist=<dir> for an export elsewhere)
  *
  * It used to read a hard-coded 'C:/Users/1/Documents/...' path, so it could not
  * run anywhere but the one machine that wrote it.
@@ -24,12 +25,15 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { stampServiceWorker } from './write-precache-manifest.mjs';
+import { ONLINE_ONLY } from './defer-common-chunk.mjs';
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const useDist = process.argv.includes('--dist');
-const SRC = path.join(webRoot, useDist ? 'dist' : 'public', 'sw.js');
+const distArg = process.argv.find((a) => a === '--dist' || a.startsWith('--dist='));
+const useDist = !!distArg;
+const distDir = distArg?.includes('=') ? path.resolve(distArg.slice('--dist='.length)) : path.join(webRoot, 'dist');
+const SRC = useDist ? path.join(distDir, 'sw.js') : path.join(webRoot, 'public', 'sw.js');
 const code = fs.readFileSync(SRC, 'utf8');
-console.log(`Testing ${path.relative(webRoot, SRC)}\n`);
+console.log(`Testing ${SRC}\n`);
 
 let fail = 0;
 const check = (name, ok, detail) => {
@@ -428,6 +432,104 @@ function createWorld({ stamped = true, manifest = MANIFEST, network = offline, s
   check('other messages are ignored', w.fetches.length === before);
 }
 
+// ── Lazy chunks ─────────────────────────────────────────────────────────────
+// The bundle is split per screen. The document names its lazy chunks (the
+// reader, the player, Downloads...) in non-fetching <link> tags, and a shell is
+// only complete, adopted and kept with all of them.
+const READER = '/app/_expo/static/js/web/[id]-dddddddddddddddddddddddddddddddd.js';
+const COMMON = '/app/_expo/static/js/web/__common-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.js';
+const OLD_READER = '/app/_expo/static/js/web/[id]-ffffffffffffffffffffffffffffffff.js';
+const splitDoc = (bundle, reader) =>
+  `<!DOCTYPE html><html><head><link rel="preload" as="font" href="${FONT}" /></head>` +
+  `<body><div id="root"></div><link rel="sakura-common" data-sakura-common href="${COMMON}">` +
+  `<script src="${bundle}" defer></script>\n<link rel="sakura-chunk" href="${reader}">\n</body></html>`;
+const SPLIT_NEW = splitDoc(NEW_BUNDLE, READER);
+const SPLIT_OLD = splitDoc(OLD_BUNDLE, OLD_READER);
+const splitDeployment = (overrides = {}) => deployment({
+  [abs('/app/')]: () => res(SPLIT_NEW, 'text/html; charset=utf-8'),
+  [abs(READER)]: () => res('/* reader */', 'application/javascript'),
+  [abs(COMMON)]: () => res('/* common */', 'application/javascript'),
+  ...overrides,
+});
+const SPLIT_MANIFEST = { ...MANIFEST, urls: [NEW_BUNDLE, COMMON, READER, ...MANIFEST.urls.slice(1)] };
+
+{
+  const w = createWorld({ manifest: SPLIT_MANIFEST, network: splitDeployment() });
+  await w.extendable('install');
+  check('install precaches the lazy chunks the document names',
+    w.has('sakura-shell-v2', READER) && w.has('sakura-shell-v2', COMMON));
+  check('…and then adopts the document', (await w.get('sakura-shell-v2', '/app/')?.text()) === SPLIT_NEW);
+}
+
+{
+  // The reader chunk cannot be fetched: booting offline would work, opening a
+  // downloaded chapter would not. Keep the previous, complete shell instead.
+  const w = createWorld({
+    manifest: SPLIT_MANIFEST,
+    network: splitDeployment({ [abs(READER)]: offline }),
+    shell: {
+      '/app/': () => res(SPLIT_OLD, 'text/html'),
+      [OLD_BUNDLE]: () => res('/* old bundle */', 'application/javascript'),
+      [OLD_READER]: () => res('/* old reader */', 'application/javascript'),
+      [COMMON]: () => res('/* common */', 'application/javascript'),
+    },
+  });
+  await w.extendable('install');
+  check('a shell missing one of its lazy chunks is not adopted', (await w.get('sakura-shell-v2', '/app/')?.text()) === SPLIT_OLD);
+  await w.extendable('activate');
+  check('activate keeps the lazy chunks the cached shell names', w.has('sakura-shell-v2', OLD_READER),
+    'pruning them would leave an offline shell that cannot open the reader');
+  check('activate keeps the cached shell\'s entry bundle too', w.has('sakura-shell-v2', OLD_BUNDLE));
+}
+
+{
+  const w = createWorld({
+    manifest: SPLIT_MANIFEST,
+    network: splitDeployment(),
+    shell: { [OLD_READER]: () => res('/* old reader */', 'application/javascript') },
+  });
+  await w.extendable('install');
+  await w.extendable('activate');
+  check('a previous build\'s lazy chunk is pruned once a complete new shell is in',
+    !w.has('sakura-shell-v2', OLD_READER) && w.has('sakura-shell-v2', READER));
+}
+
+{
+  // Install runs during the first page load. What the page itself loads is
+  // precached at once (shared downloads); the lazy chunks wait until the page
+  // says it has loaded, or LAZY_PRECACHE_DELAY_MS (10s, 100ms here) passes.
+  const w = createWorld({ manifest: SPLIT_MANIFEST, network: splitDeployment() });
+  const install = w.extendable('install');
+  await realSleep(40);
+  check('install fetches the boot bundle straight away', w.fetches.includes(abs(NEW_BUNDLE)));
+  check('…but holds the lazy chunks and optional assets back while the page loads',
+    !w.fetches.includes(abs(READER)) && !w.fetches.includes(abs(COMMON)) && !w.fetches.includes(abs(TAP)));
+  await w.extendable('message', { type: 'sakura:warm-shell' });
+  check('a page saying it has loaded releases them at once',
+    w.fetches.includes(abs(READER)) && w.has('sakura-shell-v2', READER));
+  await install;
+  check('…and the shell is adopted', (await w.get('sakura-shell-v2', '/app/')?.text()) === SPLIT_NEW);
+}
+
+{
+  const w = createWorld({ manifest: SPLIT_MANIFEST, network: splitDeployment() });
+  const started = Date.now();
+  await w.extendable('install');
+  const elapsed = Date.now() - started;
+  check('without a word from the page, the lazy chunks follow after the delay',
+    w.has('sakura-shell-v2', READER) && elapsed >= 90 && elapsed < 1500, `${elapsed}ms`);
+}
+
+{
+  // A page that already said it loaded before install reached the gate.
+  const w = createWorld({ manifest: SPLIT_MANIFEST, network: splitDeployment() });
+  const install = w.extendable('install');
+  await w.extendable('message', { type: 'sakura:warm-shell' });
+  const started = Date.now();
+  await install;
+  check('an early "loaded" message is not lost', Date.now() - started < 80 && w.has('sakura-shell-v2', READER));
+}
+
 // ── Navigations ─────────────────────────────────────────────────────────────
 const cachedShell = () => ({
   '/app/': () => res(OLD_DOC, 'text/html'),
@@ -530,7 +632,7 @@ const cachedShell = () => ({
 
 // ── The built artifact ──────────────────────────────────────────────────────
 if (useDist) {
-  const dist = path.join(webRoot, 'dist');
+  const dist = distDir;
   const m = /\/\* @sakura-precache \*\/ (null|\{[^\n]*\})(?=;)/.exec(code);
   const list = m && m[1] !== 'null' ? JSON.parse(m[1]) : null;
   check('dist/sw.js carries a stamped precache list', !!list,
@@ -544,6 +646,16 @@ if (useDist) {
     const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8');
     const entries = [...html.matchAll(/(?:src|href)="(\/app\/_expo\/static\/[^"]+)"/g)].map((x) => x[1]);
     check('the list includes every bundle index.html loads', entries.length > 0 && entries.every((u) => list.urls.includes(u)));
+    const chunkDir = path.join(dist, '_expo/static/js/web');
+    const unlisted = fs.readdirSync(chunkDir).filter((f) => f.endsWith('.js'))
+      .map((f) => `/app/_expo/static/js/web/${f}`).filter((u) => !entries.includes(u));
+    // Online-only chunks (the trading SDK) are left out on purpose and cached on first use.
+    const onlineOnly = unlisted.filter((u) => ONLINE_ONLY.test(u));
+    const missingChunks = unlisted.filter((u) => !ONLINE_ONLY.test(u));
+    check('index.html names every JS chunk in the export but the online-only ones (so the worker keeps them offline)',
+      missingChunks.length === 0, missingChunks.join(', '));
+    check('online-only chunks stay out of the precache list', onlineOnly.every((u) => !list.urls.includes(u)),
+      onlineOnly.join(', '));
     check('index.html registers the worker at parse time, not on load',
       html.includes("navigator.serviceWorker.register('/app/sw.js'") && !/addEventListener\('load'[^)]*\)\s*{\s*navigator\.serviceWorker/.test(html));
   }

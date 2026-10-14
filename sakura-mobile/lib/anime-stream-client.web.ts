@@ -79,8 +79,61 @@ function readSource(value: unknown, endpoint: URL): StreamingSource | null {
   };
 }
 
+/**
+ * Lookups started ahead of playback (see prewarmBrowserAnimeStream), keyed by
+ * title, episode and audio. Memory only and single use: the signed URLs are
+ * valid for two hours server-side, so a ten-minute window is safely inside it,
+ * and a retry or a second play always asks again.
+ */
+const PREWARM_TTL_MS = 10 * 60_000;
+const PREWARM_LIMIT = 6;
+const prewarmed = new Map<string, { at: number; promise: Promise<StreamingSource | null> }>();
+const prewarmKey = (request: Pick<AnimeStreamRequest, 'malId' | 'episode' | 'category'>) =>
+  `${request.malId}:${request.episode}:${request.category}`;
+
+function saveDataRequested(): boolean {
+  try {
+    const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+    return connection?.saveData === true || navigator.onLine === false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve an episode's stream before the viewer presses play. The lookup is
+ * the first of four serial round trips before a frame shows (lookup, master
+ * playlist, media playlist, first segment); doing it during hover, while the
+ * detail page settles, or near the end of the previous episode takes ~0.5 s off
+ * every start and the autoplay handoff. Skipped when the browser asks to save data.
+ */
+export function prewarmBrowserAnimeStream(request: Omit<AnimeStreamRequest, 'force'>): void {
+  if (saveDataRequested()) return;
+  const key = prewarmKey(request);
+  const now = Date.now();
+  for (const [entryKey, entry] of prewarmed) if (now - entry.at > PREWARM_TTL_MS) prewarmed.delete(entryKey);
+  if (prewarmed.has(key)) return;
+  while (prewarmed.size >= PREWARM_LIMIT) prewarmed.delete(prewarmed.keys().next().value!);
+  const promise = resolveBrowserAnimeStream(request);
+  // An unobserved failure must not surface as an unhandled rejection.
+  promise.catch(() => undefined);
+  prewarmed.set(key, { at: now, promise });
+}
+
 /** Resolve a fresh signed URL for each playback attempt; never persist it in a content cache. */
 export async function fetchBrowserAnimeStream(request: AnimeStreamRequest): Promise<StreamingSource | null> {
+  const key = prewarmKey(request);
+  const warm = prewarmed.get(key);
+  prewarmed.delete(key);
+  if (warm && !request.force && Date.now() - warm.at <= PREWARM_TTL_MS) {
+    // A failed warm-up is not an answer; ask again rather than report "no stream".
+    const source = await warm.promise.catch(() => null);
+    if (source) return source;
+  }
+  return resolveBrowserAnimeStream(request);
+}
+
+async function resolveBrowserAnimeStream(request: AnimeStreamRequest): Promise<StreamingSource | null> {
   const endpoint = functionEndpoint();
   if (!endpoint || !/^[1-9]\d*$/.test(request.malId) || !Number.isSafeInteger(request.episode)
     || request.episode < 1 || (request.category !== 'sub' && request.category !== 'dub')) return null;

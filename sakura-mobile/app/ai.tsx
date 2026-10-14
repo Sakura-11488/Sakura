@@ -45,7 +45,7 @@ import {
   formatSakuraAiRequirement,
   getSakuraAiProgress,
 } from '@/lib/wallet/sakura-ai-access';
-import WalletModal from '@/components/wallet/WalletModal';
+import WalletModal from '@/components/wallet/LazyWalletModal';
 import EmptyState from '@/components/ui/EmptyState';
 import { onTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';

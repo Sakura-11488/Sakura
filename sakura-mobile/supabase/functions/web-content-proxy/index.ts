@@ -13,7 +13,14 @@ type ProxyBody = {
   responseFormat?: 'json' | 'html' | 'text';
 };
 
-const cors = corsHeaders('POST, OPTIONS');
+// Access-Control-Max-Age lets the browser reuse one preflight for this
+// function. Without it Chrome keeps the answer for 5 s, so nearly every call —
+// every navigation — paid a second round trip first (~330 ms on mobile), and
+// each preflight was itself a function invocation. Browsers cap the value
+// (Chrome at 2 h, Firefox at 24 h); a day asks for the most any of them gives.
+// Set here rather than in the shared corsHeaders() so only this read-only
+// proxy changes behaviour.
+const cors = { ...corsHeaders('POST, OPTIONS'), 'Access-Control-Max-Age': '86400' };
 const ATSU_BASE = 'https://atsu.moe';
 // Droplet host duplicated here (Deno can't import app lib). Canonical:
 // sakura-mobile/lib/content-hosts.ts. Override via COMICS_PROXY_BASE /

@@ -32,8 +32,19 @@ import * as Haptics from 'expo-haptics';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { Toast } from '@/components/ui/Toast';
 import CommentsSection from '@/components/social/CommentsSection';
-import { fetchAnimeInfo, type AnimeInfo, type AnimeEpisode } from '@/lib/anime';
-import { getAnimeWatchProgress, registerAnimeEpisodeCatalog, setAnimeEpisodeWatched, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
+import { fetchAnimeInfo, getAnimePreview, prewarmEpisodeStream, type AnimeInfo, type AnimeEpisode } from '@/lib/anime';
+import { getAnimeViewingStatus, getAnimeWatchProgress, registerAnimeEpisodeCatalog, setAnimeEpisodeWatched, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
+import {
+  getWatchlistStatus,
+  noteAnimePlayback,
+  setWatchlistStatus,
+  subscribeWatchlist,
+  watchlistStatusLabel,
+  WATCHLIST_STATUSES,
+  type WatchlistStatus,
+} from '@/lib/anime-watchlist';
+import { readPlayerPreferences } from '@/components/anime/player-preferences';
+import { sameCatalogEpisode, withDownloadIds } from '@/lib/anime-episode-ids';
 import {
   getOfflineEpisode,
   listOfflineEpisodes,
@@ -521,6 +532,25 @@ function animeFromOfflineRows(animeId: string, rows: OfflineEpisode[]): AnimeInf
   };
 }
 
+/**
+ * What is already known about a title before its record loads: the card that
+ * was tapped, or this device's history or library. The page draws its hero
+ * from this at once and shows skeleton episodes, instead of a blank shimmer.
+ */
+function previewInfo(id: string): AnimeInfo | null {
+  const preview = getAnimePreview(id);
+  return preview ? { ...preview, cover: preview.image, episodes: [] } : null;
+}
+
+async function localPreviewInfo(id: string): Promise<AnimeInfo | null> {
+  const progress = await getAnimeWatchProgress(id).catch(() => null);
+  if (progress?.title) return { id, title: progress.title, image: progress.cover, cover: progress.cover, episodes: [] };
+  const saved = (await Library.getAll().catch(() => [])).find((item) => item.id === id && item.type === 'anime');
+  return saved ? { id, title: saved.title, image: saved.cover, cover: saved.cover, episodes: [] } : null;
+}
+
+const isFinishedSeries = (status?: string) => /^(?:finished airing|finished)$/i.test(status?.trim() || '');
+
 // ─── Main screen ──────────────────────────────────────────────────────────────
 export default function AnimeDetail() {
   const { wide, W, HERO_H, HEADER_TRIGGER } = useDetailMetrics();
@@ -619,6 +649,15 @@ export default function AnimeDetail() {
       backgroundColor: colors.surface,
     },
     genreChipText: { color: colors.textSecondary, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium },
+    listRow: { gap: 6, paddingBottom: 12 },
+    listChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+    listChipTextActive: { color: '#fff', fontFamily: Fonts.bodyBold },
+    episodeSkeleton: {
+      flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
+      borderBottomWidth: 1, borderBottomColor: colors.border,
+    },
+    episodeSkeletonThumb: { width: 96, height: 58, borderRadius: Radius.xs, backgroundColor: colors.surfaceSecondary },
+    episodeSkeletonLine: { height: 10, borderRadius: 4, backgroundColor: colors.surfaceSecondary },
     synopsis: {
       color: colors.textSecondary, fontSize: 13.5, lineHeight: 20, marginBottom: 4,
     },
@@ -688,9 +727,12 @@ export default function AnimeDetail() {
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState('');
   const [watchProgress, setWatchProgress] = useState<AnimeWatchProgress | null>(null);
+  /** The title whose progress has been read at least once (null progress then means "none", not "not read yet"). */
+  const [progressReadFor, setProgressReadFor] = useState<string | null>(null);
   const [offlineMap, setOfflineMap] = useState<Record<string, OfflineEpisode>>({});
   /** The page is showing downloads only, because the title's info could not load. */
   const [offlineOnly, setOfflineOnly] = useState(false);
+  const [listStatus, setListStatus] = useState<WatchlistStatus | null>(null);
 
   const scrollY = useSharedValue(0);
 
@@ -714,7 +756,9 @@ export default function AnimeDetail() {
     React.useCallback(() => {
       if (!id) return;
       let active = true;
-      getAnimeWatchProgress(String(id)).then(value => { if (active) setWatchProgress(value); });
+      getAnimeWatchProgress(String(id)).then(value => {
+        if (active) { setWatchProgress(value); setProgressReadFor(String(id)); }
+      });
       refreshOffline();
       return () => { active = false; };
     }, [id, refreshOffline]),
@@ -749,17 +793,54 @@ export default function AnimeDetail() {
   useEffect(() => {
     if (!id) return;
     let active = true;
+    const load = () => { void getWatchlistStatus(String(id)).then((value) => { if (active) setListStatus(value); }); };
+    load();
+    const unsubscribe = subscribeWatchlist(load);
+    return () => { active = false; unsubscribe(); };
+  }, [id]);
+
+  /** Viewing status first seen for this title on this visit; completion is acted on only when it changes. */
+  const viewingStatusRef = React.useRef<{ id: string; status: ReturnType<typeof getAnimeViewingStatus> } | null>(null);
+  useEffect(() => {
+    // Every episode of a finished series watched: list it as Completed.
+    //
+    // Only when the series becomes complete while this page is open (the last
+    // episode ticked here, or finished in the player above it). Acting on old
+    // history every time the page opened overrode the viewer's own choice: a
+    // finished show moved to Plan to watch for a rewatch, or removed from the
+    // list, was put back as Completed on the next visit.
+    if (!anime || loading || anime.id !== String(id) || !isFinishedSeries(anime.status)
+      || progressReadFor !== anime.id) return;
+    const status = watchProgress?.animeId === anime.id ? getAnimeViewingStatus(watchProgress, anime.episodes) : 'not-started';
+    const previous = viewingStatusRef.current?.id === anime.id ? viewingStatusRef.current.status : null;
+    viewingStatusRef.current = { id: anime.id, status };
+    if (previous && previous !== 'completed' && status === 'completed') {
+      void noteAnimePlayback({ animeId: anime.id, title: anime.title, cover: anime.cover || anime.image || '' }, 'finished-series');
+    }
+  }, [anime, loading, id, watchProgress, progressReadFor]);
+
+  useEffect(() => {
+    if (!id) return;
+    let active = true;
+    /** The full record (or a definite failure) has arrived; previews must not replace it. */
+    let settled = false;
     setLoading(true);
-    setAnime(null);
+    setAnime(previewInfo(String(id)));
     setSaved(false);
     setLoadError(null);
     setOfflineOnly(false);
+    if (!getAnimePreview(String(id))) {
+      void localPreviewInfo(String(id)).then((value) => {
+        if (active && !settled && value) setAnime((current) => current ?? value);
+      });
+    }
     /** Web only: render downloads instead of the error page. False when there are none. */
     const showDownloadsInstead = async (): Promise<boolean> => {
       if (Platform.OS !== 'web') return false;
       const rows = (await listOfflineEpisodes().catch(() => [] as OfflineEpisode[]))
         .filter((row) => row.animeId === String(id));
       if (!active || !rows.length) return false;
+      settled = true;
       setAnime(animeFromOfflineRows(String(id), rows));
       setOfflineOnly(true);
       return true;
@@ -767,8 +848,13 @@ export default function AnimeDetail() {
     (async () => {
       try {
         if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.onLine === false && await showDownloadsInstead()) return;
-        let data = await fetchAnimeInfo(id);
-        if (data && data.episodes.length === 0) {
+        let data = await fetchAnimeInfo(id, {
+          // Hero and synopsis first when the episode list needs a slow provider lookup.
+          onMetadata: (partial) => { if (active && !settled) setAnime(partial); },
+        });
+        // A fresh AniList record with no episodes is an answer ("not aired yet"),
+        // not a broken cache entry; only older-style records are retried.
+        if (data && data.episodes.length === 0 && data.metaSource !== 'anilist') {
           // Retry uncached in case the empty episode list came from a stale or
           // half-built cache entry — but never let the retry destroy a result
           // we already have. It used to assign straight over `data`, so when
@@ -780,10 +866,12 @@ export default function AnimeDetail() {
         }
         if (!active) return;
         if (data) {
+          settled = true;
           setAnime(data);
         } else if (!(await showDownloadsInstead())) {
           // Not a throw: the fetch completed and had nothing for this id.
-          if (active) setLoadError('No data returned for this title.');
+          settled = true;
+          if (active) { setAnime(null); setLoadError('No data returned for this title.'); }
         }
       } catch (err) {
         // Deliberately NOT swallowed.
@@ -799,7 +887,8 @@ export default function AnimeDetail() {
         // unless the episodes are on the device, in which case the page they
         // belong to is more use than the reason it could not be refreshed.
         if (!active || (await showDownloadsInstead())) return;
-        if (active) setLoadError(err instanceof Error ? err.message : String(err));
+        settled = true;
+        if (active) { setAnime(null); setLoadError(err instanceof Error ? err.message : String(err)); }
       } finally {
         if (active) setLoading(false);
       }
@@ -821,6 +910,26 @@ export default function AnimeDetail() {
     });
     setSaved(next);
     setToast(next ? 'Added to library' : 'Removed from library');
+  };
+
+  const handleListStatus = async (status: WatchlistStatus | null) => {
+    if (!anime || !id) return;
+    playTap();
+    const title = { animeId: String(id), title: anime.title, cover: anime.cover || anime.image || '' };
+    setListStatus(status);
+    await setWatchlistStatus(title, status);
+    // A listed title belongs in the library too, so it shows up there.
+    if (status && !saved) {
+      await Library.save({ id: String(id), title: anime.title, cover: title.cover, type: 'anime', savedAt: 0 });
+      setSaved(true);
+    }
+    setToast(status ? `Added to ${watchlistStatusLabel(status)}` : 'Removed from your list');
+  };
+
+  /** Web only: resolve an episode's stream before the viewer presses play. */
+  const handlePrewarm = (episode: AnimeEpisode) => {
+    if (Platform.OS !== 'web' || !id || offlineMap[episode.id]?.status === 'ready') return;
+    prewarmEpisodeStream(episode.id, readPlayerPreferences().audio ?? 'sub', String(id));
   };
 
   const handleShare = () => {
@@ -858,7 +967,10 @@ export default function AnimeDetail() {
     ),
   }));
 
-  if (Platform.OS === 'web' && (loading || !anime)) {
+  /** The record as listed: episodes saved under their other catalog id keep that id (see withDownloadIds). */
+  const listed = useMemo(() => withDownloadIds(anime, offlineMap), [anime, offlineMap]);
+
+  if (Platform.OS === 'web' && !anime) {
     return <AnimeDetailWebPlaceholder
       onBack={onTap(() => router.back())}
       error={loading ? undefined : loadError || 'No data returned for this title.'}
@@ -866,7 +978,7 @@ export default function AnimeDetail() {
     />;
   }
 
-  if (loading) return <DetailSkeleton onBack={onTap(() => router.back())} />;
+  if (loading && !anime) return <DetailSkeleton onBack={onTap(() => router.back())} />;
 
   if (!anime) {
     return (
@@ -910,11 +1022,15 @@ export default function AnimeDetail() {
     );
   }
 
-  const episodes = anime.episodes || [];
+  const episodes = (listed ?? anime).episodes || [];
+  /** The hero is drawn from a preview or metadata while the episode list loads. */
+  const episodesPending = loading && episodes.length === 0;
   const firstEp = episodes[0];
+  // By id or, between MAL and provider ids, by number: a bookmark saved while
+  // the series listed provider ids must still resume after it lists MAL ids.
   const resumeEp =
     watchProgress?.episodeId
-      ? episodes.find((e) => e.id === watchProgress.episodeId) ?? null
+      ? episodes.find((e) => sameCatalogEpisode(e, watchProgress.episodeId, watchProgress.episodeNumber)) ?? null
       : null;
   const playEp = resumeEp || firstEp;
   const watchPct = watchProgress?.progress ?? 0;
@@ -972,9 +1088,13 @@ export default function AnimeDetail() {
     return <>
       <AnimeDetailWeb
         key={String(id)}
-        anime={anime}
+        anime={listed ?? anime}
         progress={watchProgress?.animeId === String(id) ? watchProgress : null}
         saved={saved}
+        episodesLoading={episodesPending}
+        listStatus={listStatus}
+        onListStatus={handleListStatus}
+        onPrewarm={handlePrewarm}
         offline={offlineMap}
         // Every title downloads on web now: Originals as one file, everything
         // else as HLS through the anime-stream relay (lib/anime-offline.web.ts).
@@ -1117,8 +1237,8 @@ export default function AnimeDetail() {
               <StarIcon goldColor={colors.gold} />
               <Text style={s.rating}>{anime.score}</Text>
               <Text style={s.ratingMax}>/10</Text>
-              <View style={s.ratingDivider} />
-              <Text style={s.episodeCount}>{episodes.length} eps</Text>
+              {!episodesPending && <View style={s.ratingDivider} />}
+              {!episodesPending && <Text style={s.episodeCount}>{episodes.length} eps</Text>}
             </Animated.View>
           )}
 
@@ -1145,6 +1265,27 @@ export default function AnimeDetail() {
             </Animated.View>
           )}
 
+          {/* My list status */}
+          {!offlineOnly && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.listRow}>
+              {WATCHLIST_STATUSES.map(({ value, label }) => {
+                const active = listStatus === value;
+                return (
+                  <TouchableOpacity
+                    key={value}
+                    onPress={() => { void handleListStatus(active ? null : value); }}
+                    style={[s.genreChip, active && s.listChipActive]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={active ? `Remove from ${label}` : `Add to ${label}`}
+                  >
+                    <Text style={[s.genreChipText, active && s.listChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
+
           {/* Tabs */}
           <View style={s.tabs}>
             {(
@@ -1169,7 +1310,19 @@ export default function AnimeDetail() {
           {/* Episodes tab */}
           {activeTab === 'episodes' && (
             <Animated.View entering={FadeInDown.delay(50).duration(300)}>
-              {episodes.length === 0 ? (
+              {episodes.length === 0 && episodesPending ? (
+                <View accessibilityLabel="Loading episodes">
+                  {[0, 1, 2, 3].map((row) => (
+                    <View key={row} style={s.episodeSkeleton}>
+                      <View style={s.episodeSkeletonThumb} />
+                      <View style={{ flex: 1, gap: 6 }}>
+                        <View style={[s.episodeSkeletonLine, { width: 44 }]} />
+                        <View style={[s.episodeSkeletonLine, { width: '80%' }]} />
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : episodes.length === 0 ? (
                 <View style={s.noEps}>
                   <Text style={s.noEpsTitle}>No streaming source found</Text>
                   <Text style={s.noEpsText}>
@@ -1185,7 +1338,7 @@ export default function AnimeDetail() {
                       downloadable
                       ep={ep}
                       cover={anime.localCover ? undefined : (anime.cover || anime.image)}
-                      progress={watchProgress?.episodeId === ep.id ? watchProgress.progress : undefined}
+                      progress={sameCatalogEpisode(ep, watchProgress?.episodeId, watchProgress?.episodeNumber) ? watchProgress!.progress : undefined}
                       offline={offlineMap[ep.id]}
                       onPress={() => {
                         playTap();

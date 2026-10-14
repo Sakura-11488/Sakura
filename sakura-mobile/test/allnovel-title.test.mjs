@@ -10,6 +10,15 @@ const htmlparser = require('htmlparser2');
 const code = ts.transpileModule(readFileSync(new URL('../lib/allnovel.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
+// allnovel.ts strips the source's boilerplate with lib/novel-text.ts; run the real module.
+const novelTextCode = ts.transpileModule(readFileSync(new URL('../lib/novel-text.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+function novelText() {
+  const exports = {};
+  vm.runInNewContext(novelTextCode, { exports });
+  return exports;
+}
 
 async function parse(html, method = 'parseNovelDetail') {
   const exports = {};
@@ -21,6 +30,7 @@ async function parse(html, method = 'parseNovelDetail') {
       if (name === '@/lib/sakura-novels') return { fetchSakuraNovelDetail: async () => null, fetchSakuraChapterContent: async () => null };
       if (name === '@/lib/allnovel-html') return { fetchNovelHtml: async () => html };
       if (name === './novel-covers') return {};
+      if (name === '@/lib/novel-text') return novelText();
       throw new Error(`Unexpected import: ${name}`);
     },
   });

@@ -8,7 +8,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import GorhomSheetModal from '@/components/ui/GorhomSheetModal';

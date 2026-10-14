@@ -30,7 +30,7 @@ import {
   type PassStatus,
 } from '@/lib/wallet/pass';
 import { setPassExpiresAtOnServer } from '@/lib/push-tokens';
-import WalletModal from '@/components/wallet/WalletModal';
+import WalletModal from '@/components/wallet/LazyWalletModal';
 import { playTap, onTap } from '@/lib/sound';
 
 const ACCENT = '#5856D6';

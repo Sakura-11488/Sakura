@@ -25,6 +25,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     router: {
       ...(mobile.extra?.router ?? {}),
       origin: false,
+      // Load screens on demand on web; router-context.js says which stay in
+      // the main bundle. Native keeps one bundle (default: false), and its
+      // builds read sakura-mobile/app.json, not this file, in any case.
+      asyncRoutes: { web: true, default: false },
     },
   },
 });

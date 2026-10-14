@@ -4,7 +4,6 @@ import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useWallet } from '@/lib/wallet/context';
 import { AppSettings } from '@/lib/settings';
-import { fetchPhoenixMarketState, fetchPhoenixTraderData } from '@/lib/wallet/phoenix';
 import { FontSize, FontWeight, Fonts } from '@/constants/theme';
 import { playTap } from '@/lib/sound';
 
@@ -50,6 +49,14 @@ export default function FloatingTradeWidget() {
 
     const load = async () => {
       try {
+        // Imported here, not at module scope: this widget is mounted by the
+        // root layout on every screen, and a static import pulled the Phoenix
+        // perps SDK (@ellipsis-labs/rise, @solana/kit, zod: ~2.1MB, a quarter
+        // of the web bundle) into every cold start, for a pill that only
+        // shows on reading screens with the PnL tracker on. app/trade.tsx
+        // reaches phoenix through the same import(), so the web build emits
+        // it as one lazy chunk rather than hoisting it into the shared one.
+        const { fetchPhoenixMarketState, fetchPhoenixTraderData } = await import('@/lib/wallet/phoenix');
         const market = await fetchPhoenixMarketState();
         const data = await fetchPhoenixTraderData(address, market.markPrice);
         if (!mounted) return;

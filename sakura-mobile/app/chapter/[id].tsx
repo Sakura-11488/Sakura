@@ -1,12 +1,54 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, Dimensions, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, Animated, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
-import { Image } from 'expo-image';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, StatusBar, ActivityIndicator, InteractionManager, Platform, AppState, Animated, useWindowDimensions, type ViewToken, type NativeSyntheticEvent, type NativeScrollEvent, type GestureResponderEvent } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import { Colors, Radius, FontSize, FontWeight } from '@/constants/theme';
 import { getScrapedAdapter } from '@/lib/scraped-sources';
-import { loadChapterPages, fetchReaderChapterList, type LoadedChapterPages } from '@/lib/chapter-pages';
+import {
+  loadChapterPages,
+  fetchReaderChapterList,
+  prefetchChapterPages,
+  getRememberedPageSizes,
+  rememberPageSizes,
+  type LoadedChapterPages,
+  type PageSizeHint,
+} from '@/lib/chapter-pages';
+import { warmReaderImage } from '@/components/reader/warm-reader-image';
+import { setReaderLookAhead, clearReaderLookAhead } from '@/components/reader/reader-prefetch';
+import { useReaderKeepAwake } from '@/components/reader/useReaderKeepAwake';
+import ChapterEndCard from '@/components/reader/ChapterEndCard';
+import {
+  END_CARD_HEIGHT,
+  LIST_HEADER_HEIGHT,
+  MARKER_HEIGHT,
+  PAGE_GAP_PX,
+  autoScrollPxPerSecond,
+  buildListLayout,
+  columnWidth,
+  estimatedRatio,
+  isUsableRatio,
+  lookAheadCount,
+  lookAheadUrls,
+  medianRatio,
+  layoutAnchor,
+  readerKeyAction,
+  tapZoneAction,
+  webtoonPageBox,
+  type ListLayout,
+  type PageSize,
+} from '@/components/reader/reader-layout';
+import {
+  getReaderPrefsSnapshot,
+  loadReaderPrefs,
+  readerPrefsLoaded,
+  subscribeReaderPrefs,
+  updateReaderPrefs,
+  READER_MAX_WIDTH_MAX,
+  READER_MAX_WIDTH_MIN,
+  type ReaderPrefs,
+} from '@/lib/reader-prefs';
+import { markChapterRead } from '@/lib/chapter-read-state';
 import { getOfflineMangaPageUris } from '@/lib/manga-offline';
 import { getScrapedOfflinePageUris } from '@/lib/scraped-offline';
 import { isOnline } from '@/lib/use-online';
@@ -24,7 +66,7 @@ import {
 } from '@/lib/reader-segments';
 import { upsertReadingActivity, endReadingActivity } from '@/lib/reading-activity';
 import { AppSettings } from '@/lib/settings';
-import { setMangaReadProgress } from '@/lib/reader-progress';
+import { setMangaReadProgress, type UpNextChapter } from '@/lib/reader-progress';
 import { recordReadingEvent } from '@/lib/gamification';
 import EmptyState from '@/components/ui/EmptyState';
 import ReaderSettingsSheet from '@/components/reader/ReaderSettingsSheet';
@@ -36,12 +78,55 @@ import { onTap, playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
 import { checkPassStatus, formatPassTimeRemaining, type PassStatus } from '@/lib/wallet/pass';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-// Fallback page aspect (height/width) used only until an image reports its real
-// size. A manga page is ~1.5, but manhwa/webtoon pages are long vertical strips
-// (often 3–15), so every page is measured and sized to its own ratio — assuming
-// 1.5 for everything is what made manhwa pages render cropped.
-const DEFAULT_PAGE_RATIO = 1.5;
+// Window size comes from useWindowDimensions inside the component. It used to
+// be read once here at module load, so resizing a browser window, rotating a
+// tablet or unfolding a foldable never re-laid the reader out — and on a wide
+// desktop window every page was drawn at the full window width.
+//
+// Page heights: a manga page is ~1.5 tall per unit of width, but manhwa strips
+// run 3–20, so each page is laid out at its own ratio once known — from the
+// source (atsu states sizes), from an earlier visit (lib/chapter-pages
+// remembers measured sizes), or measured as it loads — and until then at the
+// chapter's median (components/reader/reader-layout).
+
+const BACKGROUNDS: Record<ReaderPrefs['background'], string> = {
+  black: '#000000',
+  gray: '#26262B',
+  white: '#FFFFFF',
+};
+/** Ignore a "tap" that moved this far: it was a swipe. */
+const TAP_SLOP_PX = 10;
+const TAP_MAX_MS = 350;
+/** After a touch, wheel or key, auto-scroll waits this long before going on. */
+const AUTO_SCROLL_RESUME_MS = 1500;
+/** A restore (resume, seek, mode switch) stops re-landing after this long. */
+const RESTORE_MAX_MS = 6000;
+
+/** Web: F toggles fullscreen on the whole document (the reader is full-window). */
+function toggleFullscreen() {
+  if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+  const doc = document as Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void };
+  const root = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => void };
+  try {
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      if (doc.exitFullscreen) void doc.exitFullscreen().catch(() => undefined);
+      else doc.webkitExitFullscreen?.();
+    } else if (root.requestFullscreen) {
+      void root.requestFullscreen().catch(() => undefined);
+    } else {
+      root.webkitRequestFullscreen?.();
+    }
+  } catch {
+    // Fullscreen refused (iframe without allowfullscreen, iOS Safari): ignore.
+  }
+}
+
+/** The browser's own data-saver signal, on top of the app's Data saver switch. */
+function browserSaveData(): boolean {
+  if (Platform.OS !== 'web' || typeof navigator === 'undefined') return false;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return connection?.saveData === true;
+}
 /** Window for the reader's double tap. Long enough to be unhurried, short
  *  enough that two unrelated taps a beat apart don't count as one gesture. */
 const DOUBLE_TAP_MS = 300;
@@ -57,6 +142,12 @@ const UI_FADE_MS = 200;
 const SEEK_GUARD_MS = 900;
 /** Scroll distance that counts as "reading resumed" rather than finger drift. */
 const SCROLL_HIDE_PX = 12;
+/**
+ * How far through a chapter (by page) the next chapter's page list is
+ * prefetched when continuous reading is off. Matches the point at which
+ * continuous reading attaches a network chapter (onViewableItemsChanged).
+ */
+const NEXT_CHAPTER_PREFETCH_AT = 0.6;
 
 /**
  * The downloaded copy of a chapter, or null — never the network. For the two
@@ -115,6 +206,63 @@ export default function ChapterReader() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { address } = useWallet();
+  const { width: winW, height: winH } = useWindowDimensions();
+
+  // Display preferences. The snapshot is synchronous once read this session,
+  // so the first layout already has the right width; until the first read
+  // completes the page list waits (it is a localStorage / file read).
+  const [prefs, setPrefs] = useState<ReaderPrefs>(getReaderPrefsSnapshot);
+  const [prefsReady, setPrefsReady] = useState(readerPrefsLoaded);
+  useEffect(() => {
+    let alive = true;
+    void loadReaderPrefs().then((loaded) => {
+      if (!alive) return;
+      setPrefs(loaded);
+      setPrefsReady(true);
+    });
+    const unsubscribe = subscribeReaderPrefs((next) => {
+      if (alive) setPrefs(next);
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+  const changePrefs = useCallback((patch: Partial<ReaderPrefs>) => {
+    void updateReaderPrefs(patch);
+  }, []);
+
+  // Settings → Data saver (it used to be a switch nothing read), or the
+  // browser's own Save-Data. Cuts look-ahead to one page and skips warming
+  // the next chapter's images.
+  const [dataSaver, setDataSaver] = useState(browserSaveData);
+  useEffect(() => {
+    let alive = true;
+    AppSettings.getDataSaver()
+      .then((on) => {
+        if (alive) setDataSaver(on || browserSaveData());
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // expo-router keeps this screen mounted under whatever is pushed on top
+  // (the pass screen, a chat), so document-level listeners and the wake lock
+  // must stand down while it is not the screen in front.
+  const [focused, setFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setFocused(true);
+      return () => setFocused(false);
+    }, []),
+  );
+  // For callbacks held in refs or created before these are known.
+  const dataSaverRef = useRef(dataSaver);
+  dataSaverRef.current = dataSaver;
+  const winWRef = useRef(winW);
+  winWRef.current = winW;
 
   const [accessChecked, setAccessChecked] = useState(!isGated);
   const [hasAccess, setHasAccess] = useState(!isGated);
@@ -150,9 +298,19 @@ export default function ChapterReader() {
   const [continuous, setContinuous] = useState(true);
   const [continuousBack, setContinuousBack] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Real per-page aspect ratios (height/width), filled in as each image loads so
-  // tall manhwa strips get their full height instead of being cropped to 1.5.
-  const [pageRatios, setPageRatios] = useState<Record<string, number>>({});
+  // What is known about each page's image, by row id: its ratio (height/width)
+  // and natural width. Seeded from the source's stated sizes and from sizes
+  // remembered on an earlier visit, then filled in as each image loads.
+  const [pageSizes, setPageSizes] = useState<Record<string, PageSize>>({});
+  /**
+   * The chapter whose end card is on screen (the last one in the session), or
+   * null. A chapter id rather than a flag: when continuous reading appends the
+   * next chapter the card moves away without a scroll event, and a bare
+   * "at the end" left over from before would then credit the chapter that was
+   * just appended as read. Mirrored in a ref for callbacks.
+   */
+  const [endReachedFor, setEndReachedFor] = useState<string | null>(null);
+  const atEndRef = useRef(false);
 
   /**
    * Overlay fade, on React Native's own Animated rather than Reanimated.
@@ -184,20 +342,65 @@ export default function ChapterReader() {
   const seekGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handlePageLoad = useCallback((pageId: string, width?: number, height?: number) => {
+  /** Measured sizes per chapter, index-aligned, waiting to be remembered. */
+  const measuredRef = useRef<Map<string, Array<PageSizeHint | null>>>(new Map());
+  const rememberTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushMeasured = useCallback(() => {
+    if (rememberTimerRef.current) {
+      clearTimeout(rememberTimerRef.current);
+      rememberTimerRef.current = null;
+    }
+    const contentId = mangaIdRef.current;
+    if (!contentId) return;
+    for (const [chapterId, sizes] of measuredRef.current) {
+      rememberPageSizes(sourceRef.current, contentId, chapterId, sizes);
+    }
+    measuredRef.current.clear();
+  }, []);
+
+  const handlePageLoad = useCallback((page: { id: string; chapterId: string; pageIndex: number }, width?: number, height?: number) => {
     if (!width || !height) return;
     const ratio = height / width;
-    if (!Number.isFinite(ratio) || ratio <= 0) return;
-    setPageRatios((prev) => {
-      const existing = prev[pageId];
-      // Only re-render when the ratio meaningfully changes.
-      if (existing && Math.abs(existing - ratio) < 0.01) return prev;
-      return { ...prev, [pageId]: ratio };
+    if (!isUsableRatio(ratio)) return;
+    setPageSizes((prev) => {
+      const existing = prev[page.id];
+      // Only re-render when the size meaningfully changes.
+      if (existing && Math.abs(existing.ratio - ratio) < 0.01 && existing.width === width) return prev;
+      return { ...prev, [page.id]: { ratio, width } };
     });
-  }, []);
+    // Remember it for the next open of this chapter (see rememberPageSizes).
+    const list = measuredRef.current.get(page.chapterId) ?? [];
+    list[page.pageIndex] = { width, height };
+    measuredRef.current.set(page.chapterId, list);
+    if (!rememberTimerRef.current) rememberTimerRef.current = setTimeout(flushMeasured, 2000);
+  }, [flushMeasured]);
+
+  /**
+   * Lay pages out at their known sizes before any image loads: the source's
+   * stated sizes first (atsu), then sizes remembered from an earlier visit.
+   * Measured sizes already in state win over both.
+   */
+  const seedPageSizes = useCallback(
+    (chapterId: string, count: number, ...lists: Array<ReadonlyArray<PageSizeHint | null> | null | undefined>) => {
+      const seed: Record<string, PageSize> = {};
+      for (let i = 0; i < count; i += 1) {
+        for (const list of lists) {
+          const hint = list?.[i];
+          if (hint && hint.width > 0 && hint.height > 0) {
+            seed[`${chapterId}#${i}`] = { ratio: hint.height / hint.width, width: hint.width };
+            break;
+          }
+        }
+      }
+      if (Object.keys(seed).length > 0) setPageSizes((prev) => ({ ...seed, ...prev }));
+    },
+    [],
+  );
 
   const tildeIdx = (id || '').indexOf('~');
   const mangaId = tildeIdx >= 0 ? id!.slice(0, tildeIdx) : '';
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
   // The chapter the route opened on. Deliberately never reassigned: it is a
   // dependency of the load effect, so making it follow the reader would re-fire
   // that effect at every boundary and wipe the session back to one chapter.
@@ -271,6 +474,10 @@ export default function ChapterReader() {
   const [allowSpoilers, setAllowSpoilers] = useState(false);
 
   const mangaTitle = typeof title === 'string' ? title : 'Manga';
+  // Progress keeps the stored title when the route has none (a notification
+  // or a shared link opens the reader without one) instead of renaming the
+  // series "Manga" in Continue Reading.
+  const progressTitle = typeof title === 'string' ? title : '';
   const mangaCover = typeof cover === 'string' ? cover : undefined;
   // Label of the chapter actually on screen. Falls back to the route's label,
   // which is only correct while the reader is still on the chapter it opened.
@@ -358,6 +565,9 @@ export default function ChapterReader() {
     let cancelled = false;
 
     (async () => {
+      // Read alongside the page list (a local read), so the first layout
+      // already has every page's height and the resume lands exactly.
+      const rememberedSizes = getRememberedPageSizes(source, mangaId, entryChapterId).catch(() => null);
       try {
         // Offline is resolved per chapter inside loadChapterPages by asking the
         // store, so the route's `offline` param is no longer consulted here.
@@ -388,7 +598,9 @@ export default function ChapterReader() {
           if (local) loaded = { urls: local, origin: 'offline' };
         }
         const { urls, origin } = loaded;
+        const remembered = await rememberedSizes;
         if (cancelled) return;
+        seedPageSizes(entryChapterId, urls.length, loaded.sizes, remembered);
         // Opening a chapter always resets the session to just that chapter;
         // neighbours are attached afterwards as the reader approaches them.
         setSegments([
@@ -419,7 +631,7 @@ export default function ChapterReader() {
     return () => {
       cancelled = true;
     };
-  }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess, loadAttempt]);
+  }, [mangaId, entryChapterId, source, routeChapterLabel, isGated, hasAccess, loadAttempt, seedPageSizes]);
 
   /**
    * Web gets its fade from a CSS transition on a state-driven opacity.
@@ -453,9 +665,10 @@ export default function ChapterReader() {
       uiFadeRef.current = Animated.timing(uiOpacity, {
         toValue: to,
         duration: UI_FADE_MS,
-        // Opacity is native-drivable, and on web react-native-web falls back to
-        // its own timing loop.
-        useNativeDriver: true,
+        // Opacity is native-drivable. Not on web: the fade there is CSS
+        // (overlayFadeStyle), and asking for the native driver only logged a
+        // "native animated module is missing" warning the first time it faded.
+        useNativeDriver: Platform.OS !== 'web',
       });
       uiFadeRef.current.start();
     },
@@ -502,22 +715,86 @@ export default function ChapterReader() {
     didInitialScroll.current = false;
   }, [mangaId, entryChapterId]);
 
-  /** Scroll to a flattened row index. No RTL mapping — the list is mirrored. */
+  const snapRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (snapRestoreTimerRef.current) clearTimeout(snapRestoreTimerRef.current);
+    },
+    [],
+  );
+  /**
+   * Whether the list is still given initialScrollIndex (see the FlatList).
+   * react-native-web's VirtualizedList skips recomputing which rows to render
+   * whenever initialScrollIndex is set and the scroll offset is exactly 0 —
+   * it takes that as "the initial scroll has not happened yet". So after a
+   * resume at page 30, Home (or the slider to page 1, or a chapter button
+   * opening the next chapter at its top) scrolled to 0 and kept rendering
+   * only pages 29–30: a black screen until the reader scrolled. A jump to
+   * offset 0 therefore drops the prop first; by then it has done its job.
+   */
+  const [initialIndexLive, setInitialIndexLive] = useState(true);
+  const initialIndexLiveRef = useRef(true);
+  const releaseInitialIndex = useCallback(() => {
+    if (!initialIndexLiveRef.current) return;
+    initialIndexLiveRef.current = false;
+    setInitialIndexLive(false);
+  }, []);
+  /** A row's offset and length along the scroll axis; assigned once the layout is known (below). */
+  const rowSpanRef = useRef<(index: number) => { offset: number; length: number }>((index) => ({
+    offset: index * winW,
+    length: winW,
+  }));
+
+  /**
+   * Scroll to a flattened row index. No RTL mapping — the list is mirrored.
+   * `fraction` (webtoon only) lands that far into the row rather than at its
+   * top, so a re-layout can put the reader back mid-page.
+   */
   const jumpToRow = useCallback(
-    (rowIndex: number, animated = false) => {
+    (rowIndex: number, animated = false, fraction = 0) => {
       const total = rowsRef.current.length;
       if (total === 0) return;
       const index = Math.min(Math.max(rowIndex, 0), total - 1);
+      const span = rowSpanRef.current(index);
+      const target = readingMode === 'page' ? winW * index : span.offset + Math.max(0, fraction) * span.length;
+      if (target < 1) releaseInitialIndex();
       if (readingMode === 'page') {
         // Uniform page width, so offset math is exact.
-        flatListRef.current?.scrollToOffset({ offset: SCREEN_WIDTH * index, animated });
+        const offset = winW * index;
+        const node =
+          Platform.OS === 'web'
+            ? ((flatListRef.current as unknown as { getScrollableNode?: () => unknown } | null)?.getScrollableNode?.() as
+                | HTMLElement
+                | undefined)
+            : undefined;
+        if (node?.style && Math.abs(node.scrollLeft - offset) > winW * 1.5) {
+          // A far jump on web (End, the slider, a resume): the list scrolls
+          // with CSS `scroll-snap-type: x mandatory`, and the snap points are
+          // only the pages actually rendered — the target is not, yet. The
+          // browser snapped back to the nearest rendered page, so End from
+          // page 1 landed on page 11. Snapping is suspended until the pages
+          // around the target have rendered, then the landing is repeated.
+          node.style.scrollSnapType = 'none';
+          flatListRef.current?.scrollToOffset({ offset, animated: false });
+          if (snapRestoreTimerRef.current) clearTimeout(snapRestoreTimerRef.current);
+          snapRestoreTimerRef.current = setTimeout(() => {
+            snapRestoreTimerRef.current = null;
+            node.style.scrollSnapType = '';
+            flatListRef.current?.scrollToOffset({ offset, animated: false });
+          }, 300);
+          return;
+        }
+        flatListRef.current?.scrollToOffset({ offset, animated });
       } else {
-        // Webtoon mode has variable page heights — let FlatList resolve the
-        // index itself (onScrollToIndexFailed covers unmeasured items).
-        flatListRef.current?.scrollToIndex({ index, animated });
+        // Webtoon rows have their own heights, but getItemLayout knows every
+        // one of them (measured, stated by the source, remembered, or the
+        // chapter's median), so this is a direct jump: rows in between never
+        // mount, and nothing is downloaded on the way.
+        if (fraction > 0) flatListRef.current?.scrollToOffset({ offset: target, animated });
+        else flatListRef.current?.scrollToIndex({ index, animated });
       }
     },
-    [readingMode],
+    [readingMode, winW, releaseInitialIndex],
   );
 
   /**
@@ -539,9 +816,12 @@ export default function ChapterReader() {
     [jumpToRow],
   );
 
+  const initialTarget = Math.min(Math.max(requestedPage - 1, 0), Math.max(activeTotalPages - 1, 0));
+  /** The list's initialScrollIndex, fixed when the list first renders (see the FlatList). */
+  const initialRowRef = useRef<number | null>(null);
   useEffect(() => {
     if (loading || rows.length === 0 || didInitialScroll.current) return;
-    const target = Math.min(Math.max(requestedPage - 1, 0), Math.max(activeTotalPages - 1, 0));
+    const target = initialTarget;
     requestAnimationFrame(() => {
       // Latch only on SUCCESS. The chapter buttons replace the route without
       // unmounting, so this effect fires once while the old chapter is still the
@@ -549,9 +829,17 @@ export default function ChapterReader() {
       // is a no-op, and latching anyway meant the new chapter was never scrolled
       // to at all — the list kept its native offset across the data swap, so
       // "next chapter" from page 30 of 40 opened the next one near its end.
-      if (jumpToChapterPage(entryChapterId, target, false)) didInitialScroll.current = true;
+      if (jumpToChapterPage(entryChapterId, target, false)) {
+        didInitialScroll.current = true;
+        // Webtoon rows not measured yet are laid out at an estimate. Hold the
+        // landing on the target while the rows around it load and correct
+        // their heights; the reader's first touch, wheel or key releases it.
+        if (readingMode === 'scroll' && target > 0) {
+          pendingRestoreRef.current = { chapterId: entryChapterId, page: target, tries: 0, startedAt: Date.now() };
+        }
+      }
     });
-  }, [loading, requestedPage, rows.length, activeTotalPages, entryChapterId, jumpToChapterPage]);
+  }, [loading, initialTarget, rows.length, entryChapterId, jumpToChapterPage, readingMode]);
 
   // Load the series' chapter list so the reader knows what comes next. Falls
   // back to the offline manifest, which is what makes continuous reading work
@@ -576,6 +864,7 @@ export default function ChapterReader() {
   const orderedChaptersRef = useRef(orderedChapters);
   orderedChaptersRef.current = orderedChapters;
 
+  const residentKey = segments.map((segment) => segment.chapterId).join('|');
   // Place the resident segments within the series once the list arrives.
   //
   // The entry segment is built as soon as its pages load, which is before the
@@ -591,19 +880,33 @@ export default function ChapterReader() {
       let changed = false;
       const next = prev.map((segment) => {
         const at = orderedChapters.findIndex((c) => c.id === segment.chapterId);
-        if (at < 0 || at === segment.orderIndex) return segment;
-        changed = true;
+        if (at < 0) return segment;
         const chapter = orderedChapters[at];
+        // A route without a `chapter` param (a notification, a shared link,
+        // Continue from an older build) labels the chapter by its opaque id,
+        // "Chapter PwTgD1Gh"; the list's number reads better, and that label
+        // is what progress and Continue Reading store.
+        const placeholder = segment.chapterLabel === `Chapter ${segment.chapterId}`;
+        const label =
+          chapter.title || (placeholder && Number.isFinite(chapter.number) ? `Chapter ${chapter.number}` : segment.chapterLabel);
+        if (at === segment.orderIndex && label === segment.chapterLabel && Object.is(chapter.number, segment.chapterNumber)) {
+          return segment;
+        }
+        changed = true;
         return {
           ...segment,
           orderIndex: at,
           chapterNumber: chapter.number,
-          chapterLabel: chapter.title || segment.chapterLabel,
+          chapterLabel: label,
         };
       });
       return changed ? next.sort((a, b) => a.orderIndex - b.orderIndex) : prev;
     });
-  }, [orderedChapters]);
+    // Also when the resident chapters change, not only the list: with the
+    // chapter list served from cache and the page list from the network, the
+    // list now often arrives FIRST, and the entry chapter kept its
+    // placeholder position and label for the whole session.
+  }, [orderedChapters, residentKey]);
   /** Chapters currently being fetched, so proximity and onEndReached don't race. */
   const loadingNeighborRef = useRef<Set<string>>(new Set());
 
@@ -637,16 +940,17 @@ export default function ChapterReader() {
     loadingNeighborRef.current.add(next.id);
 
     try {
-      const { urls, origin } = await loadChapterPages({
-        contentId: mangaId,
-        chapterId: next.id,
-        source,
-      });
+      const [{ urls, origin, sizes }, remembered] = await Promise.all([
+        loadChapterPages({ contentId: mangaId, chapterId: next.id, source }),
+        getRememberedPageSizes(source, mangaId, next.id).catch(() => null),
+      ]);
       if (urls.length === 0) return;
-      // Warm the first few images so the boundary doesn't arrive as blank space.
-      urls.slice(0, 3).forEach((u) => {
-        void Image.prefetch(u).catch(() => undefined);
-      });
+      // Warm the first few images so the boundary doesn't arrive as blank
+      // space. Not under data saver: look-ahead reaches them one page early.
+      if (!dataSaverRef.current && origin === 'network') {
+        urls.slice(0, 3).forEach((u) => warmReaderImage(u));
+      }
+      seedPageSizes(next.id, urls.length, sizes, remembered);
       setSegments((prev) => {
         if (prev.some((s) => s.chapterId === next.id)) return prev;
         return [
@@ -666,7 +970,7 @@ export default function ChapterReader() {
     } finally {
       loadingNeighborRef.current.delete(next.id);
     }
-  }, [mangaId, source]);
+  }, [mangaId, source, seedPageSizes]);
 
   const ensureNextRef = useRef(ensureNextChapter);
   ensureNextRef.current = ensureNextChapter;
@@ -705,11 +1009,39 @@ export default function ChapterReader() {
     }
   }, []);
 
+  /** The list's viewport and content length along its scroll axis. */
+  const listMetricsRef = useRef({ view: 0, content: 0 });
+  /**
+   * Is the end card (the list footer) at least half on screen? That is the
+   * one reliable "read to the end" signal: a short last page is never the top
+   * visible row, so page numbers alone can miss it. Run on scroll, and on
+   * layout and content changes for a chapter short enough not to scroll.
+   */
+  const updateEndReached = useCallback(() => {
+    const { view, content } = listMetricsRef.current;
+    const footerLen = readingMode === 'page' ? view : END_CARD_HEIGHT;
+    const nowAtEnd = content > 0 && view > 0 && scrollOffsetRef.current + view >= content - footerLen / 2;
+    const last = segmentsRef.current[segmentsRef.current.length - 1]?.chapterId ?? null;
+    atEndRef.current = nowAtEnd;
+    setEndReachedFor((prev) => {
+      const next = nowAtEnd ? last : null;
+      return prev === next ? prev : next;
+    });
+  }, [readingMode]);
+
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const { x, y } = e.nativeEvent.contentOffset;
-      scrollOffsetRef.current = readingMode === 'page' ? x : y;
+      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      const paged = readingMode === 'page';
+      scrollOffsetRef.current = paged ? contentOffset.x : contentOffset.y;
       isScrollingRef.current = true;
+      if (contentSize && layoutMeasurement) {
+        listMetricsRef.current = {
+          view: paged ? layoutMeasurement.width : layoutMeasurement.height,
+          content: paged ? contentSize.width : contentSize.height,
+        };
+        updateEndReached();
+      }
       // Reading has genuinely resumed — dismiss the overlay. Gated on BOTH a
       // real user drag and a real distance: onScroll fires for every
       // programmatic scroll too (the seek itself, the initial restore, prepend
@@ -729,7 +1061,7 @@ export default function ChapterReader() {
       // a short gap with no scroll events as "at rest" too.
       idleTimerRef.current = setTimeout(settleScroll, 120);
     },
-    [readingMode, settleScroll],
+    [readingMode, settleScroll, updateEndReached],
   );
 
   useEffect(
@@ -762,11 +1094,10 @@ export default function ChapterReader() {
     loadingNeighborRef.current.add(prev.id);
 
     try {
-      const { urls, origin } = await loadChapterPages({
-        contentId: mangaId,
-        chapterId: prev.id,
-        source,
-      });
+      const [{ urls, origin, sizes }, remembered] = await Promise.all([
+        loadChapterPages({ contentId: mangaId, chapterId: prev.id, source }),
+        getRememberedPageSizes(source, mangaId, prev.id).catch(() => null),
+      ]);
       if (urls.length === 0) return;
 
       // Re-check at insert time, not just at request time: the fetch may have
@@ -781,6 +1112,7 @@ export default function ChapterReader() {
       const insertedRows = urls.length + (readingMode === 'scroll' ? 1 : 0); // +1 divider
 
       anchorPendingRef.current = true;
+      seedPageSizes(prev.id, urls.length, sizes, remembered);
       setSegments((prevSegments) => {
         if (prevSegments.some((s) => s.chapterId === prev.id)) return prevSegments;
         return [
@@ -803,7 +1135,7 @@ export default function ChapterReader() {
             if (readingMode === 'page') {
               // Uniform width, so the correction is exact.
               flatListRef.current?.scrollToOffset({
-                offset: offsetBefore + insertedRows * SCREEN_WIDTH,
+                offset: offsetBefore + insertedRows * winWRef.current,
                 animated: false,
               });
             } else if (Platform.OS !== 'ios' && anchorId) {
@@ -840,7 +1172,7 @@ export default function ChapterReader() {
     } finally {
       loadingNeighborRef.current.delete(prev.id);
     }
-  }, [mangaId, source, readingMode]);
+  }, [mangaId, source, readingMode, seedPageSizes]);
 
   const ensurePrevRef = useRef(ensurePrevChapter);
   ensurePrevRef.current = ensurePrevChapter;
@@ -901,8 +1233,12 @@ export default function ChapterReader() {
     if (anchorPendingRef.current) return;
 
     setActiveChapterId(row.chapterId);
-    // A divider carries no page of its own; the chapter change is the signal.
-    if (row.kind === 'page') setActivePageIndex(row.pageIndex);
+    // A divider is the top row only once the previous chapter's last page has
+    // scrolled away, so it means "the start of this chapter". Setting page 0
+    // here, rather than leaving the old chapter's index in place, keeps the
+    // pair consistent: chapter 13 with chapter 12's page 29 read as "past the
+    // end of 13", which would have marked 13 finished on arrival.
+    setActivePageIndex(row.kind === 'page' ? row.pageIndex : 0);
 
     if (!continuousRef.current) return;
 
@@ -950,6 +1286,36 @@ export default function ChapterReader() {
 
 
 
+  // Page counts of chapters whose list was fetched ahead of opening them, so
+  // an Up next row can say "Page 1 of 24" rather than guess.
+  const [prefetchedPageCounts, setPrefetchedPageCounts] = useState<Record<string, number>>({});
+  const lastSegmentId = segments.length > 0 ? segments[segments.length - 1].chapterId : '';
+  /**
+   * The chapter on screen has been read to its end: its last page is the top
+   * row, or the end card is up. Paired with activeSegment so a chapter id
+   * from one segment never meets a page index from another.
+   */
+  const activeFinished =
+    activeTotalPages > 0 &&
+    !!activeChapterId &&
+    activeSegment?.chapterId === activeChapterId &&
+    (activePageIndex === activeTotalPages - 1 || endReachedFor === activeChapterId);
+  /** What follows the chapter on screen: a chapter, null at the newest, undefined while unknown. */
+  const upNext = useMemo((): UpNextChapter | null | undefined => {
+    if (orderedChapters.length === 0 || !activeChapterId) return undefined;
+    const at = orderedChapters.findIndex((c) => c.id === activeChapterId);
+    if (at < 0) return undefined;
+    const next = orderedChapters[at + 1];
+    if (!next) return null;
+    const resident = segments.find((seg) => seg.chapterId === next.id);
+    return {
+      chapterId: next.id,
+      chapterLabel: next.title || `Chapter ${next.number}`,
+      chapterNumber: Number.isFinite(next.number) ? next.number : undefined,
+      totalPages: resident?.pages.length || prefetchedPageCounts[next.id] || next.pageCount || undefined,
+    };
+  }, [orderedChapters, activeChapterId, segments, prefetchedPageCounts]);
+
   useEffect(() => {
     if (!mangaId || !activeChapterId || activeTotalPages === 0) return;
     // Adult reading progress is never persisted (keeps it out of Continue
@@ -961,18 +1327,24 @@ export default function ChapterReader() {
     // new chapter, its page 1 is a genuine position and must be saved at once,
     // or backing out right after a boundary would resume at the old chapter.
     const stillOnEntryChapter = activeChapterId === entryChapterId;
-    if (stillOnEntryChapter && page < 2 && activeTotalPages > 3) return;
+    if (stillOnEntryChapter && page < 2 && activeTotalPages > 3 && !activeFinished) return;
     const t = setTimeout(() => {
+      // A finished chapter is saved as its successor ("Up next") or as
+      // caught up — never as 100%, which dropped the series from Continue
+      // Reading and sent the title page back to "Start reading" from
+      // chapter 0 (lib/reader-progress buildMangaProgressRecord).
       void setMangaReadProgress({
         mangaId,
         chapterId: activeChapterId,
-        title: mangaTitle,
+        title: progressTitle,
         cover: mangaCover,
         chapterLabel,
         page,
         totalPages: activeTotalPages,
         source: typeof source === 'string' ? source : undefined,
         chapterNumber: activeSegment?.chapterNumber,
+        finished: activeFinished,
+        next: upNext,
       });
     }, 400);
     return () => clearTimeout(t);
@@ -982,12 +1354,14 @@ export default function ChapterReader() {
     entryChapterId,
     activePageIndex,
     activeTotalPages,
-    mangaTitle,
+    progressTitle,
     mangaCover,
     chapterLabel,
     activeSegment?.chapterNumber,
     isAdult,
     source,
+    activeFinished,
+    upNext,
   ]);
 
   // Snapshot of what the unmount handler should save, refreshed every render.
@@ -1006,26 +1380,30 @@ export default function ChapterReader() {
         ? {
             mangaId,
             chapterId: activeChapterId,
-            title: mangaTitle,
+            title: progressTitle,
             cover: mangaCover,
             chapterLabel,
             page: activePageIndex + 1,
             totalPages: activeTotalPages,
             source: typeof source === 'string' ? source : undefined,
             chapterNumber: activeSegment?.chapterNumber,
+            finished: activeFinished,
+            next: upNext,
           }
         : null;
   });
 
   useEffect(() => {
     return () => {
+      clearReaderLookAhead();
       // Never persist 18+ progress or touch the shared reading-activity record
       // (clearing it here would wipe a legitimate manga/comic session).
       if (suppressProgressRef.current) return;
+      flushMeasured();
       if (progressRef.current) void setMangaReadProgress(progressRef.current);
       endReadingActivity();
     };
-  }, []);
+  }, [flushMeasured]);
 
   // ── Reading gamification: one event per chapter actually read. ──
   //
@@ -1034,6 +1412,39 @@ export default function ChapterReader() {
   // the reader for one — losing four chapters of XP and streak progress.
   // Everything is ref-held so the unmount handler can see it.
   type ChapterStat = { startedAt: number; maxPage: number; total: number };
+  /**
+   * Per-chapter read marks (lib/chapter-read-state), for the series page's
+   * read/unread state. Only a chapter read to its end is marked: reading
+   * chapter 40 says nothing about 1–39, and a slider scrub to the last page is
+   * a skip (callers check jumpSettling, as the XP credit does). Never for 18+:
+   * that module ignores it anyway, but the rule is kept here too.
+   */
+  const readMarkedRef = useRef<Set<string>>(new Set());
+  /**
+   * A jump (slider, Home/End, a chapter button, Ask) is still landing: what
+   * is on screen was arrived at, not read to. seekingRef alone covers only
+   * its first SEEK_GUARD_MS, but a webtoon jump keeps re-landing (pending
+   * restore, flagged `jump`) until the reader touches the list, and every
+   * render in that time used to count the landing page as read — End, then
+   * any image load a second later, marked the chapter read and credited it
+   * as completed.
+   */
+  function jumpSettling(): boolean {
+    return seekingRef.current || pendingRestoreRef.current?.jump === true;
+  }
+  /**
+   * `chapterId#pageIndex` where the last jump came to rest. Being there does
+   * not count toward the chapter; moving on from it (reading) does.
+   */
+  const jumpLandingRef = useRef<string | null>(null);
+  function markFinishedRead(chapterId: string) {
+    if (!chapterId || isAdultRef.current || !mangaIdRef.current) return;
+    if (readMarkedRef.current.has(chapterId)) return;
+    readMarkedRef.current.add(chapterId);
+    void markChapterRead(sourceRef.current, mangaIdRef.current, chapterId).catch(() => {
+      readMarkedRef.current.delete(chapterId);
+    });
+  }
   const chapterStatsRef = useRef<Map<string, ChapterStat>>(new Map());
   const emittedRef = useRef<Set<string>>(new Set());
   const isAdultRef = useRef(isAdult);
@@ -1049,21 +1460,33 @@ export default function ChapterReader() {
     // progress = 1 and reports `completed`, a full XP and streak credit for a
     // two-second scrub. Guarding onEndReached alone does nothing, because
     // onEndReached is not the path this takes.
-    if (seekingRef.current) return;
+    //
+    // Nor is the guard's first second enough: once it lapsed, the next render
+    // (an image loading near the landing) counted the landing page anyway.
+    // So the page a jump lands on stays uncounted until the reader moves off
+    // it; reading on from there counts as usual.
+    const here = `${activeChapterId}#${activePageIndex}`;
+    if (jumpSettling()) jumpLandingRef.current = here;
+    else if (jumpLandingRef.current !== null && jumpLandingRef.current !== here) jumpLandingRef.current = null;
+    const counts = jumpLandingRef.current === null;
     const stats = chapterStatsRef.current;
     const existing = stats.get(activeChapterId);
     if (!existing) {
+      // Started now even when arrived at by a jump (dwell time counts from
+      // the chapter opening), but nothing past page 1 counts until read.
       stats.set(activeChapterId, {
         startedAt: Date.now(),
-        maxPage: activePageIndex + 1,
+        maxPage: counts ? activePageIndex + 1 : 1,
         total: activeTotalPages,
       });
       return;
     }
+    if (!counts) return;
     // Furthest page reached, not the current one — scrolling back up must not
     // reduce how much of the chapter counts as read.
     existing.maxPage = Math.max(existing.maxPage, activePageIndex + 1);
     existing.total = activeTotalPages;
+    if (existing.maxPage >= existing.total) markFinishedRead(activeChapterId);
   });
 
   /**
@@ -1077,6 +1500,7 @@ export default function ChapterReader() {
   const creditChapterComplete = useCallback((chapterId: string) => {
     const stat = chapterStatsRef.current.get(chapterId);
     if (stat && stat.total > 0) stat.maxPage = stat.total;
+    markFinishedRead(chapterId);
   }, []);
 
   const flushGamification = useCallback((chapterId: string) => {
@@ -1097,6 +1521,22 @@ export default function ChapterReader() {
     });
   }, []);
 
+  // The end card coming into view is the end of the last chapter in the
+  // session, read through (a scrub there is a skip: jumpSettling).
+  useEffect(() => {
+    if (!endReachedFor || jumpSettling()) return;
+    creditChapterComplete(endReachedFor);
+  }, [endReachedFor, creditChapterComplete]);
+
+  // A chapter appended after the end card was reached pushes the card off
+  // screen without any scroll event; forget the stale "at the end".
+  useEffect(() => {
+    if (endReachedFor && endReachedFor !== lastSegmentId) {
+      atEndRef.current = false;
+      setEndReachedFor(null);
+    }
+  }, [endReachedFor, lastSegmentId]);
+
   // Flush the chapter just left as soon as the reader crosses a boundary, so a
   // long session reports as it goes rather than all at once on exit.
   const prevActiveChapterRef = useRef('');
@@ -1107,7 +1547,7 @@ export default function ChapterReader() {
       // the viewable rows happened to report.
       const from = segmentsRef.current.find((s) => s.chapterId === previous);
       const to = segmentsRef.current.find((s) => s.chapterId === activeChapterId);
-      if (from && to && to.orderIndex > from.orderIndex && !seekingRef.current) {
+      if (from && to && to.orderIndex > from.orderIndex && !jumpSettling()) {
         creditChapterComplete(previous);
       }
       flushGamification(previous);
@@ -1137,6 +1577,17 @@ export default function ChapterReader() {
     chapterId: string;
     page: number;
     tries: number;
+    /** When it was set; a restore older than RESTORE_MAX_MS gives up. */
+    startedAt?: number;
+    /** Set by a jump (slider, Home/End, a chapter button): see jumpSettling. */
+    jump?: boolean;
+    /**
+     * A re-layout (resize, rotation, width or fit change) lands on this row
+     * and this far into it, so the reader stays mid-page instead of being
+     * thrown back to the top of a strip that can be many screens tall.
+     */
+    rowId?: string;
+    fraction?: number;
   } | null>(null);
 
   const changeReadingMode = useCallback(
@@ -1174,13 +1625,22 @@ export default function ChapterReader() {
     if (!pending) return;
     pending.tries += 1;
     // Bounded so a chapter that never settles can't retry forever. Each attempt
-    // is just a scroll, so over-trying costs nothing and the last one wins.
-    if (pending.tries > 6) {
+    // is just a scroll to an offset getItemLayout already knows, so over-trying
+    // costs nothing and the last one wins. Images around the target report
+    // their sizes one by one, so the bound is by time as well as count.
+    if (pending.tries > 40 || (pending.startedAt && Date.now() - pending.startedAt > RESTORE_MAX_MS)) {
       pendingRestoreRef.current = null;
       return;
     }
+    if (pending.rowId) {
+      const index = rowsRef.current.findIndex((row) => row.id === pending.rowId);
+      if (index >= 0) {
+        jumpToRow(index, false, pending.fraction ?? 0);
+        return;
+      }
+    }
     jumpToChapterPage(pending.chapterId, pending.page, false);
-  }, [jumpToChapterPage]);
+  }, [jumpToChapterPage, jumpToRow]);
 
   const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current) {
@@ -1310,36 +1770,150 @@ export default function ChapterReader() {
     });
   }, [clearHideTimer, router, mangaId, source]);
 
+  // ── Page geometry ──────────────────────────────────────────────────────
+  //
+  // Webtoon mode: every row's height is known up front — measured, stated by
+  // the source, remembered from an earlier visit, or the chapter's median —
+  // so FlatList gets a real getItemLayout. That is what lets a resume (or a
+  // slider seek, or Home/End) jump straight to page 60: before, there was no
+  // layout, scrollToIndex landed on an estimate and re-landed on every
+  // measure, mounting and downloading each page on the way (live: 7.5 s and
+  // 5.5 MB to reach page 60, settling on 59).
+  //
+  // Pages sit in a centred column capped at the reader's max width, so a
+  // 690 px strip is no longer blown up to 1440+ px on a desktop window.
+  const isPaged = readingMode === 'page';
+  const columnW = columnWidth(winW, prefs.maxWidth, READER_MAX_WIDTH_MAX);
+  const pageGap = !isPaged && prefs.pageGap ? PAGE_GAP_PX : 0;
+  const headerLength = hasPrevChapter ? LIST_HEADER_HEIGHT : 0;
+  const ratioMedians = useMemo(() => {
+    const byChapter: Record<string, number | null> = {};
+    const all: number[] = [];
+    for (const segment of segments) {
+      const known = segment.pages.map((pg) => pageSizes[pg.id]?.ratio).filter(isUsableRatio);
+      byChapter[segment.chapterId] = medianRatio(known);
+      all.push(...known);
+    }
+    return { byChapter, session: medianRatio(all) };
+  }, [segments, pageSizes]);
+  const webtoonGeometry = useMemo(() => {
+    if (isPaged) return null;
+    const boxes = rows.map((row) =>
+      row.kind === 'page'
+        ? webtoonPageBox({
+            ratio: estimatedRatio(pageSizes[row.id]?.ratio, ratioMedians.byChapter[row.chapterId], ratioMedians.session),
+            naturalWidth: pageSizes[row.id]?.width,
+            fit: prefs.pageFit,
+            columnW,
+            windowW: winW,
+            windowH: winH,
+          })
+        : null,
+    );
+    const layout = buildListLayout(
+      boxes.map((box) => (box ? box.height + pageGap : MARKER_HEIGHT)),
+      headerLength,
+    );
+    return { boxes, layout };
+  }, [isPaged, rows, pageSizes, ratioMedians, prefs.pageFit, columnW, winW, winH, pageGap, headerLength]);
+  const getItemLayout = useMemo(() => {
+    if (!webtoonGeometry) {
+      // Paged: every row is exactly one window wide.
+      return (_: unknown, index: number) => ({ length: winW, offset: winW * index, index });
+    }
+    const { layout } = webtoonGeometry;
+    return (_: unknown, index: number) => ({
+      length: layout.lengths[index] ?? 0,
+      offset: layout.offsets[index] ?? layout.total,
+      index,
+    });
+  }, [webtoonGeometry, winW]);
+  rowSpanRef.current = (index: number) => getItemLayout(null, index);
+
+  /**
+   * Pages that load eagerly before viewability has reported anything: the
+   * page the chapter opens on and the one after. Otherwise the first image
+   * waited behind `loading="lazy"` and low priority until the first
+   * viewability pass (layout plus minimumViewTime) promoted it.
+   */
+  const eagerPageIds = useMemo(() => {
+    if (visiblePageIds.size > 0) return visiblePageIds;
+    const ids = new Set<string>();
+    const entry = segments.find((seg) => seg.chapterId === entryChapterId);
+    [initialTarget, initialTarget + 1].forEach((i) => {
+      const pg = entry?.pages[i];
+      if (pg) ids.add(pg.id);
+    });
+    return ids;
+  }, [visiblePageIds, segments, entryChapterId, initialTarget]);
+
+  const background = BACKGROUNDS[prefs.background];
+  const lightBackground = prefs.background === 'white';
+
   const renderPage = useCallback(
-    ({ item }: { item: ReaderRow }) => {
+    ({ item, index }: { item: ReaderRow; index: number }) => {
       if (item.kind === 'marker') {
+        // Fixed height (MARKER_HEIGHT): the layout above counts on it.
         return (
-          <View style={styles.chapterDivider}>
-            <View style={styles.chapterDividerRule} />
-            <Text style={styles.chapterDividerLabel}>{item.label}</Text>
-            <View style={styles.chapterDividerRule} />
+          <View style={[styles.chapterDivider, { width: winW }, lightBackground && styles.chapterDividerLight]}>
+            <View style={[styles.chapterDividerRule, lightBackground && styles.chapterDividerRuleLight]} />
+            <View style={styles.chapterDividerText}>
+              <Text style={[styles.chapterDividerKicker, lightBackground && styles.chapterDividerKickerLight]}>NEXT</Text>
+              <Text style={[styles.chapterDividerLabel, lightBackground && styles.chapterDividerLabelLight]} numberOfLines={1}>
+                {item.label}
+              </Text>
+            </View>
+            <View style={[styles.chapterDividerRule, lightBackground && styles.chapterDividerRuleLight]} />
           </View>
         );
       }
-      const height = readingMode === 'page'
-        ? SCREEN_HEIGHT
-        : SCREEN_WIDTH * (pageRatios[item.id] ?? DEFAULT_PAGE_RATIO);
+      const known = pageSizes[item.id];
+      let width = winW;
+      let height = winH;
+      let rowHeight = winH;
+      if (webtoonGeometry) {
+        const box = webtoonGeometry.boxes[index] ?? { width: columnW, height: columnW * 1.5 };
+        width = box.width;
+        height = box.height;
+        rowHeight = box.height + pageGap;
+      } else if (prefs.pageFit === 'original' && known?.width) {
+        // Paged 'original': the image's own pixels, scaled down only to fit.
+        const scale = Math.min(1, winW / known.width, winH / (known.width * known.ratio));
+        width = Math.round(known.width * scale);
+        height = Math.round(known.width * known.ratio * scale);
+      }
       return (
-        <ReaderPageImage
-          uri={item.url}
-          pageId={item.id}
-          pageNumber={item.pageIndex + 1}
-          width={SCREEN_WIDTH}
-          height={height}
-          viewportHeight={SCREEN_HEIGHT}
-          mirrored={isRtlPageMode}
-          isVisible={visiblePageIds.has(item.id)}
-          onLoad={(width, height) => handlePageLoad(item.id, width, height)}
-          onBack={goBack}
-        />
+        <View style={[styles.pageRow, { width: winW, height: rowHeight }, isPaged && styles.pageRowPaged]}>
+          <ReaderPageImage
+            uri={item.url}
+            pageId={item.id}
+            pageNumber={item.pageIndex + 1}
+            width={width}
+            height={height}
+            viewportHeight={winH}
+            mirrored={isRtlPageMode}
+            isVisible={eagerPageIds.has(item.id)}
+            onLoad={(w, h) => handlePageLoad(item, w, h)}
+            onBack={goBack}
+          />
+        </View>
       );
     },
-    [readingMode, isRtlPageMode, pageRatios, visiblePageIds, handlePageLoad, goBack],
+    [
+      winW,
+      winH,
+      columnW,
+      pageGap,
+      isPaged,
+      prefs.pageFit,
+      lightBackground,
+      webtoonGeometry,
+      pageSizes,
+      isRtlPageMode,
+      eagerPageIds,
+      handlePageLoad,
+      goBack,
+    ],
   );
 
   /**
@@ -1358,18 +1932,21 @@ export default function ChapterReader() {
    * timing window to reimplement.
    */
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    if (Platform.OS !== 'web' || typeof document === 'undefined' || !focused) return;
     const onDoubleClick = (e: MouseEvent) => {
       // A double click on the overlay's own controls is aimed at them, not at
       // dismissing the thing they live in.
       if (uiVisibleRef.current && e.target instanceof Node && overlayHostRef.current?.contains(e.target)) {
         return;
       }
+      // In paged mode the outer thirds turn pages on a single click; two quick
+      // page turns are not a request for the overlay.
+      if (pagedTapZone(e.clientX) !== 'center') return;
       toggleUI();
     };
     document.addEventListener('dblclick', onDoubleClick);
     return () => document.removeEventListener('dblclick', onDoubleClick);
-  }, [toggleUI]);
+  }, [toggleUI, focused]);
 
   /**
    * The overlay toggles on a DOUBLE tap, not a single one.
@@ -1383,6 +1960,17 @@ export default function ChapterReader() {
    * settling a fling with a finger down can't count as the first tap of a pair.
    */
   const lastTapRef = useRef(0);
+  /** Auto-scroll waits until this time (a touch, wheel or key pushes it on). */
+  const autoScrollPausedUntilRef = useRef(0);
+  function pauseAutoScroll() {
+    autoScrollPausedUntilRef.current = Date.now() + AUTO_SCROLL_RESUME_MS;
+  }
+  /** What a tap at screen x does right now: a page turn in paged mode, else nothing. */
+  function pagedTapZone(x: number) {
+    const state = inputStateRef.current;
+    if (!state.paged) return 'center' as const;
+    return tapZoneAction(x, state.width, state.rtl, state.tapZones);
+  }
   const handleReaderTap = useCallback(() => {
     if (isScrollingRef.current) return;
     const now = Date.now();
@@ -1424,17 +2012,18 @@ export default function ChapterReader() {
       // so the image cache was warm by the time you swiped. Pages render with no
       // transition, so an unwarmed page paints nothing at all until fetch and
       // decode finish; without this every paged seek lands on black.
-      for (let k = pageIndex - 1; k <= pageIndex + 2; k += 1) {
+      // Data saver warms only the destination; look-ahead takes it from there.
+      const span = dataSaverRef.current ? [pageIndex] : [pageIndex - 1, pageIndex, pageIndex + 1, pageIndex + 2];
+      for (const k of span) {
         const pg = segment.pages[k];
-        if (pg) void Image.prefetch(pg.url).catch(() => undefined);
+        if (pg && segment.origin === 'network') warmReaderImage(pg.url);
       }
       if (readingMode === 'scroll') {
-        // Webtoon has no getItemLayout, so scrollToIndex past the measured
-        // frontier bails to onScrollToIndexFailed and lands on an estimate;
-        // rows then re-measure as images load and replace the default ratio with
-        // real 3-15 ones. Re-land from every layout pass instead — the exact
-        // mechanism the mode switch already uses. A user drag cancels it.
-        pendingRestoreRef.current = { chapterId: segment.chapterId, page: pageIndex, tries: 0 };
+        // getItemLayout makes the jump itself exact, but rows near the target
+        // that are still estimates correct their heights as they load. Re-land
+        // from every layout pass until they settle — the mechanism the mode
+        // switch uses. A user drag, wheel or key cancels it.
+        pendingRestoreRef.current = { chapterId: segment.chapterId, page: pageIndex, tries: 0, startedAt: Date.now(), jump: true };
       } else {
         pendingRestoreRef.current = null;
       }
@@ -1443,22 +2032,26 @@ export default function ChapterReader() {
     [activeSegment, markSeeking, readingMode, jumpToChapterPage],
   );
 
-  /** Warm where the finger pauses, not every page it sweeps over. */
+  /**
+   * Warm where the finger pauses, not every page it sweeps over. Both modes
+   * now: a webtoon seek lands directly on its page (getItemLayout), so the
+   * page is no longer streamed in on the way there.
+   */
   const previewSeek = useCallback(
     (pageIndex: number) => {
-      if (readingMode !== 'page') return; // webtoon rows stream in on scroll anyway
       const segment = activeSegment;
-      if (!segment) return;
+      if (!segment || segment.origin !== 'network') return;
       if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
       previewTimerRef.current = setTimeout(() => {
         previewTimerRef.current = null;
-        [pageIndex, pageIndex + 1, pageIndex - 1].forEach((k) => {
+        const span = dataSaverRef.current ? [pageIndex] : [pageIndex, pageIndex + 1, pageIndex - 1];
+        span.forEach((k) => {
           const pg = segment.pages[k];
-          if (pg) void Image.prefetch(pg.url).catch(() => undefined);
+          if (pg) warmReaderImage(pg.url);
         });
       }, 140);
     },
-    [activeSegment, readingMode],
+    [activeSegment],
   );
 
   /** The chapters either side of the one on screen, from the normalised list. */
@@ -1467,6 +2060,39 @@ export default function ChapterReader() {
     if (at < 0) return { prev: null, next: null };
     return { prev: orderedChapters[at - 1] ?? null, next: orderedChapters[at + 1] ?? null };
   }, [orderedChapters, activeChapterId]);
+
+  /**
+   * Near the end of a chapter, fetch the next one's page list and warm its
+   * first page, so "Next chapter" opens from memory and the HTTP cache rather
+   * than waiting on a page-list request (~600 ms plus preflight live) and
+   * then a cold first image.
+   *
+   * Only with continuous reading off: with it on, ensureNextChapter already
+   * loads the next chapter at this point (through the same cached
+   * loadChapterPages). Asking on every page turn past the threshold is cheap:
+   * prefetchChapterPages and warmReaderImage both remember what they did.
+   */
+  const nextChapterId = adjacentChapters.next?.id ?? null;
+  const nearChapterEnd =
+    activeTotalPages > 0 && (activePageIndex + 1) / activeTotalPages >= NEXT_CHAPTER_PREFETCH_AT;
+  useEffect(() => {
+    // Data saver: nothing is fetched for a chapter the reader may not open.
+    if (continuous || dataSaver || !nearChapterEnd || !nextChapterId || !mangaId) return;
+    let cancelled = false;
+    void prefetchChapterPages({ contentId: mangaId, chapterId: nextChapterId, source })
+      .then((urls) => {
+        if (cancelled || !urls?.length) return;
+        // Lets an Up next row (saved at the end of this chapter) know the
+        // next chapter's length.
+        setPrefetchedPageCounts((prev) =>
+          prev[nextChapterId] === urls.length ? prev : { ...prev, [nextChapterId]: urls.length },
+        );
+        warmReaderImage(urls[0]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [continuous, dataSaver, nearChapterEnd, nextChapterId, mangaId, source]);
 
   /**
    * What Sakura is looking at.
@@ -1555,17 +2181,16 @@ export default function ChapterReader() {
     [orderedChapters, mangaId, title, cover, source, markSeeking, router],
   );
 
-  const goToAdjacentChapter = useCallback(
-    (dir: -1 | 1) => {
-      const target = dir === 1 ? adjacentChapters.next : adjacentChapters.prev;
-      if (!target) return;
+  /** Open a chapter of this series: a scroll when it is resident, else a route swap. */
+  const openChapter = useCallback(
+    (target: MangaChapter) => {
       markSeeking(); // a button press is a skip, never a completed read
       scheduleHide();
       // Continuous reading has usually already attached the neighbour, in which
       // case this is a scroll rather than a load.
       if (segmentsRef.current.some((s) => s.chapterId === target.id)) {
         if (readingMode === 'scroll') {
-          pendingRestoreRef.current = { chapterId: target.id, page: 0, tries: 0 };
+          pendingRestoreRef.current = { chapterId: target.id, page: 0, tries: 0, startedAt: Date.now(), jump: true };
         }
         jumpToChapterPage(target.id, 0, false);
         return;
@@ -1584,18 +2209,15 @@ export default function ChapterReader() {
         },
       });
     },
-    [
-      adjacentChapters,
-      jumpToChapterPage,
-      mangaId,
-      markSeeking,
-      readingMode,
-      router,
-      scheduleHide,
-      title,
-      cover,
-      source,
-    ],
+    [jumpToChapterPage, mangaId, markSeeking, readingMode, router, scheduleHide, title, cover, source],
+  );
+
+  const goToAdjacentChapter = useCallback(
+    (dir: -1 | 1) => {
+      const target = dir === 1 ? adjacentChapters.next : adjacentChapters.prev;
+      if (target) openChapter(target);
+    },
+    [adjacentChapters, openChapter],
   );
 
   // Hoisted out of the JSX so React.memo on the bar can actually bite.
@@ -1612,15 +2234,28 @@ export default function ChapterReader() {
     return continuous ? 'Webtoon (continuous)' : 'Webtoon';
   }, [readingMode, readDirection, continuous]);
 
-  // The strip was also an accidental whole-chapter prefetch. Replace it with a
-  // bounded, forward-looking one. Skipped while seeking so it doesn't compete
-  // with seekToPage's own target warm.
+  /**
+   * Look-ahead: keep the next few pages downloading, in both modes, spilling
+   * into the next resident chapter. Webtoon mode had none and relied on lazy
+   * <img> loading, so a fast reader met "Loading page N…" on about one
+   * screen in ten. The web implementation cancels pages that fall out of the
+   * window (a jump, a chapter change). Data saver keeps one page ahead.
+   * Downloaded chapters read from disk and need none.
+   */
   useEffect(() => {
-    if (readingMode !== 'page' || !activeSegment || seekingRef.current) return;
-    activeSegment.pages.slice(activePageIndex + 1, activePageIndex + 4).forEach((pg) => {
-      void Image.prefetch(pg.url).catch(() => undefined);
-    });
-  }, [activeSegment, activePageIndex, readingMode]);
+    if (!focused || loading) {
+      clearReaderLookAhead();
+      return;
+    }
+    const current = rowIndexFor(bounds, activeChapterId, activePageIndex);
+    if (current < 0) return;
+    const count = lookAheadCount(readingMode, dataSaver);
+    const offline = new Set(segments.filter((seg) => seg.origin === 'offline').map((seg) => seg.chapterId));
+    const ahead = rows
+      .slice(current + 1, current + 1 + count * 2)
+      .filter((row) => row.kind === 'page' && !offline.has(row.chapterId));
+    setReaderLookAhead(lookAheadUrls(ahead, -1, count));
+  }, [focused, loading, bounds, rows, segments, activeChapterId, activePageIndex, readingMode, dataSaver]);
 
   /**
    * Hold the overlay open while the settings sheet is up.
@@ -1682,11 +2317,344 @@ export default function ChapterReader() {
     }, [scheduleHide, clearHideTimer]),
   );
 
+  // ── Input: tap zones, keyboard, auto-scroll ───────────────────────────
+
+  /** Read by event handlers registered once; refreshed every render. */
+  const inputStateRef = useRef({
+    paged: false,
+    rtl: false,
+    tapZones: 'auto' as ReaderPrefs['tapZones'],
+    width: 0,
+    sheetOpen: false,
+  });
+  inputStateRef.current = {
+    paged: isPaged,
+    rtl: isRtlPageMode,
+    tapZones: prefs.tapZones,
+    width: winW,
+    sheetOpen: settingsOpen || askOpen,
+  };
+
+  const lastSegment = segments.length > 0 ? segments[segments.length - 1] : null;
+  /** The chapter after the last one in the session, for the end card. */
+  const endNext = useMemo((): MangaChapter | null | undefined => {
+    if (!lastSegment || orderedChapters.length === 0) return undefined;
+    const at = orderedChapters.findIndex((c) => c.id === lastSegment.chapterId);
+    if (at < 0) return undefined;
+    return orderedChapters[at + 1] ?? null;
+  }, [orderedChapters, lastSegment]);
+
+  /**
+   * One page forward or back in paged mode, for tap zones and keys. Past the
+   * last page comes the end card; past the end card, the next chapter.
+   */
+  const turnPage = useCallback(
+    (dir: 1 | -1) => {
+      if (readingMode !== 'page') return;
+      pendingRestoreRef.current = null;
+      const all = rowsRef.current;
+      if (atEndRef.current) {
+        if (dir === 1) {
+          if (endNext) openChapter(endNext);
+        } else if (all.length > 0) {
+          const last = all[all.length - 1];
+          if (last.kind === 'page') jumpToChapterPage(last.chapterId, last.pageIndex, true);
+        }
+        return;
+      }
+      const current = rowIndexFor(boundsRef.current, activeChapterId, activePageIndex);
+      if (current < 0) return;
+      const target = current + dir;
+      if (target >= all.length) {
+        flatListRef.current?.scrollToOffset({ offset: all.length * winW, animated: true });
+        return;
+      }
+      const row = all[target];
+      if (!row || row.kind !== 'page') return;
+      scheduleHide();
+      jumpToChapterPage(row.chapterId, row.pageIndex, true);
+    },
+    [readingMode, endNext, openChapter, jumpToChapterPage, activeChapterId, activePageIndex, winW, scheduleHide],
+  );
+
+  /** Webtoon: scroll by a share of the screen. */
+  const scrollByScreens = useCallback(
+    (screens: number) => {
+      const offset = Math.max(0, scrollOffsetRef.current + screens * winH);
+      flatListRef.current?.scrollToOffset({ offset, animated: true });
+    },
+    [winH],
+  );
+
+  const runKeyAction = (action: NonNullable<ReturnType<typeof readerKeyAction>>) => {
+    switch (action) {
+      case 'line-down':
+        return scrollByScreens(0.25);
+      case 'line-up':
+        return scrollByScreens(-0.25);
+      case 'screen-down':
+        return scrollByScreens(0.85);
+      case 'screen-up':
+        return scrollByScreens(-0.85);
+      case 'next-page':
+        return turnPage(1);
+      case 'prev-page':
+        return turnPage(-1);
+      case 'next-chapter':
+        // At the end card the active chapter is the last one, so this is the
+        // card's own "Read next chapter".
+        return goToAdjacentChapter(1);
+      case 'prev-chapter':
+        return goToAdjacentChapter(-1);
+      case 'first-page':
+      case 'last-page': {
+        const segment = activeSegment;
+        if (!segment || segment.pages.length === 0) return;
+        const page = action === 'first-page' ? 0 : segment.pages.length - 1;
+        markSeeking(); // a jump, not reading
+        if (readingMode === 'scroll') {
+          pendingRestoreRef.current = { chapterId: segment.chapterId, page, tries: 0, startedAt: Date.now(), jump: true };
+        }
+        jumpToChapterPage(segment.chapterId, page, false);
+        return;
+      }
+      case 'fullscreen':
+        return toggleFullscreen();
+      case 'escape':
+        if (uiVisibleRef.current) hideUI();
+        return;
+    }
+  };
+  const runKeyActionRef = useRef(runKeyAction);
+  runKeyActionRef.current = runKeyAction;
+  const turnPageRef = useRef(turnPage);
+  turnPageRef.current = turnPage;
+
+  /**
+   * Desktop keyboard (readerKeyAction has the map). A document listener, as
+   * with dblclick: the RN-web list never holds focus, so before this Space,
+   * the arrows and PageDown did nothing at all. Inactive while another
+   * screen is in front, while a sheet is open, and while typing.
+   */
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined' || !focused) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('input,textarea,select,[contenteditable="true"],[role="dialog"]')) return;
+      if (inputStateRef.current.sheetOpen) return;
+      const state = inputStateRef.current;
+      const action = readerKeyAction(e, state.paged ? 'page' : 'scroll', state.rtl);
+      if (!action) return;
+      e.preventDefault();
+      pendingRestoreRef.current = null;
+      pauseAutoScroll();
+      runKeyActionRef.current(action);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [focused]);
+
+  /**
+   * Web: click/tap zones in paged mode, and any direct interaction with the
+   * list (wheel, touch, a press) ends a pending restore and pauses
+   * auto-scroll. RN-web never fires onScrollBeginDrag, which is what does
+   * this on native.
+   */
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined' || !focused) return;
+    const listNode = () =>
+      (flatListRef.current as unknown as { getScrollableNode?: () => unknown } | null)?.getScrollableNode?.() as
+        | HTMLElement
+        | null
+        | undefined;
+    const inList = (target: EventTarget | null) => {
+      const node = listNode();
+      return !!node && target instanceof Node && node.contains(target);
+    };
+    const onInteract = (e: Event) => {
+      if (!inList(e.target)) return;
+      pendingRestoreRef.current = null;
+      pauseAutoScroll();
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!inputStateRef.current.paged || !inList(e.target)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[role="button"],button,a,input')) return;
+      const zone = pagedTapZone(e.clientX);
+      if (zone !== 'center') turnPageRef.current(zone === 'next' ? 1 : -1);
+    };
+    document.addEventListener('wheel', onInteract, { passive: true });
+    document.addEventListener('touchstart', onInteract, { passive: true });
+    document.addEventListener('mousedown', onInteract);
+    document.addEventListener('click', onClick);
+    return () => {
+      document.removeEventListener('wheel', onInteract);
+      document.removeEventListener('touchstart', onInteract);
+      document.removeEventListener('mousedown', onInteract);
+      document.removeEventListener('click', onClick);
+    };
+  }, [focused]);
+
+  /** Native: a short, still touch is a tap; in paged mode its third decides. */
+  const touchStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const onListTouchStart = useCallback((e: GestureResponderEvent) => {
+    const { pageX, pageY } = e.nativeEvent;
+    touchStartRef.current = { x: pageX, y: pageY, at: Date.now() };
+    pauseAutoScroll();
+  }, []);
+  const onListTouchEnd = useCallback(
+    (e: GestureResponderEvent) => {
+      const start = touchStartRef.current;
+      touchStartRef.current = null;
+      const { pageX, pageY } = e.nativeEvent;
+      const still =
+        !!start &&
+        Math.abs(pageX - start.x) < TAP_SLOP_PX &&
+        Math.abs(pageY - start.y) < TAP_SLOP_PX &&
+        Date.now() - start.at < TAP_MAX_MS;
+      if (still && !isScrollingRef.current) {
+        const zone = pagedTapZone(pageX);
+        if (zone !== 'center') {
+          // Not counted toward the overlay's double tap.
+          lastTapRef.current = 0;
+          turnPage(zone === 'next' ? 1 : -1);
+          return;
+        }
+      }
+      handleReaderTap();
+    },
+    [handleReaderTap, turnPage],
+  );
+
+  // Auto-scroll (webtoon). A requestAnimationFrame loop that owns a float
+  // position: scrollTop rounds to whole pixels, and adding 0.7 px a frame to
+  // a rounded value at the slow speeds would never move. Any touch, wheel or
+  // key pauses it for AUTO_SCROLL_RESUME_MS; it stops at the end card, and
+  // flows on through chapters continuous reading attaches.
+  const [autoScrolling, setAutoScrolling] = useState(false);
+  useEffect(() => {
+    if (readingMode !== 'scroll') setAutoScrolling(false);
+  }, [readingMode]);
+  useEffect(() => {
+    if (!autoScrolling || readingMode !== 'scroll' || !focused || settingsOpen || askOpen) return;
+    const speed = autoScrollPxPerSecond(prefs.autoScrollSpeed);
+    pendingRestoreRef.current = null;
+    let raf = 0;
+    let last = Date.now();
+    let position = scrollOffsetRef.current;
+    const frame = () => {
+      raf = requestAnimationFrame(frame);
+      const now = Date.now();
+      const dt = Math.min(100, now - last);
+      last = now;
+      if (now < autoScrollPausedUntilRef.current) {
+        position = scrollOffsetRef.current;
+        return;
+      }
+      if (atEndRef.current) {
+        setAutoScrolling(false);
+        return;
+      }
+      // Moved by something else (a seek, a chapter jump): continue from there.
+      if (Math.abs(scrollOffsetRef.current - position) > 64) position = scrollOffsetRef.current;
+      position += (speed * dt) / 1000;
+      flatListRef.current?.scrollToOffset({ offset: position, animated: false });
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [autoScrolling, readingMode, focused, settingsOpen, askOpen, prefs.autoScrollSpeed]);
+  const toggleAutoScroll = useCallback(() => {
+    autoScrollPausedUntilRef.current = 0;
+    setAutoScrolling((on) => !on);
+    scheduleHide();
+  }, [scheduleHide]);
+
+  // Keep the screen on while reading (Wake Lock on web, expo-keep-awake on
+  // native), only while this screen is in front.
+  useReaderKeepAwake(focused && prefs.keepAwake && !loading && rows.length > 0);
+
+  // Resizing, rotating or changing the width or fit re-lays every row out;
+  // keep the reader where they were rather than wherever that offset now
+  // points.
+  const activeChapterIdRef = useRef(activeChapterId);
+  activeChapterIdRef.current = activeChapterId;
+  const activePageIndexRef = useRef(activePageIndex);
+  activePageIndexRef.current = activePageIndex;
+  // Only what actually moves rows. The window height is in it only under Fit
+  // height: on the web the reader's height follows the visual viewport, which
+  // shrinks whenever the on-screen keyboard opens (typing in Ask Sakura) —
+  // and re-landing for that threw the reader back to the top of the page
+  // they were in the middle of. Paged rows are one window wide, so only the
+  // width moves them.
+  const geometryKey = isPaged
+    ? `page:${winW}`
+    : `${columnW}:${prefs.pageFit}:${pageGap}:${prefs.pageFit === 'height' ? winH : ''}:${
+        prefs.pageFit === 'original' ? winW : ''
+      }`;
+  /** The layout as last committed, with its rows: what the reader's scroll offset refers to. */
+  const committedLayoutRef = useRef<{ key: string; layout: ListLayout | null; rows: ReaderRow[] } | null>(null);
+  // A layout effect, so it reads the scroll offset before the browser clamps
+  // or anchors it against the new heights (that arrives as a scroll event
+  // after this commit).
+  useLayoutEffect(() => {
+    const before = committedLayoutRef.current;
+    committedLayoutRef.current = { key: geometryKey, layout: webtoonGeometry?.layout ?? null, rows };
+    if (!before || before.key === geometryKey) return;
+    if (!didInitialScroll.current || !activeChapterIdRef.current || pendingRestoreRef.current) return;
+    // The row at the top of the screen in the old layout and how far into it
+    // the reader was. Widths scale every row in proportion, so the same
+    // fraction is the same spot on the page.
+    let anchor: { rowId: string; fraction: number } | null = null;
+    if (before.layout && webtoonGeometry) {
+      const at = layoutAnchor(before.layout, scrollOffsetRef.current);
+      const row = at ? before.rows[at.index] : undefined;
+      if (at && row) anchor = { rowId: row.id, fraction: at.fraction };
+    }
+    pendingRestoreRef.current = {
+      chapterId: activeChapterIdRef.current,
+      page: activePageIndexRef.current,
+      tries: 0,
+      startedAt: Date.now(),
+      ...(anchor ?? {}),
+    };
+    requestAnimationFrame(runPendingRestore);
+  }, [geometryKey, webtoonGeometry, rows, runPendingRestore]);
+
+  const endCard = lastSegment ? (
+    <ChapterEndCard
+      width={winW}
+      height={isPaged ? winH : END_CARD_HEIGHT}
+      chapterLabel={lastSegment.chapterLabel}
+      next={
+        endNext === undefined
+          ? undefined
+          : endNext === null
+            ? null
+            : {
+                label: Number.isFinite(endNext.number) ? `Chapter ${endNext.number}` : endNext.title || 'Next chapter',
+                detail:
+                  endNext.title && endNext.title !== `Chapter ${endNext.number}` ? endNext.title : undefined,
+              }
+      }
+      onNext={() => {
+        if (endNext) openChapter(endNext);
+      }}
+      onBackToSeries={goBack}
+      light={lightBackground}
+      mirrored={isRtlPageMode}
+    />
+  ) : null;
+
   if (isGated && accessChecked && !hasAccess) {
     return (
       <View style={[styles.screen, styles.center]}>
         <StatusBar hidden />
-        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtnAbsolute}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Back to series"
+          onPress={onTap(goBack)}
+          style={styles.backBtnAbsolute}
+        >
           <BackIcon />
         </TouchableOpacity>
         <View style={styles.gateCard}>
@@ -1724,32 +2692,92 @@ export default function ChapterReader() {
     );
   }
 
-  if (loading) {
+  if (loading || !prefsReady) {
+    // Not a bare spinner: the series and chapter are named at once and Back
+    // works while the page list is out (it used to be a spinner and nothing
+    // else for as long as the request took).
+    const skeletonW = Math.min(columnW, 560);
     return (
-      <View style={[styles.screen, styles.center]}>
-        <ActivityIndicator size="large" color={Colors.white} />
+      <View style={[styles.screen, { backgroundColor: background }]}>
+        <StatusBar hidden />
+        <View style={[styles.skeletonBar, { paddingTop: Math.max(insets.top, 12) + 8 }]}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Back to series"
+            onPress={onTap(goBack)}
+            style={styles.backBtn}
+          >
+            <BackIcon />
+          </TouchableOpacity>
+          <View style={styles.skeletonTitles}>
+            {typeof title === 'string' && title ? (
+              <Text style={styles.skeletonTitle} numberOfLines={1}>
+                {title}
+              </Text>
+            ) : null}
+            <Text style={styles.skeletonChapter} numberOfLines={1}>
+              {routeChapterLabel}
+            </Text>
+          </View>
+        </View>
+        <View style={[styles.flex, styles.center]}>
+          <View style={[styles.skeletonPage, { width: skeletonW, height: Math.min(skeletonW * 1.45, winH * 0.7) }]}>
+            <ActivityIndicator size="large" color={lightBackground ? '#555' : Colors.white} />
+            <Text style={[styles.skeletonHint, lightBackground && styles.skeletonHintLight]}>Loading pages…</Text>
+          </View>
+        </View>
       </View>
     );
   }
 
   if (rows.length === 0) {
+    // A link without its series (`/chapter/<chapterId>`) cannot be loaded at
+    // all; say so instead of offering a Retry that can never work.
+    const incompleteLink = !mangaId || !entryChapterId;
     return (
       <View style={[styles.screen, styles.center]}>
         <StatusBar hidden />
-        <TouchableOpacity onPress={onTap(goBack)} style={styles.backBtn}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={incompleteLink ? 'Go home' : 'Back to series'}
+          onPress={onTap(incompleteLink ? () => router.replace('/home') : goBack)}
+          style={styles.backBtnAbsolute}
+        >
           <BackIcon />
         </TouchableOpacity>
-        <EmptyState inverted compact title={pageLoadError ? 'Chapter unavailable' : 'No pages found'} subtitle={pageLoadError || undefined} />
-        <TouchableOpacity accessibilityRole="button" style={styles.pageRetry} onPress={() => setLoadAttempt((attempt) => attempt + 1)}>
-          <Text style={styles.pageRetryLabel}>Retry chapter</Text>
-        </TouchableOpacity>
+        <EmptyState
+          inverted
+          compact
+          title={incompleteLink ? 'This chapter link is incomplete' : pageLoadError ? 'Chapter unavailable' : 'No pages found'}
+          subtitle={incompleteLink ? 'Open the series to choose a chapter.' : pageLoadError || undefined}
+        />
+        {incompleteLink ? (
+          <TouchableOpacity accessibilityRole="button" style={styles.pageRetry} onPress={() => router.replace('/home')}>
+            <Text style={styles.pageRetryLabel}>Go home</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity accessibilityRole="button" style={styles.pageRetry} onPress={() => setLoadAttempt((attempt) => attempt + 1)}>
+            <Text style={styles.pageRetryLabel}>Retry chapter</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }
 
+  // Where the list starts: with getItemLayout, FlatList renders the rows
+  // around the saved page first instead of page 1. Captured once and kept:
+  // VirtualizedList re-reads the prop on every render, and whenever it is
+  // missing or 0 it keeps the first ten rows mounted for a fast scroll-to-top
+  // — ten pages of images nobody resuming at page 60 is looking at. Kept
+  // until a jump to the very top (releaseInitialIndex), which it would freeze.
+  if (initialRowRef.current === null) {
+    initialRowRef.current = rowIndexFor(bounds, entryChapterId, initialTarget);
+  }
+  const initialRow = initialRowRef.current;
+
   return (
     <View
-      style={styles.screen}
+      style={[styles.screen, { backgroundColor: background }]}
     >
       <StatusBar hidden />
       <FlatList
@@ -1761,21 +2789,19 @@ export default function ChapterReader() {
         // than one chapter.
         style={isRtlPageMode ? styles.mirrored : undefined}
         keyExtractor={(p) => p.id}
-        // Only valid in paged mode (uniform width). Webtoon pages have their own
-        // heights, so FlatList must measure them instead of assuming a constant.
-        getItemLayout={
-          readingMode === 'page'
-            ? (_, index) => ({ length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index })
-            : undefined
-        }
+        // Both modes: paged rows are one window wide; webtoon rows have the
+        // heights computed in webtoonGeometry, which every rendered row uses.
+        getItemLayout={getItemLayout}
+        initialScrollIndex={initialIndexLive && initialRow > 0 ? initialRow : undefined}
         pagingEnabled={readingMode === 'page'}
         decelerationRate={readingMode === 'page' ? 'fast' : 'normal'}
         horizontal={readingMode === 'page'}
-        snapToInterval={readingMode === 'page' ? SCREEN_WIDTH : undefined}
-        // Web drives the toggle from pointerdown on the root instead, so that a
-        // tap on mobile web isn't counted twice — once here and once there,
-        // which would turn a single tap into a toggle.
-        onTouchEnd={Platform.OS === 'web' ? undefined : handleReaderTap}
+        snapToInterval={readingMode === 'page' ? winW : undefined}
+        // Web handles taps with document listeners (dblclick for the overlay,
+        // click for paged tap zones), so a tap on mobile web isn't counted
+        // twice — once here and once there.
+        onTouchStart={Platform.OS === 'web' ? undefined : onListTouchStart}
+        onTouchEnd={Platform.OS === 'web' ? undefined : onListTouchEnd}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         // Second, independent trigger for attaching the next chapter. The
@@ -1791,7 +2817,7 @@ export default function ChapterReader() {
           // maxPage tracker below is the one that actually stops a scrub
           // counting as a read.
           const last = segmentsRef.current[segmentsRef.current.length - 1];
-          if (last && !seekingRef.current) creditChapterComplete(last.chapterId);
+          if (last && !jumpSettling()) creditChapterComplete(last.chapterId);
           void ensureNextChapter();
         }}
         onEndReachedThreshold={0.6}
@@ -1801,6 +2827,7 @@ export default function ChapterReader() {
           isScrollingRef.current = true;
           userDragRef.current = true;
           dragStartOffsetRef.current = scrollOffsetRef.current;
+          pauseAutoScroll();
           // The reader has taken the wheel; stop trying to re-land a seek or a
           // mode switch under them. runPendingRestore never nulls its anchor on
           // success, and it is wired to both onLayout and onContentSizeChange.
@@ -1818,15 +2845,28 @@ export default function ChapterReader() {
         maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
         // Keeps the top of the list off true offset 0 whenever an earlier
         // chapter exists, so a prepend never has to fight an overscroll bounce.
-        ListHeaderComponent={hasPrevChapter ? <View style={styles.listHeaderSpacer} /> : null}
+        ListHeaderComponent={hasPrevChapter ? <View style={[styles.listHeaderSpacer, { backgroundColor: background }]} /> : null}
+        // The end card: next chapter, caught up, or back to the series. Fixed
+        // size (END_CARD_HEIGHT, or one page in paged mode) — onScroll's
+        // end-of-session test counts on it.
+        ListFooterComponent={endCard}
         // Tighter in webtoon mode: rows there are full-height strips and a
         // session can now hold several chapters of them, so keeping five
         // screens either side mounted is a lot of decoded bitmap.
         windowSize={readingMode === 'scroll' ? 3 : 5}
         maxToRenderPerBatch={3}
         removeClippedSubviews
-        onLayout={runPendingRestore}
-        onContentSizeChange={runPendingRestore}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          listMetricsRef.current.view = readingMode === 'page' ? width : height;
+          updateEndReached();
+          runPendingRestore();
+        }}
+        onContentSizeChange={(width, height) => {
+          listMetricsRef.current.content = readingMode === 'page' ? width : height;
+          updateEndReached();
+          runPendingRestore();
+        }}
         onScrollToIndexFailed={(info) => {
           // Webtoon rows have variable heights and aren't measured yet, so the
           // first jump is only an estimate — land roughly, then retry precisely
@@ -1858,6 +2898,12 @@ export default function ChapterReader() {
         renderItem={renderPage}
       />
 
+      {/* In-app dimmer (the brightness preference). Below the overlays so the
+          controls stay readable, and never touchable. */}
+      {prefs.brightness < 1 ? (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: 1 - prefs.brightness }]} />
+      ) : null}
+
       {/* Top UI overlay */}
       <Animated.View
         style={[styles.topOverlay, overlayFadeStyle]}
@@ -1865,6 +2911,8 @@ export default function ChapterReader() {
         onTouchStart={noteUiTouch}
       >
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Back to series"
           onPress={onTap(goBack)}
           style={styles.backBtn}
         >
@@ -1881,14 +2929,33 @@ export default function ChapterReader() {
             those titles must not reach an AI backend at all. Sits inside the
             overlay's Animated.View, so it inherits overlayFadeStyle and the
             parent's pointerEvents — it cannot become invisible-but-tappable. */}
-        {!isAdult ? (
-          <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={styles.askBtn}>
-            <Text style={styles.askBtnText}>Ask</Text>
+        <View style={styles.topActions}>
+          {!isAdult ? (
+            <TouchableOpacity onPress={onTap(() => setAskOpen(true))} style={styles.askBtn}>
+              <Text style={styles.askBtnText}>Ask</Text>
+            </TouchableOpacity>
+          ) : null}
+          {/* Hands-free webtoon reading; speed lives in the Aa sheet. */}
+          {readingMode === 'scroll' ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={autoScrolling ? 'Stop auto-scroll' : 'Start auto-scroll'}
+              accessibilityState={{ selected: autoScrolling }}
+              onPress={onTap(toggleAutoScroll)}
+              style={[styles.modeBtn, autoScrolling && styles.modeBtnOn]}
+            >
+              <Text style={styles.modeBtnText}>{autoScrolling ? '❚❚ Auto' : '▶ Auto'}</Text>
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Reader settings"
+            onPress={onTap(() => setSettingsOpen(true))}
+            style={styles.modeBtn}
+          >
+            <Text style={styles.modeBtnText}>Aa</Text>
           </TouchableOpacity>
-        ) : null}
-        <TouchableOpacity onPress={onTap(() => setSettingsOpen(true))} style={styles.modeBtn}>
-          <Text style={styles.modeBtnText}>Aa</Text>
-        </TouchableOpacity>
+        </View>
       </Animated.View>
 
       {/* Page indicator strip — page/swipe mode only */}
@@ -1929,6 +2996,10 @@ export default function ChapterReader() {
           setContinuousBack(v);
           void AppSettings.setReaderContinuousBack(v);
         }}
+        prefs={prefs}
+        onChangePrefs={changePrefs}
+        showWidthControls={winW > READER_MAX_WIDTH_MIN}
+        dataSaver={dataSaver}
       />
 
       {/* Seek + chapter navigation. Replaces the thumbnail strip, which mounted
@@ -1974,15 +3045,43 @@ export default function ChapterReader() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
+  flex: { flex: 1 },
   center: { alignItems: 'center', justifyContent: 'center' },
+  /** A row the width of the window; the page box inside is centred in it. */
+  pageRow: { alignItems: 'center' },
+  pageRowPaged: { justifyContent: 'center' },
+  skeletonBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  skeletonTitles: { flex: 1, minWidth: 0 },
+  skeletonTitle: { color: Colors.white, fontSize: FontSize.md, fontWeight: FontWeight.bold },
+  skeletonChapter: { color: 'rgba(255,255,255,0.7)', fontSize: FontSize.sm, marginTop: 2 },
+  skeletonPage: {
+    maxWidth: '92%',
+    borderRadius: 12,
+    backgroundColor: 'rgba(127,127,127,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  skeletonHint: { color: 'rgba(255,255,255,0.7)', fontSize: FontSize.sm },
+  skeletonHintLight: { color: 'rgba(0,0,0,0.6)' },
+  topActions: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 },
+  modeBtnOn: { backgroundColor: 'rgba(232,69,69,0.85)' },
   pageRetry: { backgroundColor: '#E84545', borderRadius: 20, paddingHorizontal: 20, paddingVertical: 12 },
   pageRetryLabel: { color: '#fff', fontWeight: '600' },
   /** Applied to the list and re-applied per page, so RTL flips geometry only. */
   mirrored: { transform: [{ scaleX: -1 }] },
   listHeaderSpacer: { height: 48, backgroundColor: '#000' },
   chapterDivider: {
-    width: SCREEN_WIDTH,
-    height: 44,
+    // Width is the live window width, set inline; the height must stay
+    // MARKER_HEIGHT for the webtoon layout.
+    height: MARKER_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1990,12 +3089,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     backgroundColor: '#0A0A0A',
   },
+  chapterDividerLight: { backgroundColor: '#F2F2F4' },
   chapterDividerRule: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.18)' },
+  chapterDividerRuleLight: { backgroundColor: 'rgba(0,0,0,0.14)' },
+  chapterDividerText: { alignItems: 'center', maxWidth: '70%' },
+  chapterDividerKicker: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 10,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 1.2,
+  },
+  chapterDividerKickerLight: { color: 'rgba(0,0,0,0.45)' },
   chapterDividerLabel: {
-    color: 'rgba(255,255,255,0.62)',
-    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 13,
     fontWeight: FontWeight.semibold,
   },
+  chapterDividerLabelLight: { color: 'rgba(0,0,0,0.75)' },
   topOverlay: {
     position: 'absolute',
     top: 0,
@@ -2070,13 +3180,12 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.bold,
   },
   pageCount: {
+    marginLeft: 10,
     color: Colors.white,
     fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
   askBtn: {
-    marginLeft: 'auto',
-    marginRight: 8,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: Radius.full,
@@ -2088,7 +3197,6 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.semibold,
   },
   modeBtn: {
-    marginLeft: 'auto',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: Radius.full,

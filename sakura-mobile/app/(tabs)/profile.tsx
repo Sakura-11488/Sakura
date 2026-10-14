@@ -32,7 +32,8 @@ import { getProfile } from '@/lib/supabase';
 import { getCreatorProfile, getCreatorWorks } from '@/lib/creator';
 import { Library } from '@/lib/storage';
 import { ShimmerBox } from '@/components/ui/ShimmerLoader';
-import WalletModal, { type WalletSheetRoute } from '@/components/wallet/WalletModal';
+import WalletModal from '@/components/wallet/LazyWalletModal';
+import type { WalletSheetRoute } from '@/components/wallet/WalletModal';
 import { getForgeFundsStatus, getForgeFundsMessage } from '@/lib/avatar-forge-funds';
 import {
   clearPendingAvatarPayment,

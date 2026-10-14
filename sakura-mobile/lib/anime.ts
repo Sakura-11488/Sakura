@@ -1,5 +1,6 @@
 import { withAnimeTimeout } from './anime-network';
-import { fetchBrowserAnimeStream, usesBrowserAnimeStream } from './anime-stream-client';
+import { fetchBrowserAnimeStream, prewarmBrowserAnimeStream, usesBrowserAnimeStream } from './anime-stream-client';
+import { primeAnimeDiscovery } from './anime-discovery';
 import { getCachedValue, setCachedValue } from '@/lib/cache';
 import {
   consuGet,
@@ -80,7 +81,7 @@ export function clearAnimeSessionCache() {
 export function clearAnimeSourceCacheForMal(malId: string): void {
   cDelete(`srcmap_${malId}`);
   cDelete(`srcslug_${malId}`);
-  cDelete(`info2_${malId}`);
+  cDelete(`info3_${malId}`);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -115,6 +116,22 @@ export interface AnimeInfo extends AnimeResult {
   streamingAnimeId?: string;
   /** Local require() image for Sakura Originals — pass directly to expo-image source */
   localCover?: any;
+  /**
+   * Where the title metadata came from. Only AniList records are complete
+   * (English title, synopsis, real genres, episode titles and stills); records
+   * built from the Jikan or offline-index fallbacks are cached briefly so the
+   * next visit upgrades them instead of showing a degraded page for a day.
+   */
+  metaSource?: 'anilist' | 'jikan' | 'index';
+  /** Wide key art from AniList, when the title has one. */
+  banner?: string;
+  /** The next scheduled broadcast (airingAt in ms) for a show that is still airing. */
+  nextAiringEpisode?: { episode: number; airingAt: number };
+  /** Typical episode runtime in minutes. */
+  durationMinutes?: number;
+  studios?: string[];
+  /** Romanised Japanese title, shown under an English title when they differ. */
+  titleRomaji?: string;
 }
 
 export interface StreamingSource {
@@ -392,8 +409,56 @@ export const ANIME_GENRES: { id: number; name: string }[] = [
 ];
 
 // ─── AniList ──────────────────────────────────────────────────────────────────
+/**
+ * Card fields. Only `coverImage.large` is requested: shelves and grids draw
+ * posters 108–170 px wide, and `extraLarge` (the original upload, up to 676 KB
+ * a poster) made the Anime tab download 2–2.6 MB of artwork for 15 cards, so
+ * posters appeared seconds after their titles. `large` is ~230 px wide and
+ * about a third of the bytes. The detail hero still asks for `extraLarge`.
+ */
 const AL_FIELDS =
-  `id idMal title{english romaji} coverImage{extraLarge large} averageScore episodes format seasonYear`;
+  `id idMal title{english romaji} coverImage{large} averageScore episodes format seasonYear`;
+
+/**
+ * AniList names its sizes one step off from its URLs: `extraLarge` is served
+ * from /cover/large/, `large` from /cover/medium/. Lists cached before cards
+ * switched to `large` still hold extraLarge URLs for up to two hours; this
+ * rewrites them so a returning visitor gets the small posters at once.
+ */
+export function cardCoverUrl(url: string): string {
+  return /^https:\/\/s\d+\.anilist\.co\/file\/anilistcdn\/media\/anime\/cover\/large\//.test(url)
+    ? url.replace('/media/anime/cover/large/', '/media/anime/cover/medium/')
+    : url;
+}
+
+function cardResults(results: AnimeResult[]): AnimeResult[] {
+  return results.map((result) => {
+    const image = cardCoverUrl(result.image);
+    return image === result.image ? result : { ...result, image };
+  });
+}
+
+// ─── Previews for instant detail pages ───────────────────────────────────────
+/**
+ * The card a user tapped already carries the title, poster, score and year.
+ * Remembering it lets the detail page draw its hero immediately and show
+ * skeleton episodes while the full record loads, instead of a blank shimmer.
+ */
+const _previews = new Map<string, AnimeResult>();
+const PREVIEW_LIMIT = 400;
+
+export function rememberAnimePreviews(results: readonly AnimeResult[]): void {
+  for (const result of results) {
+    if (!result?.id || !result.title) continue;
+    _previews.delete(result.id);
+    _previews.set(result.id, result);
+  }
+  while (_previews.size > PREVIEW_LIMIT) _previews.delete(_previews.keys().next().value!);
+}
+
+export function getAnimePreview(id: string): AnimeResult | null {
+  return _previews.get(id) ?? null;
+}
 
 function escGql(s: string) {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -421,7 +486,7 @@ function alToResult(m: Record<string, unknown>): AnimeResult | null {
   return {
     id: String(m.idMal),
     title: title?.english || title?.romaji || 'Unknown',
-    image: cover?.extraLarge || cover?.large || '',
+    image: cover?.large || cover?.extraLarge || '',
     type: (m.format as string) || 'TV',
     score: m.averageScore ? +((m.averageScore as number) / 10).toFixed(1) : null,
     year: (m.seasonYear as number) || null,
@@ -436,24 +501,282 @@ function alPageResults(data: unknown): AnimeResult[] {
   return list.map(alToResult).filter((x): x is AnimeResult => x !== null);
 }
 
+// `isAdult:false` on every catalog list: the discovery shelves already reject
+// adult media, and the general anime catalog should not surface it either.
 async function alTrending(): Promise<AnimeResult[]> {
-  const q = `{Page(page:1,perPage:15){media(type:ANIME,sort:TRENDING_DESC,status:RELEASING){${AL_FIELDS}}}}`;
+  const q = `{Page(page:1,perPage:15){media(type:ANIME,isAdult:false,sort:TRENDING_DESC,status:RELEASING){${AL_FIELDS}}}}`;
   return alPageResults(await runAL(q));
 }
 
 async function alPopular(): Promise<AnimeResult[]> {
-  const q = `{Page(page:1,perPage:15){media(type:ANIME,sort:POPULARITY_DESC){${AL_FIELDS}}}}`;
+  const q = `{Page(page:1,perPage:15){media(type:ANIME,isAdult:false,sort:POPULARITY_DESC){${AL_FIELDS}}}}`;
   return alPageResults(await runAL(q));
 }
 
 async function alSearch(query: string): Promise<AnimeResult[]> {
-  const q = `{Page(page:1,perPage:20){media(type:ANIME,search:"${escGql(query)}",sort:SEARCH_MATCH){${AL_FIELDS}}}}`;
+  const q = `{Page(page:1,perPage:20){media(type:ANIME,isAdult:false,search:"${escGql(query)}",sort:SEARCH_MATCH){${AL_FIELDS}}}}`;
   return alPageResults(await runAL(q));
 }
 
 async function alByGenre(genre: string): Promise<AnimeResult[]> {
-  const q = `{Page(page:1,perPage:15){media(type:ANIME,genre:"${escGql(genre)}",sort:POPULARITY_DESC){${AL_FIELDS}}}}`;
+  const q = `{Page(page:1,perPage:15){media(type:ANIME,isAdult:false,genre:"${escGql(genre)}",sort:POPULARITY_DESC){${AL_FIELDS}}}}`;
   return alPageResults(await runAL(q));
+}
+
+// ─── AniList title record (detail + watch pages) ─────────────────────────────
+/**
+ * One query carries everything the title page needs: English and romaji
+ * titles, synopsis, real genres, status and schedule, episode titles with
+ * stills, and the related/recommended shelves.
+ *
+ * It replaces Jikan as the primary source. Jikan stopped answering (it never
+ * completes a TCP connect from several networks), and every cold detail page
+ * and watch link sat on its 6 s timeout before anything rendered; AniList
+ * answers the same title in ~0.5–0.8 s. It also replaces three separate
+ * AniList calls (episode stills, the aired-episode bound, discovery), which
+ * matters because AniList currently allows 30 requests a minute per IP.
+ */
+const AL_CARD_FIELDS = 'idMal type isAdult title{english romaji} coverImage{large} format averageScore seasonYear';
+const AL_TITLE_QUERY = `query SakuraTitle($id:Int){Media(idMal:$id,type:ANIME){idMal isAdult status episodes duration format seasonYear startDate{year} averageScore genres title{english romaji native} synonyms description(asHtml:false) coverImage{extraLarge large} bannerImage nextAiringEpisode{episode airingAt} streamingEpisodes{title thumbnail} studios(isMain:true){nodes{name}} recommendations(sort:RATING_DESC,perPage:25){nodes{rating mediaRecommendation{${AL_CARD_FIELDS}}}} relations{edges{relationType node{${AL_CARD_FIELDS}}}}}}`;
+/** AniList usually answers in under a second; past this the fallbacks are already racing it. */
+const AL_TITLE_TIMEOUT_MS = 5000;
+/** Head start AniList gets before the slower fallbacks are started alongside it. */
+const AL_TITLE_HEDGE_MS = 1500;
+
+export interface AniListTitleMedia {
+  idMal: number;
+  isAdult?: boolean;
+  status?: string;
+  episodes?: number | null;
+  duration?: number | null;
+  format?: string | null;
+  seasonYear?: number | null;
+  startDate?: { year?: number | null } | null;
+  averageScore?: number | null;
+  genres?: string[] | null;
+  title?: { english?: string | null; romaji?: string | null; native?: string | null } | null;
+  synonyms?: string[] | null;
+  description?: string | null;
+  coverImage?: { extraLarge?: string | null; large?: string | null } | null;
+  bannerImage?: string | null;
+  nextAiringEpisode?: { episode?: number; airingAt?: number } | null;
+  streamingEpisodes?: Array<{ title?: string | null; thumbnail?: string | null }> | null;
+  studios?: { nodes?: Array<{ name?: string | null }> | null } | null;
+}
+
+const _alTitles = new Map<string, { media: AniListTitleMedia; exp: number }>();
+const _alTitleRequests = new Map<string, Promise<AniListTitleMedia | null>>();
+
+/** One AniList title request per id at a time; the detail and watch pages share it. */
+function fetchAniListTitle(malId: string, force = false): Promise<AniListTitleMedia | null> {
+  if (!/^[1-9]\d{0,8}$/.test(malId)) return Promise.resolve(null);
+  const hit = _alTitles.get(malId);
+  if (!force && hit && hit.exp > Date.now()) return Promise.resolve(hit.media);
+  const pending = _alTitleRequests.get(malId);
+  if (pending && !force) return pending;
+  const request = (async () => {
+    try {
+      const json = await withAnimeTimeout(async (signal) => {
+        const res = await fetch(ANILIST_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ query: AL_TITLE_QUERY, variables: { id: Number(malId) } }),
+          signal,
+        });
+        if (!res.ok) throw new Error(`AniList HTTP ${res.status}`);
+        return res.json() as Promise<{ data?: { Media?: AniListTitleMedia } }>;
+      }, AL_TITLE_TIMEOUT_MS);
+      const media = json?.data?.Media;
+      if (!media || String(media.idMal) !== malId || !aniListDisplayTitle(media)) return null;
+      _alTitles.set(malId, { media, exp: Date.now() + 60 * 60_000 });
+      primeAnimeDiscovery(malId, json);
+      return media;
+    } catch {
+      return null;
+    }
+  })();
+  _alTitleRequests.set(malId, request);
+  void request.then(() => { if (_alTitleRequests.get(malId) === request) _alTitleRequests.delete(malId); });
+  return request;
+}
+
+function aniListDisplayTitle(media: AniListTitleMedia): string {
+  return (media.title?.english || media.title?.romaji || media.title?.native || '').trim();
+}
+
+const ANILIST_STATUS: Record<string, string> = {
+  FINISHED: 'Finished Airing',
+  RELEASING: 'Currently Airing',
+  NOT_YET_RELEASED: 'Not yet aired',
+  CANCELLED: 'Cancelled',
+  HIATUS: 'On hiatus',
+};
+const ANILIST_FORMAT: Record<string, string> = {
+  TV: 'TV', TV_SHORT: 'TV Short', MOVIE: 'Movie', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA', MUSIC: 'Music',
+};
+const ENTITIES: Record<string, string> = {
+  amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ', mdash: '—', ndash: '–', hellip: '…',
+  rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“',
+};
+
+/** AniList synopses are HTML fragments (`<br>`, `<i>`, entities); the UI shows plain text. */
+export function cleanAnimeDescription(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
+      if (code[0] === '#') {
+        const value = code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+        return Number.isFinite(value) && value > 0 && value < 0x110000 ? String.fromCodePoint(value) : match;
+      }
+      return ENTITIES[code.toLowerCase()] ?? match;
+    })
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Real episode titles and stills from AniList's streaming list, keyed by
+ * episode number. Titles arrive as "Episode 1 - The Journey's End"; the number
+ * is only the key, the remainder is the title. Some multi-cour entries number
+ * their streaming episodes from the series start (25–48 for a 24-episode
+ * season); when no number falls inside the season they are shifted down.
+ */
+export function parseStreamingEpisodes(
+  list: AniListTitleMedia['streamingEpisodes'],
+  episodeCount: number,
+): Map<number, { title?: string; thumbnail?: string }> {
+  const parsed: Array<{ number: number; title?: string; thumbnail?: string }> = [];
+  for (const item of Array.isArray(list) ? list : []) {
+    const raw = String(item?.title ?? '').trim();
+    const match = raw.match(/^(?:episode|ep\.?)\s*(\d+)(?:\s*[-–—:.]\s*(.*))?$/i);
+    if (!match) continue;
+    const number = Number(match[1]);
+    if (!Number.isSafeInteger(number) || number < 1) continue;
+    const title = match[2]?.trim().slice(0, 200) || undefined;
+    let thumbnail: string | undefined;
+    try {
+      const url = new URL(String(item?.thumbnail ?? ''));
+      if (url.protocol === 'https:') thumbnail = url.href;
+    } catch { /* no usable still */ }
+    if (title || thumbnail) parsed.push({ number, title, thumbnail });
+  }
+  const map = new Map<number, { title?: string; thumbnail?: string }>();
+  if (!parsed.length) return map;
+  const min = Math.min(...parsed.map((row) => row.number));
+  const offset = episodeCount > 0 && min > episodeCount ? min - 1 : 0;
+  for (const row of parsed) {
+    const number = row.number - offset;
+    if (number < 1 || map.has(number)) continue;
+    map.set(number, { title: row.title, thumbnail: row.thumbnail });
+  }
+  return map;
+}
+
+/**
+ * How many episodes have actually aired, or null when AniList cannot say.
+ * Finished shows use their total; airing shows the episode before the next
+ * broadcast (which also covers long runners like One Piece whose total is
+ * unknown); unaired shows have none.
+ */
+export function airedEpisodeCount(media: AniListTitleMedia, now = Date.now()): number | null {
+  const next = media.nextAiringEpisode;
+  const nextEpisode = Number(next?.episode);
+  const nextAt = Number(next?.airingAt) * 1000;
+  const scheduled = Number.isSafeInteger(nextEpisode) && nextEpisode >= 1 && nextEpisode <= 50_001
+    && Number.isSafeInteger(nextAt / 1000) && nextAt > now;
+  const total = typeof media.episodes === 'number' && Number.isSafeInteger(media.episodes) && media.episodes > 0
+    ? media.episodes : null;
+  switch (media.status) {
+    case 'FINISHED':
+    case 'CANCELLED':
+      return total;
+    case 'NOT_YET_RELEASED':
+      return scheduled ? nextEpisode - 1 : 0;
+    default:
+      return scheduled ? nextEpisode - 1 : null;
+  }
+}
+
+/**
+ * Builds the title page record from one AniList answer. `episodes` is empty
+ * with `episodeLoadError` set for a show that has not aired; it is empty
+ * without an error when the aired count is unknown and the provider must be
+ * asked (see fetchAnimeInfo).
+ */
+export function animeInfoFromAniList(malId: string, media: AniListTitleMedia, now = Date.now()): { info: AnimeInfo; airedCount: number | null } {
+  const titleEnglish = (media.title?.english || '').trim();
+  const titleRomaji = (media.title?.romaji || '').trim();
+  const image = media.coverImage?.extraLarge || media.coverImage?.large || '';
+  const next = media.nextAiringEpisode;
+  const nextAt = Number(next?.airingAt) * 1000;
+  const airedCount = airedEpisodeCount(media, now);
+  const info: AnimeInfo = {
+    id: malId,
+    title: aniListDisplayTitle(media),
+    titleRomaji: titleEnglish && titleRomaji && titleRomaji !== titleEnglish ? titleRomaji : undefined,
+    image,
+    cover: image,
+    banner: media.bannerImage || undefined,
+    description: cleanAnimeDescription(media.description),
+    status: ANILIST_STATUS[media.status ?? ''] ?? (media.status || undefined),
+    genres: Array.isArray(media.genres) ? media.genres.filter((genre) => typeof genre === 'string').slice(0, 12) : [],
+    score: typeof media.averageScore === 'number' && media.averageScore > 0 ? +(media.averageScore / 10).toFixed(1) : null,
+    type: ANILIST_FORMAT[media.format ?? ''] ?? (media.format || 'TV'),
+    year: media.seasonYear ?? media.startDate?.year ?? null,
+    durationMinutes: typeof media.duration === 'number' && media.duration > 0 ? media.duration : undefined,
+    studios: (media.studios?.nodes ?? []).map((node) => (node?.name || '').trim()).filter(Boolean).slice(0, 3),
+    nextAiringEpisode: Number.isSafeInteger(Number(next?.episode)) && nextAt > now
+      ? { episode: Number(next!.episode), airingAt: nextAt } : undefined,
+    metaSource: 'anilist',
+    episodes: [],
+  };
+  if (airedCount !== null && airedCount > 0) {
+    info.episodes = withStreamingDetails(makeMalEpisodes(malId, airedCount), media, airedCount);
+  } else if (airedCount === 0) {
+    info.episodeLoadError = 'The first episode has not aired yet.';
+  }
+  return { info, airedCount };
+}
+
+/** Titles and stills from AniList, applied to any episode list (MAL or provider ids). */
+function withStreamingDetails(episodes: AnimeEpisode[], media: AniListTitleMedia, count: number): AnimeEpisode[] {
+  const details = parseStreamingEpisodes(media.streamingEpisodes, count);
+  if (!details.size) return episodes;
+  return episodes.map((episode) => {
+    const extra = details.get(episode.number);
+    if (!extra) return episode;
+    const generic = !episode.title || /^episode\s*\d+$/i.test(episode.title.trim());
+    return {
+      ...episode,
+      title: generic && extra.title ? extra.title : episode.title,
+      thumbnail: episode.thumbnail || extra.thumbnail,
+    };
+  });
+}
+
+/** The shape provider matching was written against, built from AniList titles. */
+function jikanFromAniList(malId: string, media: AniListTitleMedia): JikanFull {
+  const latin = (value: string) => /^[\x20-\x7EÀ-ɏ‘-”–—]+$/.test(value);
+  const image = media.coverImage?.extraLarge || media.coverImage?.large || '';
+  return {
+    mal_id: Number(malId),
+    title: media.title?.romaji || aniListDisplayTitle(media),
+    title_english: media.title?.english || null,
+    title_japanese: media.title?.native || null,
+    title_synonyms: (media.synonyms ?? []).filter((value) => typeof value === 'string' && latin(value)).slice(0, 4),
+    images: { webp: { image_url: image, large_image_url: image } },
+    synopsis: cleanAnimeDescription(media.description),
+    status: ANILIST_STATUS[media.status ?? ''] ?? '',
+    type: ANILIST_FORMAT[media.format ?? ''] ?? 'TV',
+    year: media.seasonYear ?? null,
+    episodes: typeof media.episodes === 'number' && media.episodes > 0 ? media.episodes : null,
+    score: typeof media.averageScore === 'number' ? media.averageScore / 10 : null,
+    genres: (media.genres ?? []).map((name) => ({ name })),
+  };
 }
 
 // ─── Jikan ────────────────────────────────────────────────────────────────────
@@ -509,6 +832,36 @@ function breakerOpen(path: string): boolean {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * A breaker for the whole Jikan host, persisted across reloads.
+ *
+ * The per-path breaker above only helps the second request for the SAME path,
+ * so while Jikan was down every new title paid the full timeout again, and the
+ * memory-only breaker reset on every app start. A timeout or network failure
+ * means the host itself is unreachable: skip all of Jikan for ten minutes, and
+ * remember that across a reload so a dead Jikan costs one wait, not one per
+ * page. A 404 or 429 is an answer from a live host and does not trip it.
+ */
+const JIKAN_HOST_KEY = 'anime:jikan_host_down_until';
+const JIKAN_HOST_BREAKER_MS = 10 * 60 * 1000;
+let jikanHostDownUntil = 0;
+let jikanHostChecked = false;
+
+async function jikanHostAvailable(): Promise<boolean> {
+  if (Date.now() < jikanHostDownUntil) return false;
+  if (!jikanHostChecked) {
+    jikanHostChecked = true;
+    const persisted = await getCachedValue<number>(JIKAN_HOST_KEY).catch(() => null);
+    if (typeof persisted === 'number' && persisted > Date.now()) jikanHostDownUntil = persisted;
+  }
+  return Date.now() >= jikanHostDownUntil;
+}
+
+function markJikanHostDown(): void {
+  jikanHostDownUntil = Date.now() + JIKAN_HOST_BREAKER_MS;
+  void setCachedValue(JIKAN_HOST_KEY, jikanHostDownUntil, JIKAN_HOST_BREAKER_MS).catch(() => undefined);
+}
+
 async function jikanRequest(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   if (breakerOpen(path)) throw new Error(`Jikan unavailable: ${path}`);
 
@@ -518,7 +871,14 @@ async function jikanRequest(path: string, signal: AbortSignal): Promise<Record<s
     jikanLastAt = Date.now();
 
     if (signal.aborted) throw new Error('Anime request timed out.');
-    const res = await fetch(`${JIKAN_API}${path}`, { signal });
+    let res: Response;
+    try {
+      res = await fetch(`${JIKAN_API}${path}`, { signal });
+    } catch (error) {
+      // No HTTP answer at all: DNS, refused connection or abort. The host is down.
+      markJikanHostDown();
+      throw error;
+    }
 
     // Retry rate limits AND upstream 5xx. Jikan is a free community API that
     // 504s regularly under its own load — the /episodes and search endpoints
@@ -540,7 +900,8 @@ async function jikanRequest(path: string, signal: AbortSignal): Promise<Record<s
   throw new Error(`Jikan unavailable: ${path}`);
 }
 
-async function jikanGet(path: string): Promise<Record<string, unknown>> {
+async function jikanGet(path: string, timeoutMs = 4000): Promise<Record<string, unknown>> {
+  if (!(await jikanHostAvailable())) throw new Error('Jikan is unreachable; using fallbacks.');
   // Deliberately NOT serialised through a shared chain.
   //
   // An earlier version queued every Jikan request behind a single promise to
@@ -552,9 +913,15 @@ async function jikanGet(path: string): Promise<Record<string, unknown>> {
   //
   // Burst protection now comes from the per-path circuit breaker plus the gap
   // inside jikanRequest, neither of which can stall an unrelated request.
+  let timedOut = false;
   try {
-    return await withAnimeTimeout((signal) => jikanRequest(path, signal));
+    return await withAnimeTimeout((signal) => {
+      signal.addEventListener('abort', () => { timedOut = true; }, { once: true });
+      return jikanRequest(path, signal);
+    }, timeoutMs);
   } catch (error) {
+    // A request that outlived its budget means the host is not answering.
+    if (timedOut) markJikanHostDown();
     jikanBreaker.set(path, Date.now() + JIKAN_BREAKER_MS);
     throw error;
   }
@@ -594,13 +961,67 @@ async function jikanByGenre(genreId: number): Promise<AnimeResult[]> {
 
 async function jikanFull(id: string): Promise<JikanFull | null> {
   try {
-    const d = await jikanGet(`/anime/${id}/full`);
+    const d = await jikanGet(`/anime/${id}/full`, 2500);
     const data = (d.data as JikanFull) || null;
     if (data) return data;
   } catch {
     // fall through to the offline index
   }
   return offlineMetaFull(id);
+}
+
+type FallbackMeta = { source: 'jikan' | 'index'; jikan: JikanFull };
+
+/**
+ * Jikan and the offline index raced, first usable answer wins. They used to
+ * run one after the other, so a dead Jikan cost its whole timeout before the
+ * index (which always answers) was even asked.
+ */
+async function loadFallbackMeta(id: string): Promise<FallbackMeta | null> {
+  const jikan = jikanGet(`/anime/${id}/full`, 2500)
+    .then((d) => (d.data as JikanFull) || null)
+    .then((data): FallbackMeta | null => (data ? { source: 'jikan', jikan: data } : null))
+    .catch(() => null);
+  const index = offlineMetaFull(id)
+    .then((data): FallbackMeta | null => (data ? { source: 'index', jikan: data } : null));
+  return firstUsable([jikan, index]);
+}
+
+/** Resolves with the first non-null value, or null once every promise has settled empty. */
+function firstUsable<T>(promises: Array<Promise<T | null>>): Promise<T | null> {
+  return new Promise((resolve) => {
+    let remaining = promises.length;
+    if (!remaining) resolve(null);
+    for (const promise of promises) {
+      promise.then(
+        (value) => { if (value !== null && value !== undefined) resolve(value); else if (--remaining === 0) resolve(null); },
+        () => { if (--remaining === 0) resolve(null); },
+      );
+    }
+  });
+}
+
+type TitleMeta = { source: 'anilist'; media: AniListTitleMedia } | FallbackMeta;
+
+/**
+ * AniList first, with a hedge. AniList gets a short head start; if it has not
+ * answered by then (or has already failed), the fallbacks start alongside it
+ * and whichever usable answer arrives first is used. A slow AniList that wins
+ * late still lands in the cache so the next visit gets the full record.
+ */
+async function loadTitleMeta(id: string, force: boolean, onLateAniList: (media: AniListTitleMedia) => void): Promise<TitleMeta | null> {
+  const anilist = fetchAniListTitle(id, force);
+  let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+  const hedge = new Promise<'hedge'>((resolve) => { hedgeTimer = setTimeout(() => resolve('hedge'), AL_TITLE_HEDGE_MS); });
+  const early = await Promise.race([anilist, hedge]);
+  clearTimeout(hedgeTimer);
+  if (early && early !== 'hedge') return { source: 'anilist', media: early };
+  const fromAniList = anilist.then((media): TitleMeta | null => (media ? { source: 'anilist', media } : null));
+  const winner = await firstUsable<TitleMeta>([fromAniList, loadFallbackMeta(id)]);
+  if (winner && winner.source !== 'anilist') {
+    void anilist.then((media) => { if (media) onLateAniList(media); });
+  }
+  return winner;
 }
 
 /**
@@ -734,57 +1155,6 @@ async function consuEpisodes(animeId: string): Promise<AnimeEpisode[]> {
       }));
   } catch {
     return [];
-  }
-}
-
-function parseStreamingEpisodeNumber(title: string): number | null {
-  const m = title.match(/(?:episode|ep\.?)\s*(\d+)/i);
-  return m ? Number(m[1]) : null;
-}
-
-async function fetchAniListEpisodeThumbnails(malId: string): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  const malIdNum = Number(malId);
-  if (!malIdNum) return map;
-
-  const cacheKey = `epthumbs_${malId}`;
-  const cached = cGet<Map<number, string>>(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const json = (await runAL(`{
-      Media(idMal: ${malIdNum}, type: ANIME) {
-        streamingEpisodes { title thumbnail }
-      }
-    }`)) as {
-      data?: { Media?: { streamingEpisodes?: Array<{ title?: string; thumbnail?: string }> } };
-    };
-
-    const list = json?.data?.Media?.streamingEpisodes;
-    if (!Array.isArray(list)) return map;
-
-    for (const item of list) {
-      const thumb = item.thumbnail?.trim();
-      if (!thumb) continue;
-      const num = parseStreamingEpisodeNumber(String(item.title || ''));
-      if (num && num > 0) map.set(num, thumb);
-    }
-
-    if (map.size > 0) cSet(cacheKey, map, 7 * 24 * 3_600_000);
-  } catch {
-    // optional enrichment — ignore failures
-  }
-
-  return map;
-}
-
-async function enrichEpisodeThumbnails(episodes: AnimeEpisode[], malId: string) {
-  if (episodes.length === 0) return;
-  const thumbs = await fetchAniListEpisodeThumbnails(malId);
-  if (thumbs.size === 0) return;
-  for (const ep of episodes) {
-    const thumbnail = thumbs.get(ep.number);
-    if (thumbnail) ep.thumbnail = thumbnail;
   }
 }
 
@@ -943,136 +1313,83 @@ async function findSourceMatchWithinBudget(
 }
 
 // ─── Public exports ───────────────────────────────────────────────────────────
-export async function searchAnime(query: string): Promise<AnimeResult[]> {
-  const key = `search_${query.toLowerCase().trim()}`;
+/**
+ * Every catalog list goes through here: cached lists get small poster URLs
+ * (see cardCoverUrl) and each card is remembered so its detail page can draw
+ * the hero immediately.
+ */
+function catalogResults(results: AnimeResult[]): AnimeResult[] {
+  const cards = cardResults(results);
+  rememberAnimePreviews(cards);
+  return cards;
+}
+
+/**
+ * `throwIfAllFailed`: by default every source failing resolves [] — the anime
+ * tab's shelves treat an empty shelf as "nothing to show" and must not reject.
+ * Search opts in, because there an outage and "no matches" need different
+ * words: it shows "Anime didn't respond" with Try again instead of an empty
+ * section that looks like a real answer.
+ */
+async function cachedCatalog(
+  key: string,
+  ttl: number,
+  sources: Array<() => Promise<AnimeResult[]>>,
+  { throwIfAllFailed = false }: { throwIfAllFailed?: boolean } = {},
+): Promise<AnimeResult[]> {
   const diskKey = `anime:${key}`;
   const cached = cGet<AnimeResult[]>(key);
-  if (cached) return cached;
+  if (cached) return catalogResults(cached);
   const diskCached = await getCachedValue<AnimeResult[]>(diskKey);
   if (diskCached) {
-    cSet(key, diskCached, 30 * 60_000);
-    return diskCached;
+    const cards = catalogResults(diskCached);
+    cSet(key, cards, ttl);
+    return cards;
   }
-
-  try {
-    const al = await alSearch(query);
-    if (al.length > 0) {
-      cSet(key, al, 30 * 60_000);
-      await setCachedValue(diskKey, al, 30 * 60_000);
-      return al;
+  let failures = 0;
+  let lastError: unknown = null;
+  for (const source of sources) {
+    try {
+      const results = await source();
+      if (results.length > 0) {
+        const cards = catalogResults(results);
+        cSet(key, cards, ttl);
+        await setCachedValue(diskKey, cards, ttl);
+        return cards;
+      }
+    } catch (error) {
+      // try the next source
+      failures += 1;
+      lastError = error;
     }
-  } catch {}
-
-  try {
-    const r = await jikanSearch(query);
-    if (r.length > 0) {
-      cSet(key, r, 30 * 60_000);
-      await setCachedValue(diskKey, r, 30 * 60_000);
-      return r;
-    }
-  } catch {}
-
+  }
+  if (throwIfAllFailed && sources.length > 0 && failures === sources.length) {
+    throw lastError instanceof Error ? lastError : new Error('Anime search is unavailable right now.');
+  }
   return [];
+}
+
+export async function searchAnime(query: string): Promise<AnimeResult[]> {
+  return cachedCatalog(`search_${query.toLowerCase().trim()}`, 30 * 60_000, [
+    () => alSearch(query),
+    () => jikanSearch(query),
+  ], { throwIfAllFailed: true });
 }
 
 export async function fetchAiringAnime(): Promise<AnimeResult[]> {
-  const key = 'trending';
-  const diskKey = `anime:${key}`;
-  const cached = cGet<AnimeResult[]>(key);
-  if (cached) return cached;
-  const diskCached = await getCachedValue<AnimeResult[]>(diskKey);
-  if (diskCached) {
-    cSet(key, diskCached, 2 * 3_600_000);
-    return diskCached;
-  }
-
-  try {
-    const al = await alTrending();
-    if (al.length > 0) {
-      cSet(key, al, 2 * 3_600_000);
-      await setCachedValue(diskKey, al, 2 * 3_600_000);
-      return al;
-    }
-  } catch {}
-
-  try {
-    const r = await jikanTrending();
-    if (r.length > 0) {
-      cSet(key, r, 2 * 3_600_000);
-      await setCachedValue(diskKey, r, 2 * 3_600_000);
-      return r;
-    }
-  } catch {}
-
-  return [];
+  return cachedCatalog('trending', 2 * 3_600_000, [alTrending, jikanTrending]);
 }
 
 export async function fetchPopularAnime(): Promise<AnimeResult[]> {
-  const key = 'popular';
-  const diskKey = `anime:${key}`;
-  const cached = cGet<AnimeResult[]>(key);
-  if (cached) return cached;
-  const diskCached = await getCachedValue<AnimeResult[]>(diskKey);
-  if (diskCached) {
-    cSet(key, diskCached, 2 * 3_600_000);
-    return diskCached;
-  }
-
-  try {
-    const al = await alPopular();
-    if (al.length > 0) {
-      cSet(key, al, 2 * 3_600_000);
-      await setCachedValue(diskKey, al, 2 * 3_600_000);
-      return al;
-    }
-  } catch {}
-
-  try {
-    const r = await jikanPopular();
-    if (r.length > 0) {
-      cSet(key, r, 2 * 3_600_000);
-      await setCachedValue(diskKey, r, 2 * 3_600_000);
-      return r;
-    }
-  } catch {}
-
-  return [];
+  return cachedCatalog('popular', 2 * 3_600_000, [alPopular, jikanPopular]);
 }
 
 export async function fetchAnimeByGenre(genreId: number): Promise<AnimeResult[]> {
-  const key = `genre_${genreId}`;
-  const diskKey = `anime:${key}`;
-  const cached = cGet<AnimeResult[]>(key);
-  if (cached) return cached;
-  const diskCached = await getCachedValue<AnimeResult[]>(diskKey);
-  if (diskCached) {
-    cSet(key, diskCached, 30 * 60_000);
-    return diskCached;
-  }
-
   const genreName = ANIME_GENRES.find((g) => g.id === genreId)?.name;
-
-  if (genreName) {
-    try {
-      const al = await alByGenre(genreName);
-      if (al.length > 0) {
-        cSet(key, al, 30 * 60_000);
-        await setCachedValue(diskKey, al, 30 * 60_000);
-        return al;
-      }
-    } catch {}
-  }
-
-  try {
-    const r = await jikanByGenre(genreId);
-    if (r.length > 0) {
-      cSet(key, r, 30 * 60_000);
-      await setCachedValue(diskKey, r, 30 * 60_000);
-      return r;
-    }
-  } catch {}
-
-  return [];
+  return cachedCatalog(`genre_${genreId}`, 30 * 60_000, [
+    ...(genreName ? [() => alByGenre(genreName)] : []),
+    () => jikanByGenre(genreId),
+  ]);
 }
 
 function hasPlaceholderEpisodes(info: AnimeInfo): boolean {
@@ -1190,20 +1507,85 @@ export async function resolveStreamingByMalId(malId: string): Promise<{ slug: st
       return { slug: resolved.slug, animeId: resolved.animeId };
     }
   }
-  const jikan = await jikanFull(malId);
+  // Provider matching needs title variants. AniList has them (and is shared
+  // with the title page through the in-flight request); Jikan is the fallback.
+  const media = await fetchAniListTitle(malId);
+  const jikan = media ? jikanFromAniList(malId, media) : await jikanFull(malId);
   if (!jikan) return null;
   return findSourceMatch(jikan);
 }
 
+const INFO_PREFIX = 'info3_';
+const FALLBACK_INFO_TTL = 30 * 60_000;
+const FINISHED_INFO_TTL = 24 * 3_600_000;
+const AIRING_INFO_TTL = 6 * 3_600_000;
+const _infoRequests = new Map<string, Promise<AnimeInfo | null>>();
+
+const isFinishedStatus = (status?: string) => /^(?:finished airing|finished)$/i.test(status?.trim() || '');
+
+/**
+ * How long a title record may be reused. AniList records last until the next
+ * broadcast (so a newly aired episode appears), or a day once the show has
+ * finished. Fallback records — no synopsis, romaji title, tag-dump genres —
+ * last 30 minutes, so an AniList outage cannot pin a degraded page for 24 h.
+ */
+export function animeInfoTtl(info: AnimeInfo, now = Date.now()): number {
+  if (info.metaSource !== 'anilist') return FALLBACK_INFO_TTL;
+  const next = info.nextAiringEpisode?.airingAt;
+  if (next) return Math.min(AIRING_INFO_TTL, Math.max(2 * 60_000, next - now));
+  return isFinishedStatus(info.status) ? FINISHED_INFO_TTL : AIRING_INFO_TTL;
+}
+
+function usableCachedInfo(info: AnimeInfo | null): info is AnimeInfo {
+  if (!info || !Array.isArray(info.episodes)) return false;
+  // The record predates a broadcast that has since happened: rebuild it.
+  if (info.metaSource === 'anilist' && info.nextAiringEpisode && info.nextAiringEpisode.airingAt <= Date.now()) return false;
+  if (info.metaSource === 'anilist' && !info.episodes.length && info.episodeLoadError) return true;
+  return hasPlayableEpisodes(info) && !hasPlaceholderEpisodes(info) && !hasSuspiciousEpisodeCount(info);
+}
+
+async function storeInfo(info: AnimeInfo): Promise<void> {
+  const ttl = animeInfoTtl(info);
+  const key = `${INFO_PREFIX}${info.id}`;
+  // A late AniList answer may already have upgraded this title; never downgrade it.
+  if (info.metaSource !== 'anilist' && cGet<AnimeInfo>(key)?.metaSource === 'anilist') return;
+  cSet(key, info, ttl);
+  await setCachedValue(`anime:${key}`, info, ttl);
+}
+
+export type FetchAnimeInfoOptions = {
+  force?: boolean;
+  /**
+   * Called once with the title's metadata when the episode list still needs a
+   * slow provider lookup, so the page can draw the hero and synopsis first.
+   */
+  onMetadata?: (info: AnimeInfo) => void;
+};
+
 export async function fetchAnimeInfo(
   id: string,
-  opts?: { force?: boolean },
+  opts?: FetchAnimeInfoOptions,
 ): Promise<AnimeInfo | null> {
   // Sakura Originals are served locally — no network fetch needed
   const { fetchSakuraOriginalInfo, isSakuraOriginal } = await import('./sakura-originals');
   if (isSakuraOriginal(id)) return fetchSakuraOriginalInfo(id, opts);
 
-  const key = `info2_${id}`;
+  // The detail page and a quick tap on Play ask for the same title; share one load.
+  if (!opts?.force) {
+    const pending = _infoRequests.get(id);
+    if (pending) return pending;
+  }
+  const request = loadAnimeInfo(id, opts);
+  if (!opts?.force) {
+    _infoRequests.set(id, request);
+    const clear = () => { if (_infoRequests.get(id) === request) _infoRequests.delete(id); };
+    request.then(clear, clear);
+  }
+  return request;
+}
+
+async function loadAnimeInfo(id: string, opts?: FetchAnimeInfoOptions): Promise<AnimeInfo | null> {
+  const key = `${INFO_PREFIX}${id}`;
   const diskKey = `anime:${key}`;
 
   if (opts?.force) {
@@ -1211,32 +1593,64 @@ export async function fetchAnimeInfo(
     cDelete(`srcmap_${id}`);
     cDelete(`srcslug_${id}`);
     cDelete(`aired_bound_${id}`);
-  }
-
-  const cached = cGet<AnimeInfo>(key);
-  if (cached && !opts?.force && hasPlayableEpisodes(cached) && !hasPlaceholderEpisodes(cached) && !hasSuspiciousEpisodeCount(cached)) {
-    hydrateStreamingFromInfo(cached, id);
-    if (!cached.episodes.some((e) => e.thumbnail)) {
-      void enrichEpisodeThumbnails(cached.episodes, id);
+  } else {
+    const cached = cGet<AnimeInfo>(key);
+    if (usableCachedInfo(cached)) {
+      hydrateStreamingFromInfo(cached, id);
+      return cached.metaSource === 'anilist' ? cached : applyAiredEpisodeBound(cached);
     }
-    return applyAiredEpisodeBound(cached);
-  }
-  let diskCached = await getCachedValue<AnimeInfo>(diskKey);
-  if (!diskCached) {
-    diskCached = await getCachedValue<AnimeInfo>(`anime:info_${id}`);
-  }
-  if (diskCached && !opts?.force && hasPlayableEpisodes(diskCached) && !hasPlaceholderEpisodes(diskCached) && !hasSuspiciousEpisodeCount(diskCached)) {
-    cSet(key, diskCached, 24 * 3_600_000);
-    await hydrateStreamingFromDisk(diskCached, id);
-    if (!diskCached.episodes.some((e) => e.thumbnail)) {
-      void enrichEpisodeThumbnails(diskCached.episodes, id);
+    const diskCached = await getCachedValue<AnimeInfo>(diskKey);
+    if (usableCachedInfo(diskCached)) {
+      cSet(key, diskCached, animeInfoTtl(diskCached));
+      await hydrateStreamingFromDisk(diskCached, id);
+      return diskCached.metaSource === 'anilist' ? diskCached : applyAiredEpisodeBound(diskCached);
     }
-    return applyAiredEpisodeBound(diskCached);
   }
 
-  const jikan = await jikanFull(id);
-  if (!jikan) return null;
+  const meta = await loadTitleMeta(id, !!opts?.force, (media) => {
+    // AniList answered after a fallback won the race. Keep its record for the
+    // next visit when it is complete on its own (no provider lookup needed).
+    const late = animeInfoFromAniList(id, media);
+    if (late.airedCount !== null) void storeInfo(late.info).catch(() => undefined);
+  });
+  if (!meta) return null;
 
+  if (meta.source === 'anilist') {
+    const { info, airedCount } = animeInfoFromAniList(id, meta.media);
+    rememberAnimePreviews([{ id, title: info.title, image: info.image, type: info.type, score: info.score, year: info.year }]);
+    if (airedCount === null) {
+      // Airing with no published schedule, or on hiatus: only the provider knows
+      // how many episodes exist. Show everything else while it is asked.
+      opts?.onMetadata?.({ ...info, episodes: [] });
+      const jikanLike = jikanFromAniList(id, meta.media);
+      let episodes = await providerEpisodes(id, jikanLike, info);
+      if (!episodes.length) {
+        const fallbackCount = await estimateJikanEpisodeCount(jikanLike);
+        if (fallbackCount > 0) episodes = makeMalEpisodes(id, fallbackCount);
+      }
+      info.episodes = withStreamingDetails(episodes, meta.media, episodes.length);
+      if (!info.episodes.length) {
+        info.episodeLoadError = getActiveConsumetUrl()
+          ? 'Streaming source unavailable for this title.'
+          : 'Streaming server is not configured.';
+        return info;
+      }
+    }
+    hydrateStreamingFromInfo(info, id);
+    if (info.episodes.length > 0 || info.episodeLoadError) await storeInfo(info);
+    return info;
+  }
+
+  return infoFromFallback(id, meta.jikan, meta.source, opts);
+}
+
+/** The previous Jikan-shaped path, used only when AniList could not answer. */
+async function infoFromFallback(
+  id: string,
+  jikan: JikanFull,
+  source: 'jikan' | 'index',
+  opts?: FetchAnimeInfoOptions,
+): Promise<AnimeInfo | null> {
   const img =
     jikan.images?.webp?.large_image_url || jikan.images?.webp?.image_url || '';
 
@@ -1252,20 +1666,40 @@ export async function fetchAnimeInfo(
     type: jikan.type,
     year: jikan.year,
     episodes: [],
+    metaSource: source,
   };
 
   // Metadata already gives an exact episode count for completed shows. Render
   // those MAL-addressed episodes immediately; provider matching belongs to the
-  // play action and optional thumbnails must not keep the details spinner up.
-  if (jikan.episodes && jikan.episodes > 0 && /^(?:finished airing|finished)$/i.test(jikan.status)) {
+  // play action.
+  if (jikan.episodes && jikan.episodes > 0 && isFinishedStatus(jikan.status)) {
     info.episodes = makeMalEpisodes(id, jikan.episodes);
     hydrateStreamingFromInfo(info, id);
-    void enrichEpisodeThumbnails(info.episodes, id);
-    cSet(key, info, 24 * 3_600_000);
-    await setCachedValue(diskKey, info, 24 * 3_600_000);
+    await storeInfo(info);
     return info;
   }
 
+  opts?.onMetadata?.({ ...info, episodes: [] });
+  info.episodes = await providerEpisodes(id, jikan, info);
+
+  if (info.episodes.length === 0) {
+    const fallbackCount = await estimateJikanEpisodeCount(jikan);
+    if (fallbackCount > 0) info.episodes = makeMalEpisodes(id, fallbackCount);
+  }
+
+  if (info.episodes.length === 0) {
+    info.episodeLoadError = getActiveConsumetUrl()
+      ? 'Streaming source unavailable for this title.'
+      : 'Streaming server is not configured.';
+  }
+
+  if (info.episodes.length > 0) await storeInfo(info);
+
+  return applyAiredEpisodeBound(info);
+}
+
+/** Provider (HiAnime) episode list for a title whose aired count is not known. */
+async function providerEpisodes(id: string, jikan: JikanFull, info: AnimeInfo): Promise<AnimeEpisode[]> {
   try {
     const srcKey = `srcmap_${id}`;
     let srcmap = cGet<{ slug: string; animeId: string }>(srcKey);
@@ -1292,34 +1726,35 @@ export async function fetchAnimeInfo(
         info.streamingSlug = undefined;
         info.streamingAnimeId = undefined;
       }
-      info.episodes = eps;
-      void enrichEpisodeThumbnails(eps, id);
       if (eps.length > 0) cSet(`episodes_${srcmap.animeId}`, eps, 6 * 3_600_000);
+      return eps;
     }
   } catch (e) {
     console.warn('[anime] source match failed:', e);
   }
+  return [];
+}
 
-  if (info.episodes.length === 0) {
-    const fallbackCount = await estimateJikanEpisodeCount(jikan);
-    if (fallbackCount > 0) {
-      info.episodes = makeMalEpisodes(id, fallbackCount);
-      void enrichEpisodeThumbnails(info.episodes, id);
-    }
-  }
-
-  if (info.episodes.length === 0) {
-    info.episodeLoadError = getActiveConsumetUrl()
-      ? 'Streaming source unavailable for this title.'
-      : 'Streaming server is not configured.';
-  }
-
-  if (info.episodes.length > 0) {
-    cSet(key, info, 24 * 3_600_000);
-    await setCachedValue(diskKey, info, 24 * 3_600_000);
-  }
-
-  return applyAiredEpisodeBound(info);
+// ─── Stream prewarming ───────────────────────────────────────────────────────
+/**
+ * Start resolving an episode's stream before the viewer presses play: from
+ * the detail page (hover, focus, or the main button settling into view) and
+ * near the end of the current episode for the next one. The watch page's own
+ * request then takes the finished answer instead of starting from zero.
+ * Native resolves through the provider at play time and ignores this.
+ */
+export function prewarmEpisodeStream(
+  episodeId: string,
+  category: 'sub' | 'dub',
+  malId?: string,
+): void {
+  if (!usesBrowserAnimeStream) return;
+  const malParts = episodeId.match(/^mal-(\d+)-(\d+)$/);
+  const hiParts = episodeId.match(/^hi-(\d+)-(\d+)$/);
+  const streamMalId = malParts?.[1] || (hiParts && malId && /^[1-9]\d*$/.test(malId) ? malId : undefined);
+  const episode = Number(malParts?.[2] || hiParts?.[2]);
+  if (!streamMalId || !Number.isSafeInteger(episode) || episode < 1) return;
+  prewarmBrowserAnimeStream({ malId: streamMalId, episode, category });
 }
 
 async function resolveSlugForPlayback(

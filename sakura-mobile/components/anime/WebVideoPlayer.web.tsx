@@ -30,6 +30,27 @@ function browserHeadersKey(headers: Record<string, string> | undefined): string 
     .sort(([a], [b]) => a.localeCompare(b)));
 }
 
+/**
+ * Bandwidth hls.js should assume before it has measured anything.
+ *
+ * Without a start level hls.js begins on the first variant in the master
+ * playlist, which for these streams is the top rendition: the first segment
+ * was 1.3 MB and took ~1.6 s on a 9 Mbps phone connection before any frame
+ * showed. Starting from an estimate picks a rendition the connection can fetch
+ * quickly (the browser's own downlink hint when it offers one), and the normal
+ * ABR logic climbs to full quality within a few segments, as Netflix and
+ * YouTube do.
+ */
+function startupBandwidthEstimate(): number {
+  try {
+    const downlink = (navigator as Navigator & { connection?: { downlink?: number } }).connection?.downlink;
+    if (typeof downlink === 'number' && Number.isFinite(downlink) && downlink > 0) {
+      return Math.round(Math.min(6_000_000, Math.max(800_000, downlink * 1_000_000 * 0.8)));
+    }
+  } catch { /* no Network Information API (Safari, Firefox, tests) */ }
+  return 2_500_000;
+}
+
 const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(function WebVideoPlayer(
   {
     uri,
@@ -211,8 +232,11 @@ const WebVideoPlayer = forwardRef<WebVideoPlayerHandle, WebVideoPlayerProps>(fun
       hls = new Hls({
         // Only play the selected episode; never launch a playlist's ad assets.
         enableInterstitialPlayback: false,
-        // Start capped modes at the lowest variant before automatic selection.
-        ...(qualityPreferenceRef.current !== 'auto' ? { startLevel: 0 } : {}),
+        // Start capped modes at the lowest variant before automatic selection;
+        // Auto starts from a bandwidth estimate instead of the top rendition.
+        ...(qualityPreferenceRef.current !== 'auto'
+          ? { startLevel: 0 }
+          : { startLevel: -1, testBandwidth: false, abrEwmaDefaultEstimate: startupBandwidthEstimate() }),
         xhrSetup: (xhr) => {
           for (const [key, value] of safeHeaders) {
             xhr.setRequestHeader(key, value);

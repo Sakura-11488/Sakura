@@ -18,42 +18,98 @@ import { Image } from 'expo-image';
 import CoverImage from '@/components/ui/CoverImage';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import Svg, { Circle, Path } from 'react-native-svg';
-import { Spacing, Radius, FontSize, FontWeight, Fonts } from '@/constants/theme';
+import { Spacing, Radius, FontSize, Fonts } from '@/constants/theme';
 import { contentWidth } from '@/constants/layout';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import EmptyState from '@/components/ui/EmptyState';
-import { fetchTrendingManga, searchManga, toContentItem } from '@/lib/manga';
-import { searchAnime } from '@/lib/anime';
-import { searchNovels } from '@/lib/allnovel';
-import { searchHentai } from '@/lib/hentai';
-import { searchManhwa } from '@/lib/manhwa';
-import { searchUsersByUsername, type UserSearchResult } from '@/lib/creator';
-import { navigateToUserChat, userDisplayLabel } from '@/lib/user-chat-nav';
+import { fetchTrendingManga, toContentItem } from '@/lib/manga';
+import { type UserSearchResult } from '@/lib/creator';
+import { navigateToUserChat } from '@/lib/user-chat-nav';
 import { useContentPrefs } from '@/lib/content-prefs';
 import MangaCatalogWeb from '@/components/discovery/MangaCatalogWeb';
+import { EMPTY_MAY_MEAN_DOWN, SEARCH_SOURCES } from '@/lib/search-sources';
+import {
+  SEARCH_DEBOUNCE_MS,
+  SEARCH_MIN_CHARS,
+  SEARCH_SLOW_MS,
+  SearchSessionCache,
+  applySourceOutcome,
+  buildSectionViews,
+  cleanQuery,
+  emptySections,
+  enabledSources,
+  markSectionSlow,
+  prefillSections,
+  runProgressively,
+  searchFilters,
+  sourcesToRun,
+  summarizeSections,
+  type SearchFilter,
+  type SearchResult,
+  type SearchSourceKey,
+  type SectionMap,
+  type SectionView,
+  type SourceAnswer,
+} from '@/lib/search-core';
+import {
+  clearRecentSearches,
+  loadRecentSearches,
+  peekRecentSearches,
+  rememberSearch,
+  removeRecentSearch,
+  subscribeRecentSearches,
+} from '@/lib/search-history';
 
-const BASE_FILTERS = ['All', 'Manga', 'Anime', 'Novel', 'Users'] as const;
+type Filter = SearchFilter;
+
 /**
- * Manhwa shown per search. Manhwa titles live only in the scraper, not in the
- * atsu catalogue, so this list is the only way to find most of them; it used
- * to be cut to 10, which hid series users searched for by name. A full answer
- * also offers "See all manhwa", the browse screen paging the same query.
+ * Answers per query for this app session, at module scope so they outlive the
+ * screen: leaving the tab and coming back, or backspacing to a query already
+ * run, renders it synchronously (see lib/search-core.ts).
  */
-const MANHWA_SEARCH_LIMIT = 24;
-type Filter = (typeof BASE_FILTERS)[number] | '18+';
+const searchCache = new SearchSessionCache(24);
 
-type SearchResult = {
-  key: string;
-  title: string;
-  cover: string;
-  type: 'manga' | 'anime' | 'novel' | 'user' | 'hentai';
-  meta: string;
-  navTarget?: string;
-  user?: UserSearchResult;
-};
+/** Rows per section in the native All overview; "View all" opens the section's chip. */
+const NATIVE_OVERVIEW_ROWS = 4;
+
+type Row =
+  | { kind: 'header'; key: string; view: SectionView }
+  | { kind: 'item'; key: string; item: SearchResult; stale: boolean; index: number }
+  | { kind: 'skeleton'; key: string }
+  | { kind: 'failed'; key: string; view: SectionView }
+  | { kind: 'more'; key: string; view: SectionView }
+  | { kind: 'browse'; key: string; view: SectionView }
+  | { kind: 'section-empty'; key: string; view: SectionView };
+
+/** Flattens the visible sections into FlatList rows (virtualised, unlike a ScrollView of sections). */
+function buildRows(views: SectionView[], overview: boolean): Row[] {
+  const rows: Row[] = [];
+  let index = 0;
+  for (const view of views) {
+    if (overview) rows.push({ kind: 'header', key: `h-${view.key}`, view });
+    if (view.status === 'failed') {
+      rows.push({ kind: 'failed', key: `f-${view.key}`, view });
+      continue;
+    }
+    if (!view.items.length) {
+      if (view.status === 'pending') {
+        const count = overview ? 2 : 6;
+        for (let i = 0; i < count; i++) rows.push({ kind: 'skeleton', key: `s-${view.key}-${i}` });
+      } else if (!overview) {
+        rows.push({ kind: 'section-empty', key: `e-${view.key}`, view });
+      }
+      continue;
+    }
+    const shown = overview ? view.items.slice(0, NATIVE_OVERVIEW_ROWS) : view.items;
+    for (const item of shown) rows.push({ kind: 'item', key: item.key, item, stale: view.stale, index: index++ });
+    if (overview && !view.stale && view.items.length > NATIVE_OVERVIEW_ROWS) rows.push({ kind: 'more', key: `m-${view.key}`, view });
+    if (view.browseSource && view.full) rows.push({ kind: 'browse', key: `b-${view.key}`, view });
+  }
+  return rows;
+}
 
 function avatarColor(seed: string): string {
   const palette = ['#E84545', '#9B21BE', '#3498DB', '#27AE60', '#E67E22', '#5856D6'];
@@ -71,6 +127,21 @@ function SearchIcon({ color }: { color: string }) {
   );
 }
 
+/** Recent searches, shared by both platforms and kept in sync across screens. */
+function useRecentSearches(): string[] {
+  const [list, setList] = useState<string[]>(() => peekRecentSearches() ?? []);
+  useEffect(() => {
+    let alive = true;
+    const unsubscribe = subscribeRecentSearches((next) => { if (alive) setList(next); });
+    loadRecentSearches().then((next) => { if (alive) setList(next); }).catch(() => {});
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+  return list;
+}
+
 export default function SearchTabScreen() {
   const { colors } = useTheme();
   const router = useRouter();
@@ -86,24 +157,30 @@ export default function SearchTabScreen() {
     const cols = avail >= 900 ? 4 : avail >= 620 ? 3 : 2;
     return Math.floor((avail - 10 * (cols - 1)) / cols);
   }, [windowW]);
-  const filters = useMemo<Filter[]>(
-    () => (allowAdult ? [...BASE_FILTERS, '18+'] : [...BASE_FILTERS]),
-    [allowAdult],
-  );
+  const filters = useMemo<Filter[]>(() => searchFilters(allowAdult), [allowAdult]);
+  const enabled = useMemo(() => enabledSources(allowAdult), [allowAdult]);
+  const recentSearches = useRecentSearches();
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchRequestRef = useRef(0);
+  /** Bumped whenever the query changes; answers from an older generation are dropped. */
+  const generationRef = useRef(0);
+  const controllersRef = useRef(new Set<AbortController>());
+  /** Sources with a request in flight for the current generation, so a retry never doubles one. */
+  const inFlightRef = useRef(new Set<SearchSourceKey>());
+  const activeKeyRef = useRef('');
+  const activeQueryRef = useRef('');
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const scrollRef = useRef<any>(null);
+  const resultsRef = useRef<FlatList<Row>>(null);
   const inputRef = useRef<TextInput>(null);
   useScrollToTop(scrollRef);
 
   const [query, setQuery] = useState('');
+  /** queryKey() of the search the sections are for (stale sections show an older one). */
+  const [activeKey, setActiveKey] = useState('');
   const [filter, setFilter] = useState<Filter>('All');
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
-  /** Sources whose request rejected on the last search (outage, not "no match"). */
-  const [failedSources, setFailedSources] = useState<string[]>([]);
-  /** The query whose manhwa answer came back full, so the scraper may hold more. */
-  const [manhwaMoreQuery, setManhwaMoreQuery] = useState<string | null>(null);
+  const [sections, setSections] = useState<SectionMap>(emptySections);
   const [messagingUser, setMessagingUser] = useState<string | null>(null);
   const [discoverCards, setDiscoverCards] = useState<Array<{ id: string; title: string; cover: string }>>([]);
   const [discoverLoading, setDiscoverLoading] = useState(true);
@@ -124,214 +201,183 @@ export default function SearchTabScreen() {
     return () => { cancelled = true; };
   }, [discoverAttempt]);
 
-  const runSearch = useCallback(async (raw: string) => {
-    const requestId = ++searchRequestRef.current;
-    const q = raw.trim();
-    if (q.length < 2) {
-      setResults([]);
-      setManhwaMoreQuery(null);
-      setLoading(false);
-      setFailedSources([]);
+  /** Drop everything in flight: the query moved on (or the screen went away). */
+  const cancelInFlight = useCallback(() => {
+    generationRef.current += 1;
+    controllersRef.current.forEach((controller) => controller.abort());
+    controllersRef.current.clear();
+    inFlightRef.current.clear();
+  }, []);
+
+  /**
+   * Asks every source that has no fresh cached answer for `q`, and draws each
+   * section the moment its own answer lands.
+   */
+  const runSources = useCallback((q: string) => {
+    const qKey = q.toLowerCase();
+    if (q.length < SEARCH_MIN_CHARS) return;
+    const generation = generationRef.current;
+    const keys = sourcesToRun(enabledRef.current, searchCache.get(qKey), Date.now())
+      .filter((key) => !inFlightRef.current.has(key));
+    if (!keys.length) return;
+    const controller = new AbortController();
+    controllersRef.current.add(controller);
+    keys.forEach((key) => inFlightRef.current.add(key));
+    void runProgressively<SearchSourceKey, SourceAnswer>(
+      keys.map((key) => ({
+        key,
+        run: async (signal) => {
+          const answer = await SEARCH_SOURCES[key](q, signal);
+          // Cached even when superseded: backspacing to this query is then
+          // instant. An empty answer that may be a hidden outage is stored as
+          // already stale (at 0), so the next run asks that source again.
+          const trusted = answer.items.length > 0 || !EMPTY_MAY_MEAN_DOWN.has(key);
+          searchCache.put(qKey, key, answer, trusted ? Date.now() : 0);
+          return answer;
+        },
+      })),
+      (key, outcome) => {
+        if (generation !== generationRef.current) return;
+        inFlightRef.current.delete(key);
+        setSections((prev) => applySourceOutcome(prev, key, qKey, outcome));
+      },
+      {
+        signal: controller.signal,
+        slowMs: SEARCH_SLOW_MS,
+        onSlow: (key) => {
+          if (generation !== generationRef.current) return;
+          // Let "Try again" start a fresh request; a late answer still lands.
+          inFlightRef.current.delete(key);
+          setSections((prev) => markSectionSlow(prev, key, qKey));
+        },
+      },
+    ).finally(() => controllersRef.current.delete(controller));
+  }, []);
+
+  /**
+   * The single entry point for a query change. `debounced` (typing) waits
+   * SEARCH_DEBOUNCE_MS before asking the network; `now` (Enter, a recent or
+   * suggestion tap, a retry) asks at once. Either way, cached sections render
+   * synchronously and the others keep their previous cards until answered.
+   */
+  const applyQuery = useCallback((text: string, mode: 'debounced' | 'now') => {
+    setQuery(text);
+    const q = cleanQuery(text);
+    const qKey = q.toLowerCase();
+    const changed = qKey !== activeKeyRef.current;
+    // Only whitespace changed: whatever is already scheduled or running stands.
+    if (!changed && mode === 'debounced') return;
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    if (changed) {
+      cancelInFlight();
+      activeKeyRef.current = qKey;
+      activeQueryRef.current = q;
+      setActiveKey(qKey);
+    }
+    if (q.length < SEARCH_MIN_CHARS) {
+      setSections(emptySections());
       return;
     }
-    setLoading(true);
-    try {
-      const [mangaRes, animeRes, novelRes, userRes, manhwaRes, hentaiRes] =
-        await Promise.allSettled([
-          searchManga(q, 12),
-          searchAnime(q),
-          searchNovels(q),
-          searchUsersByUsername(q, 12),
-          // Unconditional: manhwa is SFW, and it carries titles the atsu
-          // catalogue doesn't have at all.
-          searchManhwa(q, MANHWA_SEARCH_LIMIT),
-          allowAdult ? searchHentai(q, 12) : Promise.resolve([]),
-        ]);
-      if (requestId !== searchRequestRef.current) return;
+    setSections((prev) => prefillSections(prev, qKey, enabledRef.current, searchCache.get(qKey)));
+    if (mode === 'now') runSources(q);
+    else debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      runSources(q);
+    }, SEARCH_DEBOUNCE_MS);
+  }, [cancelInFlight, runSources]);
 
-      const merged: SearchResult[] = [];
-      let manhwaMore: string | null = null;
+  const onChangeQuery = useCallback((text: string) => applyQuery(text, 'debounced'), [applyQuery]);
+  const submitQuery = useCallback((text: string) => {
+    applyQuery(text, 'now');
+    if (cleanQuery(text).length >= SEARCH_MIN_CHARS) void rememberSearch(text);
+  }, [applyQuery]);
+  const retrySearch = useCallback(() => applyQuery(activeQueryRef.current, 'now'), [applyQuery]);
+  const rememberCurrent = useCallback(() => {
+    if (activeQueryRef.current.length >= SEARCH_MIN_CHARS) void rememberSearch(activeQueryRef.current);
+  }, []);
 
-      if (mangaRes.status === 'fulfilled') {
-        mangaRes.value.slice(0, 10).forEach((item) => {
-          merged.push({
-            key: `manga-${item.id}`,
-            title: item.title,
-            cover: toContentItem(item).cover,
-            type: 'manga',
-            meta: item.type || 'Manga',
-            navTarget: `/manga/${item.id}`,
-          });
-        });
-      }
-      if (animeRes.status === 'fulfilled') {
-        animeRes.value.slice(0, 10).forEach((item) => {
-          merged.push({
-            key: `anime-${item.id}`,
-            title: item.title,
-            cover: item.image,
-            type: 'anime',
-            meta: [item.type || 'Anime', item.year ? String(item.year) : null].filter(Boolean).join(' · '),
-            navTarget: `/anime/${item.id}`,
-          });
-        });
-      }
-      if (novelRes.status === 'fulfilled') {
-        novelRes.value.slice(0, 8).forEach((item) => {
-          merged.push({
-            key: `novel-${item.path}`,
-            title: item.name,
-            cover: item.cover || item.originalCover || '',
-            type: 'novel',
-            meta: 'Novel',
-            navTarget: `/novel/ext?path=${encodeURIComponent(item.path)}`,
-          });
-        });
-      }
-      if (userRes.status === 'fulfilled') {
-        userRes.value
-          .filter((user) => !address || user.wallet_address !== address)
-          .slice(0, 10)
-          .forEach((user) => {
-            merged.push({
-              key: `user-${user.wallet_address}`,
-              title: userDisplayLabel(user),
-              cover: user.avatar_url ?? '',
-              type: 'user',
-              meta: `@${user.username}`,
-              user,
-            });
-          });
-      }
-      if (manhwaRes.status === 'fulfilled') {
-        // Less than a full answer is everything the scraper has for this
-        // query, so only a full one is worth a "See all".
-        if (manhwaRes.value.length >= MANHWA_SEARCH_LIMIT) manhwaMore = q;
-        manhwaRes.value.slice(0, MANHWA_SEARCH_LIMIT).forEach((item) => {
-          merged.push({
-            key: `manhwa-${item.id}`,
-            title: item.title,
-            cover: item.cover,
-            // Typed as 'manga' so it appears under both the All and Manga
-            // filters; `meta` is what tells the reader where it came from.
-            type: 'manga',
-            meta: 'Manhwa',
-            // Ids carry an `mr:`/`cz:` prefix, so encode before interpolating.
-            navTarget: `/manga/${encodeURIComponent(item.id)}?source=manhwa`,
-          });
-        });
-      }
-      if (allowAdult && hentaiRes.status === 'fulfilled') {
-        hentaiRes.value.slice(0, 10).forEach((item) => {
-          merged.push({
-            key: `hentai-${item.id}`,
-            title: item.title,
-            cover: item.cover,
-            type: 'hentai',
-            meta: '18+',
-            navTarget: `/manga/${item.id}?source=hentai`,
-          });
-        });
-      }
+  // The adult opt-in adds or removes the 18+ source mid-search.
+  const enabledSig = enabled.join(',');
+  const firstEnabled = useRef(true);
+  useEffect(() => {
+    if (firstEnabled.current) { firstEnabled.current = false; return; }
+    const q = activeQueryRef.current;
+    if (q.length < SEARCH_MIN_CHARS) return;
+    setSections((prev) => prefillSections(prev, q.toLowerCase(), enabledRef.current, searchCache.get(q.toLowerCase())));
+    runSources(q);
+  }, [enabledSig, runSources]);
 
-      // A source that is DOWN must not look like "this doesn't exist". Track
-      // which ones rejected so the UI can say so instead of rendering the same
-      // "No results" state for an outage as for a genuinely empty search.
-      const failed: string[] = [];
-      if (mangaRes.status === 'rejected') failed.push('Manga');
-      if (animeRes.status === 'rejected') failed.push('Anime');
-      if (novelRes.status === 'rejected') failed.push('Novels');
-      if (userRes.status === 'rejected') failed.push('Users');
-      if (manhwaRes.status === 'rejected') failed.push('Manhwa');
-      if (allowAdult && hentaiRes.status === 'rejected') failed.push('18+');
-      setFailedSources(failed);
-
-      setResults(merged);
-      setManhwaMoreQuery(manhwaMore);
-    } catch {
-      if (requestId !== searchRequestRef.current) return;
-      setResults([]);
-      setManhwaMoreQuery(null);
-      setFailedSources(['Search']);
-    } finally {
-      if (requestId === searchRequestRef.current) setLoading(false);
-    }
-  }, [address, allowAdult]);
-
-  const onChangeQuery = useCallback(
-    (text: string) => {
-      searchRequestRef.current += 1;
-      setQuery(text);
-      setFailedSources([]);
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      if (text.trim().length < 2) {
-        setResults([]);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      debounceRef.current = setTimeout(() => runSearch(text), 400);
-    },
-    [runSearch],
-  );
-
+  // A search handed over by another screen (the web home masthead): run it now.
   const appliedSearch = useRef<string | null>(null);
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof searchParams.q !== 'string') return;
+    if (typeof searchParams.q !== 'string') return;
     const request = JSON.stringify([searchParams.q, searchParams.searchRequest]);
     if (appliedSearch.current === request) return;
     appliedSearch.current = request;
-    onChangeQuery(searchParams.q);
-  }, [searchParams.q, searchParams.searchRequest, onChangeQuery]);
+    submitQuery(searchParams.q);
+  }, [searchParams.q, searchParams.searchRequest, submitQuery]);
+
+  useEffect(() => {
+    if (Platform.OS === 'web' || !searchParams.focus) return;
+    const t = setTimeout(() => inputRef.current?.focus(), 250);
+    return () => clearTimeout(t);
+  }, [searchParams.focus]);
 
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      searchRequestRef.current += 1;
+      cancelInFlight();
     };
-  }, []);
+  }, [cancelInFlight]);
 
   useFocusEffect(
     useCallback(() => {
-
       return () => {
         if (Platform.OS === 'web') return;
-        searchRequestRef.current += 1;
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+        cancelInFlight();
+        activeKeyRef.current = '';
+        activeQueryRef.current = '';
+        setActiveKey('');
         setQuery('');
         setFilter('All');
-        setResults([]);
-        setLoading(false);
-        if (debounceRef.current) clearTimeout(debounceRef.current);
+        setSections(emptySections());
         inputRef.current?.blur();
       };
-    }, [onChangeQuery, searchParams.q]),
+    }, [cancelInFlight]),
   );
-
-  const filteredResults = useMemo(() => {
-    // 18+ results are quarantined behind their own chip — never mixed into All.
-    if (filter === 'All') return results.filter((r) => r.type !== 'hentai');
-    if (filter === '18+') return allowAdult ? results.filter((r) => r.type === 'hentai') : [];
-    if (filter === 'Users') return results.filter((r) => r.type === 'user');
-    return results.filter((r) => r.type === filter.toLowerCase());
-  }, [allowAdult, filter, results]);
 
   // If the adult toggle flips off while 18+ is the active chip, snap back to All.
   useEffect(() => {
     if (!allowAdult && filter === '18+') setFilter('All');
   }, [allowAdult, filter]);
 
-  // Manhwa results are typed 'manga', so they show under All and Manga only.
-  const showManhwaMore =
-    !!manhwaMoreQuery && (filter === 'All' || filter === 'Manga') && filteredResults.length > 0;
-  const openManhwaBrowse = useCallback(() => {
-    if (!manhwaMoreQuery) return;
-    // Same route shape as the home tab's "View all": browse pages a manhwa
-    // query through the adapter's `browse`, past what one search returns.
+  const views = useMemo(
+    () => buildSectionViews(sections, filter, activeKey, { allowAdult, excludeWallet: address }),
+    [sections, filter, activeKey, allowAdult, address],
+  );
+  const summary = useMemo(() => summarizeSections(views), [views]);
+
+  const openBrowse = useCallback((view: SectionView) => {
+    const q = activeQueryRef.current;
+    if (!view.browseSource || !q) return;
+    rememberCurrent();
+    // Same route shape as the home tab's "View all": browse pages a scraped
+    // source's query through its adapter, past what one search returns.
     router.push({
       pathname: '/browse',
-      params: { title: `Manhwa · ${manhwaMoreQuery}`, source: 'manhwa', q: manhwaMoreQuery },
+      params: { title: `${view.label} · ${q}`, source: view.browseSource, q },
     } as never);
-  }, [manhwaMoreQuery, router]);
+  }, [rememberCurrent, router]);
+
+  const showSection = useCallback((view: SectionView) => {
+    setFilter(view.filter);
+    resultsRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, []);
 
   const openUserChat = useCallback(
     async (user: UserSearchResult) => {
@@ -380,6 +426,10 @@ export default function SearchTabScreen() {
     ],
     [discoverCards],
   );
+  const suggestions = useMemo(
+    () => discoverCards.slice(0, 6).map((card) => ({ label: card.title, query: card.title, cover: card.cover })),
+    [discoverCards],
+  );
 
   const s = useMemo(
     () =>
@@ -401,7 +451,7 @@ export default function SearchTabScreen() {
           borderRadius: Radius.md,
           paddingHorizontal: 12,
           gap: 8,
-          marginBottom: 20,
+          marginBottom: 14,
           height: 46,
         },
         input: {
@@ -410,6 +460,7 @@ export default function SearchTabScreen() {
           color: colors.text,
           fontFamily: Fonts.body,
         },
+        clearBtn: { padding: 6 },
         sectionTitle: {
           fontSize: 22,
           fontFamily: Fonts.display,
@@ -417,6 +468,28 @@ export default function SearchTabScreen() {
           color: colors.text,
           marginBottom: 10,
         },
+        recentHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+        recentClear: { color: colors.primary, fontSize: FontSize.sm, fontFamily: Fonts.bodyMedium, paddingVertical: 6, paddingLeft: 12 },
+        recentRow: {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          paddingVertical: 11,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+        },
+        recentText: { flex: 1, color: colors.text, fontSize: FontSize.md, fontFamily: Fonts.body },
+        chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 18 },
+        chip: {
+          paddingHorizontal: 12,
+          paddingVertical: 7,
+          borderRadius: Radius.full,
+          borderWidth: 1,
+          borderColor: colors.border,
+          backgroundColor: colors.surface,
+          maxWidth: '100%',
+        },
+        chipText: { color: colors.text, fontSize: FontSize.sm, fontFamily: Fonts.bodyMedium },
         discoverRow: { gap: 8, paddingBottom: 8 },
         discoverCard: {
           width: 132,
@@ -456,7 +529,8 @@ export default function SearchTabScreen() {
           borderRadius: 10,
           backgroundColor: colors.surfaceTertiary,
         },
-        filters: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+        filtersScroll: { flexGrow: 0, marginBottom: 10 },
+        filters: { flexDirection: 'row', gap: 8, paddingRight: Spacing.md },
         filterChip: {
           paddingHorizontal: 12,
           paddingVertical: 6,
@@ -471,7 +545,11 @@ export default function SearchTabScreen() {
         },
         filterText: { color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.bodyMedium },
         filterTextActive: { color: colors.primary, fontFamily: Fonts.bodyBold },
+        statusLine: { color: colors.textTertiary, fontSize: FontSize.xs, fontFamily: Fonts.body, marginBottom: 8 },
         results: { paddingBottom: 110, gap: 8 },
+        sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 10, paddingBottom: 2 },
+        sectionHeadTitle: { color: colors.text, fontSize: FontSize.lg, fontFamily: Fonts.bodyBold },
+        sectionHeadCount: { color: colors.textTertiary, fontSize: FontSize.sm, fontFamily: Fonts.body },
         resultRow: {
           flexDirection: 'row',
           gap: 10,
@@ -479,7 +557,9 @@ export default function SearchTabScreen() {
           backgroundColor: colors.surfaceSecondary,
           padding: 10,
         },
+        staleRow: { opacity: 0.45 },
         resultCover: { width: 56, height: 76, borderRadius: 8, backgroundColor: colors.surfaceTertiary },
+        skeletonLine: { height: 12, borderRadius: 6, backgroundColor: colors.surfaceTertiary },
         userCover: {
           width: 56,
           height: 56,
@@ -494,33 +574,157 @@ export default function SearchTabScreen() {
         messageHint: { color: colors.primary, fontSize: FontSize.xs, fontFamily: Fonts.bodyMedium },
         seeAllRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14 },
         seeAllText: { flex: 1, color: colors.primary, fontSize: FontSize.md, fontFamily: Fonts.bodyBold },
-        loader: { paddingTop: 48, alignItems: 'center' },
+        failedRow: { alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12 },
+        failedText: { flex: 1, color: colors.textSecondary, fontSize: FontSize.sm, fontFamily: Fonts.body },
+        retryText: { color: colors.primary, fontSize: FontSize.sm, fontFamily: Fonts.bodyBold },
         empty: { paddingTop: 24 },
       }),
     [colors, catCardW],
   );
 
+  const renderRow = useCallback(({ item: row }: { item: Row }) => {
+    switch (row.kind) {
+      case 'header': {
+        const { view } = row;
+        return (
+          <View style={s.sectionHead} accessibilityRole="header">
+            <Text style={s.sectionHeadTitle}>{view.label}</Text>
+            {view.status === 'pending' ? (
+              <ActivityIndicator size="small" color={colors.textTertiary} />
+            ) : view.status === 'done' && !view.stale ? (
+              <Text style={s.sectionHeadCount}>{view.items.length}{view.full ? '+' : ''}</Text>
+            ) : null}
+          </View>
+        );
+      }
+      case 'skeleton':
+        return (
+          <View style={s.resultRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <View style={s.resultCover} />
+            <View style={[s.resultInfo, { gap: 8 }]}>
+              <View style={[s.skeletonLine, { width: '70%' }]} />
+              <View style={[s.skeletonLine, { width: '35%', height: 9 }]} />
+            </View>
+          </View>
+        );
+      case 'failed':
+        return (
+          <TouchableOpacity style={[s.resultRow, s.failedRow]} activeOpacity={0.85} onPress={retrySearch} accessibilityRole="button">
+            <Text style={s.failedText} numberOfLines={2}>
+              {row.view.slow ? `${row.view.label} is taking too long to answer.` : `${row.view.label} didn’t respond.`}
+            </Text>
+            <Text style={s.retryText}>Try again</Text>
+          </TouchableOpacity>
+        );
+      case 'section-empty':
+        return <EmptyState compact title={`No ${row.view.label === 'People' ? 'people' : row.view.label.toLowerCase()} match “${activeQueryRef.current}”`} style={s.empty} />;
+      case 'more':
+        return (
+          <TouchableOpacity style={[s.resultRow, s.seeAllRow]} activeOpacity={0.85} accessibilityRole="button" onPress={() => showSection(row.view)}>
+            <Text style={s.seeAllText} numberOfLines={1}>View all {row.view.items.length} {row.view.label === 'People' ? 'people' : row.view.label.toLowerCase()}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        );
+      case 'browse':
+        return (
+          <TouchableOpacity style={[s.resultRow, s.seeAllRow]} activeOpacity={0.85} accessibilityRole="link" onPress={() => openBrowse(row.view)}>
+            <Text style={s.seeAllText} numberOfLines={1}>
+              See all {row.view.label.toLowerCase()} for “{activeQueryRef.current}”
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        );
+      case 'item': {
+        const { item } = row;
+        const isUser = item.type === 'user';
+        const seed = item.user?.avatar_seed ?? item.user?.wallet_address.slice(0, 8) ?? '?';
+        const busy = isUser && messagingUser === item.user?.wallet_address;
+        return (
+          // Capped stagger: an uncapped index * 30 ms made row 40 wait 1.2 s.
+          <Animated.View entering={FadeInDown.delay(Math.min(row.index, 6) * 30).duration(240)} style={row.stale ? s.staleRow : undefined}>
+            <TouchableOpacity
+              style={s.resultRow}
+              activeOpacity={0.85}
+              disabled={!!busy}
+              onPress={() => {
+                rememberCurrent();
+                handleResultPress(item);
+              }}
+            >
+              {isUser ? (
+                <View
+                  style={[
+                    s.userCover,
+                    !item.cover && { backgroundColor: avatarColor(seed), alignItems: 'center', justifyContent: 'center' },
+                  ]}
+                >
+                  {item.cover ? (
+                    <Image source={{ uri: item.cover }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                  ) : (
+                    <Text style={s.userCoverText}>{item.title.slice(0, 1).toUpperCase()}</Text>
+                  )}
+                </View>
+              ) : (
+                <CoverImage source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
+              )}
+              <View style={s.resultInfo}>
+                <Text style={s.resultTitle} numberOfLines={2}>
+                  {item.title}
+                </Text>
+                <Text style={s.resultMeta} numberOfLines={1}>
+                  {item.meta}
+                </Text>
+                {isUser ? (
+                  busy ? (
+                    <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginTop: 4 }} />
+                  ) : (
+                    <Text style={s.messageHint}>Tap to message</Text>
+                  )
+                ) : null}
+              </View>
+              {isUser && !busy ? (
+                <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
+              ) : null}
+            </TouchableOpacity>
+          </Animated.View>
+        );
+      }
+      default:
+        return null;
+    }
+  }, [s, colors, messagingUser, retrySearch, showSection, openBrowse, rememberCurrent, handleResultPress]);
+
+  const overview = filter === 'All';
+  const rows = useMemo(() => buildRows(views, overview), [views, overview]);
+
   if (Platform.OS === 'web') {
     return <MangaCatalogWeb
       query={query}
       onQueryChange={onChangeQuery}
+      onSubmit={() => submitQuery(query)}
       filter={filter}
       filters={filters}
       onFilterChange={setFilter}
-      results={filteredResults}
-      loading={loading}
-      failedSources={failedSources}
+      sections={views}
+      summary={summary}
       discoverCards={discoverCards}
       discoverLoading={discoverLoading}
       discoverError={discoverError}
       messagingUser={messagingUser}
-      suggestions={discoverCards.slice(0, 6).map(card => ({ label: card.title, query: card.title, cover: card.cover }))}
+      suggestions={suggestions}
+      recentSearches={recentSearches}
+      onRecentPress={submitQuery}
+      onRemoveRecent={(value) => void removeRecentSearch(value)}
+      onClearRecent={() => void clearRecentSearches()}
+      onRemember={rememberCurrent}
       onResultPress={handleResultPress}
       onDiscoverPress={id => router.push(`/manga/${encodeURIComponent(id)}` as never)}
-      onRetry={() => void runSearch(query)}
+      onRetry={retrySearch}
       onRetryDiscover={() => setDiscoverAttempt(attempt => attempt + 1)}
     />;
   }
+
+  const searching = query.trim().length >= SEARCH_MIN_CHARS;
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -535,15 +739,27 @@ export default function SearchTabScreen() {
             ref={inputRef}
             value={query}
             onChangeText={onChangeQuery}
+            onSubmitEditing={(e) => submitQuery(e.nativeEvent.text)}
             placeholder="Series, creators, users, and more"
             placeholderTextColor={colors.textTertiary}
             style={s.input}
             autoCorrect={false}
             returnKeyType="search"
           />
+          {query.length > 0 ? (
+            <TouchableOpacity
+              style={s.clearBtn}
+              onPress={() => { onChangeQuery(''); inputRef.current?.focus(); }}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              hitSlop={8}
+            >
+              <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+            </TouchableOpacity>
+          ) : null}
         </Animated.View>
 
-        {query.trim().length < 2 ? (
+        {!searching ? (
           <ScrollView
             ref={scrollRef}
             showsVerticalScrollIndicator={false}
@@ -551,6 +767,41 @@ export default function SearchTabScreen() {
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: 110 }}
           >
+            {recentSearches.length > 0 ? (
+              <View style={{ marginBottom: 18 }}>
+                <View style={s.recentHead}>
+                  <Text style={s.sectionTitle}>Recent searches</Text>
+                  <TouchableOpacity onPress={() => void clearRecentSearches()} accessibilityRole="button" accessibilityLabel="Clear recent searches">
+                    <Text style={s.recentClear}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+                {recentSearches.map((value) => (
+                  <View key={value} style={s.recentRow}>
+                    <Ionicons name="time-outline" size={18} color={colors.textTertiary} />
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => submitQuery(value)} accessibilityRole="button" accessibilityLabel={`Search ${value}`}>
+                      <Text style={s.recentText} numberOfLines={1}>{value}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => void removeRecentSearch(value)} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Remove ${value} from recent searches`}>
+                      <Ionicons name="close" size={18} color={colors.textTertiary} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {suggestions.length > 0 ? (
+              <>
+                <Text style={s.sectionTitle}>Try searching</Text>
+                <View style={s.chipRow}>
+                  {suggestions.map((suggestion) => (
+                    <TouchableOpacity key={suggestion.label} style={s.chip} activeOpacity={0.8} onPress={() => submitQuery(suggestion.query)}>
+                      <Text style={s.chipText} numberOfLines={1}>{suggestion.query}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : null}
+
             <Text style={s.sectionTitle}>What Everyone&apos;s Searching</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.discoverRow}>
               {discoverCards.slice(0, 6).map((card, idx) => (
@@ -570,7 +821,7 @@ export default function SearchTabScreen() {
             <View style={s.catGrid}>
               {categoryCards.map((cat, idx) => (
                 <Animated.View key={cat.label} entering={FadeInDown.delay(idx * 35).duration(260)}>
-                  <TouchableOpacity activeOpacity={0.85} style={s.catCard} onPress={() => onChangeQuery(cat.query)}>
+                  <TouchableOpacity activeOpacity={0.85} style={s.catCard} onPress={() => submitQuery(cat.query)}>
                     <Text style={s.catLabel}>{cat.label}</Text>
                     {!!cat.cover && <CoverImage source={{ uri: cat.cover }} style={s.catThumb} contentFit="cover" />}
                   </TouchableOpacity>
@@ -580,115 +831,60 @@ export default function SearchTabScreen() {
           </ScrollView>
         ) : (
           <>
-            <View style={s.filters}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={s.filtersScroll}
+              contentContainerStyle={s.filters}
+            >
               {filters.map((f) => (
                 <TouchableOpacity
                   key={f}
                   style={[s.filterChip, filter === f && s.filterChipActive]}
                   onPress={() => setFilter(f)}
                   activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: filter === f }}
                 >
                   <Text style={[s.filterText, filter === f && s.filterTextActive]}>{f}</Text>
                 </TouchableOpacity>
               ))}
-            </View>
+            </ScrollView>
 
-            {loading ? (
-              <View style={s.loader}>
-                <ActivityIndicator color={colors.primary} size="large" />
-              </View>
-            ) : (
-              <FlatList
-                data={filteredResults}
-                keyExtractor={(item) => item.key}
-                showsVerticalScrollIndicator={false}
-                scrollIndicatorInsets={{ bottom: 90 }}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={s.results}
-                renderItem={({ item, index }) => {
-                  const isUser = item.type === 'user';
-                  const seed = item.user?.avatar_seed ?? item.user?.wallet_address.slice(0, 8) ?? '?';
-                  const busy = isUser && messagingUser === item.user?.wallet_address;
+            {summary.loading && summary.anyFresh ? (
+              <Text style={s.statusLine}>{summary.count} results so far · still searching</Text>
+            ) : null}
 
-                  return (
-                    <Animated.View entering={FadeInDown.delay(index * 30).duration(240)}>
-                      <TouchableOpacity
-                        style={s.resultRow}
-                        activeOpacity={0.85}
-                        disabled={!!busy}
-                        onPress={() => handleResultPress(item)}
-                      >
-                        {isUser ? (
-                          <View
-                            style={[
-                              s.userCover,
-                              !item.cover && { backgroundColor: avatarColor(seed), alignItems: 'center', justifyContent: 'center' },
-                            ]}
-                          >
-                            {item.cover ? (
-                              <Image source={{ uri: item.cover }} style={StyleSheet.absoluteFill} contentFit="cover" />
-                            ) : (
-                              <Text style={s.userCoverText}>{item.title.slice(0, 1).toUpperCase()}</Text>
-                            )}
-                          </View>
-                        ) : (
-                          <CoverImage source={{ uri: item.cover }} style={s.resultCover} contentFit="cover" />
-                        )}
-                        <View style={s.resultInfo}>
-                          <Text style={s.resultTitle} numberOfLines={2}>
-                            {item.title}
-                          </Text>
-                          <Text style={s.resultMeta} numberOfLines={1}>
-                            {item.meta}
-                          </Text>
-                          {isUser ? (
-                            busy ? (
-                              <ActivityIndicator size="small" color={colors.primary} style={{ alignSelf: 'flex-start', marginTop: 4 }} />
-                            ) : (
-                              <Text style={s.messageHint}>Tap to message</Text>
-                            )
-                          ) : null}
-                        </View>
-                        {isUser && !busy ? (
-                          <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
-                        ) : null}
-                      </TouchableOpacity>
-                    </Animated.View>
-                  );
-                }}
-                ListFooterComponent={
-                  showManhwaMore ? (
-                    <TouchableOpacity
-                      style={[s.resultRow, s.seeAllRow]}
-                      activeOpacity={0.85}
-                      accessibilityRole="link"
-                      onPress={openManhwaBrowse}
-                    >
-                      <Text style={s.seeAllText} numberOfLines={1}>
-                        See all manhwa for “{manhwaMoreQuery}”
-                      </Text>
-                      <Ionicons name="chevron-forward" size={18} color={colors.primary} />
-                    </TouchableOpacity>
-                  ) : null
-                }
-                ListEmptyComponent={
-                  failedSources.length ? (
-                    // An outage must read as an outage. Saying "no results"
-                    // when the source is down tells users the title doesn't
-                    // exist, which is how a broken backend gets reported as
-                    // missing content.
-                    <EmptyState
-                      compact
-                      title="Couldn’t reach some sources"
-                      subtitle={`${failedSources.join(', ')} didn’t respond. Check your connection and try again.`}
-                      style={s.empty}
-                    />
-                  ) : (
-                    <EmptyState compact title={`No results for "${query}"`} style={s.empty} />
-                  )
-                }
-              />
-            )}
+            <FlatList
+              ref={resultsRef}
+              data={rows}
+              keyExtractor={(row) => row.key}
+              renderItem={renderRow}
+              showsVerticalScrollIndicator={false}
+              scrollIndicatorInsets={{ bottom: 90 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              contentContainerStyle={s.results}
+              initialNumToRender={12}
+              windowSize={7}
+              ListEmptyComponent={
+                summary.failed.length ? (
+                  // An outage must read as an outage. Saying "no results"
+                  // when the source is down tells users the title doesn't
+                  // exist, which is how a broken backend gets reported as
+                  // missing content.
+                  <EmptyState
+                    compact
+                    title="Couldn’t reach some sources"
+                    subtitle={`${summary.failed.join(', ')} didn’t respond. Check your connection and try again.`}
+                    style={s.empty}
+                  />
+                ) : (
+                  <EmptyState compact title={`No results for "${query.trim()}"`} style={s.empty} />
+                )
+              }
+            />
           </>
         )}
       </View>

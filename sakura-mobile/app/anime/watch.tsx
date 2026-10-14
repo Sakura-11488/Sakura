@@ -20,10 +20,12 @@ import {
   fetchAnimeInfo,
   fetchEpisodeSources,
   getAnimeStreamUserAgent,
+  prewarmEpisodeStream,
   type AnimeInfo,
   type AnimeEpisode,
   type StreamingSource,
 } from '@/lib/anime';
+import { noteAnimePlayback } from '@/lib/anime-watchlist';
 import {
   getEpisodePlaybackHint,
   shouldPreferDirectPlayback,
@@ -84,6 +86,15 @@ function animeFromOfflineRows(animeId: string, rows: OfflineEpisode[]): AnimeInf
     })),
   };
 }
+
+/** "Episode 3 · Killing Magic", or just "Episode 3" when the title is only the number. */
+function episodeHeading(number: number, title?: string): string {
+  const base = `Episode ${number}`;
+  const name = title?.trim();
+  return name && !/^episode\s*\d+$/i.test(name) ? `${base} · ${name}` : base;
+}
+
+const isFinishedSeries = (status?: string) => /^(?:finished airing|finished)$/i.test(status?.trim() || '');
 
 const BackIcon = () => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -158,6 +169,12 @@ export default function AnimeWatch() {
   const lastWebSaveRef = useRef(0);
   /** This series' download rows, read when playing a downloaded copy. */
   const offlineRowsRef = useRef<OfflineEpisode[]>([]);
+  /** The next episode's stream has been looked up ahead of the handoff. */
+  const nextPrewarmedRef = useRef(false);
+  const nextEpisodeRef = useRef<AnimeEpisode | null>(null);
+  const categoryRef = useRef(category);
+  /** Playback has been reported to the watchlist for this title. */
+  const watchlistNotedRef = useRef<string | null>(null);
 
   const saveWebBookmark = useCallback(() => {
     const bookmark = webBookmarkRef.current;
@@ -214,6 +231,8 @@ export default function AnimeWatch() {
     currentEpisodeIndex >= 0 && anime && currentEpisodeIndex < anime.episodes.length - 1
       ? (anime.episodes[currentEpisodeIndex + 1] ?? null)
       : null;
+  nextEpisodeRef.current = nextEpisode;
+  categoryRef.current = category;
 
   const progressEpisode = useMemo((): AnimeEpisode | null => {
     if (currentEpisode) return currentEpisode;
@@ -244,6 +263,20 @@ export default function AnimeWatch() {
     // Record a real clock every three seconds, including the first few seconds
     // of an episode; pause, scrubbing, restart, and exit save immediately.
     if (checkpoint || Date.now() - lastWebSaveRef.current >= 3000) saveWebBookmark();
+    // Near the end, look up the next episode's stream so Up Next and the
+    // autoplay handoff start from a resolved URL instead of a fresh lookup.
+    const upcoming = nextEpisodeRef.current;
+    if (upcoming && !nextPrewarmedRef.current && (duration - position <= 240 || progress >= 0.85)) {
+      nextPrewarmedRef.current = true;
+      prewarmEpisodeStream(upcoming.id, categoryRef.current, String(id));
+    }
+    // The last episode of a finished series, watched to the end, completes it.
+    // "No next episode" alone is not enough: it is also true while the episode
+    // is missing from the list (an unmatched id), which is not the finale.
+    const finale = anime.episodes[anime.episodes.length - 1];
+    if (ended && !upcoming && finale?.id === progressEpisode.id && isFinishedSeries(anime.status)) {
+      void noteAnimePlayback({ animeId: String(id), title: anime.title, cover: anime.cover || anime.image || '' }, 'finished-series');
+    }
   }, [id, anime, progressEpisode, saveWebBookmark]);
 
   useEffect(() => {
@@ -406,6 +439,7 @@ export default function AnimeWatch() {
     }
     if (episodeChanged) {
       if (isWeb) saveWebBookmark();
+      nextPrewarmedRef.current = false;
       webBookmarkRef.current = null;
       savedWebBookmarkRef.current = null;
       lastWebSaveRef.current = 0;
@@ -471,6 +505,13 @@ export default function AnimeWatch() {
         resolveSakuraOriginalStreamUrl,
       } = await import('@/lib/sakura-originals');
       const isOriginal = isSakuraOriginal(String(id));
+      // Title metadata is needed by every path below except Originals, and
+      // nothing below needs to wait for it: start it now and apply it when it
+      // lands. (It used to be awaited before the stream lookup, so a slow
+      // metadata source delayed playback by its whole timeout.)
+      const infoRequest: Promise<AnimeInfo | null> = isOriginal
+        ? Promise.resolve(null)
+        : fetchAnimeInfo(id, { force: retryCount > 0 }).catch(() => null);
 
       /**
        * A downloaded copy wins over the network, for every source.
@@ -516,7 +557,7 @@ export default function AnimeWatch() {
         // the rows-only fallback when it arrives (full episode list for "next").
         void (isOriginal
           ? fetchSakuraOriginalInfo(String(id), { force: retryCount > 0 })
-          : fetchAnimeInfo(id)
+          : infoRequest
         ).catch(() => null).then((info) => {
           if (!cancelled && info) setAnime(info);
         });
@@ -567,10 +608,9 @@ export default function AnimeWatch() {
       }
 
 
-      const info = await fetchAnimeInfo(id, { force: retryCount > 0 }).catch(() => null);
-      if (cancelled) return;
-      if (info) setAnime(info);
-
+      // The stream lookup needs only the episode and MAL ids, so it runs in
+      // parallel with the metadata request above.
+      void infoRequest.then((info) => { if (!cancelled && info) setAnime(info); });
       let src = await fetchEpisodeSources(ep, category, id, {
         force: retryCount > 0 || !!playbackHint?.forceFreshSource,
       }).catch(() => null);
@@ -792,6 +832,14 @@ export default function AnimeWatch() {
   }, [webReady, nativeSource]);
 
   useEffect(() => {
+    // Pressing play is what MAL and AniList call "Watching": list it (or move
+    // it back from Plan to watch / On hold / Dropped) once per title visit.
+    if ((!webReady && !nativeSource) || !anime || anime.id !== String(id) || watchlistNotedRef.current === anime.id) return;
+    watchlistNotedRef.current = anime.id;
+    void noteAnimePlayback({ animeId: anime.id, title: anime.title, cover: anime.cover || anime.image || '' }, 'started');
+  }, [webReady, nativeSource, anime, id]);
+
+  useEffect(() => {
     // Direct players report an exact clock; estimates are only for embeds.
     if (!webReady || nativeSource || !anime || !progressEpisode) return;
     void persistProgress(getEstimatedProgress(), anime, progressEpisode);
@@ -910,7 +958,7 @@ export default function AnimeWatch() {
     true;
   `;
 
-  const episodeLabel = currentEpisode?.title || `Episode ${epNum}`;
+  const episodeLabel = episodeHeading(epNumInt, currentEpisode?.title);
   const playerShieldScript = useMemo(() => buildAnimePlayerShieldScript(), []);
   const mediaSessionScript = useMemo(
     () => buildAnimeMediaSessionScript(anime?.title ?? 'Anime', episodeLabel),
@@ -1057,7 +1105,8 @@ export default function AnimeWatch() {
           startProgress={pendingResumeRef.current}
           chrome={{
             title: anime?.title || 'Sakura',
-            episodeLabel: currentEpisode?.title || `Episode ${epNum}`,
+            artwork: typeof anime?.cover === 'string' && anime.cover ? anime.cover : anime?.image || undefined,
+            episodeLabel,
             episodeNumber: epNumInt,
             onBack: leavePlayer,
             category,
@@ -1104,7 +1153,7 @@ export default function AnimeWatch() {
           <View style={s.titleWrap}>
             <Text style={s.showTitle} numberOfLines={1}>{anime?.title ?? ''}</Text>
             <Text style={s.epTitle} numberOfLines={1}>
-              {currentEpisode?.title || `Episode ${epNum}`}
+              {episodeLabel}
             </Text>
           </View>
 

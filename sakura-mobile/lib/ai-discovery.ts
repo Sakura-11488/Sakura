@@ -59,13 +59,27 @@ function mangaCard(m: AtsuItem): DiscoveryCard {
   };
 }
 
+/**
+ * novelfull titles open on the external-novel page, `/novel/ext?path=…` —
+ * the same route search, the novel tab and reading history use. The route
+ * used to be `/novel/<encoded path>`: on native that is the Sakura-originals
+ * screen (app/novel/[id].tsx), which does not know these paths and fell back
+ * to a hard-coded placeholder novel, so every AI-recommended novel opened the
+ * same fake "Sword Art Online" page. (Web was spared only because its [id]
+ * screen happens to render the external page.) `id` is unchanged so card
+ * keys and anything still routing by id keep working.
+ */
+export function novelRoute(path: string): string {
+  return `/novel/ext?path=${encodeURIComponent(path)}`;
+}
+
 function novelCard(n: AllNovelItem): DiscoveryCard {
   return {
     kind: 'novel',
     id: encodeURIComponent(n.path),
     title: n.name,
     image: n.cover || n.originalCover,
-    route: `/novel/${encodeURIComponent(n.path)}`,
+    route: novelRoute(n.path),
   };
 }
 

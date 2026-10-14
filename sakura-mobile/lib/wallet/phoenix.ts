@@ -8,27 +8,11 @@ import {
 import { PhoenixHttpClient } from '@ellipsis-labs/rise';
 import { getConnection } from './connection';
 import { validatePhoenixInstructions } from './phoenix-validation';
+import { getDefaultPhoenixSymbol, getPhoenixApiUrl, normalizePhoenixSymbol } from './phoenix-config';
 
 // ─── Config ─────────────────────────────────────────────────────────────────
-const DEFAULT_PHOENIX_API_URL = 'https://perp-api.phoenix.trade';
-const DEFAULT_MARKET_SYMBOL = 'SOL';
-
-export function getPhoenixApiUrl(): string {
-  return (process.env.EXPO_PUBLIC_PHOENIX_API_URL || DEFAULT_PHOENIX_API_URL).replace(/\/+$/, '');
-}
-
-export function normalizePhoenixSymbol(symbol?: string | null): string {
-  const configured = (
-    symbol ||
-    process.env.EXPO_PUBLIC_PHOENIX_DEFAULT_MARKET ||
-    DEFAULT_MARKET_SYMBOL
-  ).trim();
-  return configured.replace(/-PERP$/i, '').toUpperCase();
-}
-
-export function getDefaultPhoenixSymbol(): string {
-  return normalizePhoenixSymbol();
-}
+// Lives in ./phoenix-config so screens can read it without loading the SDK.
+export { getDefaultPhoenixSymbol, getPhoenixApiUrl, normalizePhoenixSymbol };
 
 let httpClient: PhoenixHttpClient | null = null;
 

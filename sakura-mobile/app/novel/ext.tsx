@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react';
 import { Dimensions } from 'react-native';
 import {
   View,
@@ -8,6 +8,9 @@ import {
   TouchableOpacity,
   FlatList,
   Platform,
+  Modal,
+  Pressable,
+  ActivityIndicator,
   type ListRenderItemInfo,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -35,7 +38,14 @@ import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
 import { Toast } from '@/components/ui/Toast';
 import { playTap, onTap } from '@/lib/sound';
-import { parseNovelDetail, type AllNovelDetail, type AllNovelChapter } from '@/lib/allnovel';
+import {
+  fetchNovelChapterList,
+  fetchNovelDetailHeader,
+  peekNovelChapterList,
+  prefetchNovelChapterPage,
+  type AllNovelDetail,
+  type AllNovelChapter,
+} from '@/lib/allnovel';
 import { Library } from '@/lib/storage';
 import {
   downloadNovelChapter,
@@ -50,13 +60,22 @@ import {
 } from '@/lib/novel-offline';
 import {
   findNovelProgressForSeries,
+  getAllNovelProgressEntries,
   subscribeReadingProgress,
   isActiveReadingProgress,
   type NovelProgress,
 } from '@/lib/reader-progress';
+import {
+  buildChapterReadState,
+  downloadStartIndex,
+  planNextDownloads,
+  type ChapterReadState,
+} from '@/lib/novel-navigation';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 import ResumeReadingHint from '@/components/ui/ResumeReadingHint';
 import { isSakuraNovelPath } from '@/lib/sakura-novels';
 import NovelDetailWeb from '@/components/novel/NovelDetailWeb';
+import { useSafeBack } from '@/components/novel/useSafeBack';
 
 /**
  * Window-dependent metrics, read reactively rather than frozen at bundle
@@ -98,6 +117,44 @@ function useDetailMetrics() {
 }
 const HEADER_FADE_DISTANCE = 48;
 const CHAPTER_ITEM_H = 64;
+const DOWNLOAD_COUNTS = [10, 30, 100] as const;
+
+/**
+ * The chapter list of each running or paused batch download, by novel.
+ *
+ * A paused batch resumes by index into its list (lib/novel-offline keeps only
+ * the counters), so resuming must reuse the exact list it started with — not
+ * a list recomputed from a reading position that has since moved. Module
+ * scope, like the batch state itself, so it survives leaving the screen.
+ */
+const batchPlans = new Map<string, AllNovelChapter[]>();
+/**
+ * Novels whose downloadAllNovelChapters call has not returned yet. Pausing
+ * only raises a flag that the loop checks between chapters, so for a moment
+ * after "Pause" the loop is still finishing the chapter in flight; a resume in
+ * that moment must let that loop carry on rather than start a second one.
+ */
+const runningBatches = new Set<string>();
+
+/** Read marks rarely change; skip the re-render when they did not. */
+function readStateSignature(state: ChapterReadState | null): string {
+  if (!state) return '';
+  let partial = '';
+  state.partial.forEach((v, k) => {
+    partial += `${k}:${Math.round(v * 100)}|`;
+  });
+  return `${state.finished.size}#${partial}`;
+}
+
+/** Progress rows that belong to this novel's chapters. */
+function seriesMatcher(seriesPath: string) {
+  const base = seriesPath.replace(/\/$/, '');
+  const slug = base.replace(/\.html?$/i, '');
+  return (row: { path: string; novelSeriesPath?: string }) => {
+    const s = (row.novelSeriesPath || '').replace(/\/$/, '');
+    return s === base || s === slug || row.path.startsWith(`${slug}/`);
+  };
+}
 
 type ChapterSort = 'oldest' | 'newest';
 
@@ -279,12 +336,15 @@ const ChapterRow = memo(function ChapterRow({
   onDownload,
   onOpen,
   isResume,
+  readMark,
 }: {
   ch: AllNovelChapter;
   offline?: OfflineNovelChapter | null;
   onDownload: (ch: AllNovelChapter) => void;
   onOpen: (ch: AllNovelChapter, resume: boolean) => void;
   isResume?: boolean;
+  /** 'read' when finished, a 0–1 fraction when partly read. */
+  readMark?: 'read' | number;
 }) {
   const { colors } = useTheme();
 
@@ -341,14 +401,20 @@ const ChapterRow = memo(function ChapterRow({
   return (
     <TouchableOpacity
       onPress={() => onOpen(ch, !!isResume)}
+      // Start fetching the chapter while the finger is still down (~100 ms head start).
+      onPressIn={() => prefetchNovelChapterPage(ch.path)}
       activeOpacity={0.85}
+      accessibilityRole="button"
+      accessibilityLabel={`${ch.name}${readMark === 'read' ? ', read' : typeof readMark === 'number' ? `, ${Math.round(readMark * 100)}% read` : ''}`}
       style={[chStyle.row, isResume && { borderWidth: 1, borderColor: `${colors.primary}55` }]}
     >
       <View style={chStyle.numBadge}>
         <Text style={chStyle.numText}>{ch.chapterNumber}</Text>
       </View>
       <View style={chStyle.info}>
-        <Text style={chStyle.title} numberOfLines={1}>{ch.name}</Text>
+        <Text style={[chStyle.title, readMark === 'read' && !isResume && { color: colors.textTertiary }]} numberOfLines={1}>{ch.name}</Text>
+        {readMark === 'read' && !isResume ? <Text style={chStyle.meta}>Read ✓</Text> : null}
+        {typeof readMark === 'number' && !isResume ? <Text style={chStyle.meta}>{Math.round(readMark * 100)}% read</Text> : null}
         {ch.releaseTime ? <Text style={chStyle.meta}>{ch.releaseTime}</Text> : null}
         {offline?.status === 'downloading' && (
           <Text style={chStyle.dlLabel}>Downloading {Math.round(offline.progress * 100)}%</Text>
@@ -383,6 +449,8 @@ export default function NovelExtDetail() {
   const { W, HERO_H, HEADER_TRIGGER, CHAPTER_LIST_MAX_H } = useDetailMetrics();
   const { path, id } = useLocalSearchParams<{ path?: string; id?: string }>();
   const router = useRouter();
+  const safeBack = useSafeBack();
+  const goBack = useCallback(() => safeBack('/novel'), [safeBack]);
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [detail, setDetail] = useState<AllNovelDetail | null>(null);
@@ -398,6 +466,12 @@ export default function NovelExtDetail() {
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [novelProgress, setNovelProgress] = useState<NovelProgress | null>(null);
   const [chapterSort, setChapterSort] = useState<ChapterSort>('oldest');
+  const [chaptersLoading, setChaptersLoading] = useState(false);
+  const [chaptersError, setChaptersError] = useState(false);
+  const [readState, setReadState] = useState<ChapterReadState | null>(null);
+  const readSig = useRef('');
+  const [downloadMenu, setDownloadMenu] = useState(false);
+  const chapterListRef = useRef<FlatList<AllNovelChapter>>(null);
   const scrollY = useSharedValue(0);
 
   useEffect(() => {
@@ -411,12 +485,19 @@ export default function NovelExtDetail() {
   const loadNovelProgress = useCallback(() => {
     if (!decodedPath) return;
     findNovelProgressForSeries(decodedPath).then(setNovelProgress);
+    void getAllNovelProgressEntries().then((rows) => {
+      const next = buildChapterReadState(rows, seriesMatcher(decodedPath));
+      const sig = readStateSignature(next);
+      if (sig === readSig.current) return;
+      readSig.current = sig;
+      setReadState(next);
+    });
   }, [decodedPath]);
 
-  useEffect(() => {
-    loadNovelProgress();
-    return subscribeReadingProgress(loadNovelProgress);
-  }, [loadNovelProgress]);
+  // Only while focused: the reader above this page saves progress every few
+  // seconds, and the focus effect below reloads on return (including the
+  // first focus).
+  useFocusedSubscription(subscribeReadingProgress, loadNovelProgress);
 
   useFocusEffect(
     useCallback(() => {
@@ -424,16 +505,42 @@ export default function NovelExtDetail() {
     }, [loadNovelProgress]),
   );
 
+  /**
+   * Header first, chapters second. The title, cover and synopsis render as
+   * soon as the detail page parses; the chapter list (one more request, up to
+   * ~600 KB for long novels) fills in behind a skeleton. Before, nothing
+   * rendered until all three requests had finished in sequence (1.33 s).
+   */
   useEffect(() => {
     let active = true;
     setLoading(true);
     setLoadError('');
+    setChaptersError(false);
     if (!decodedPath) { setLoading(false); setLoadError('Choose a novel from the library to get started.'); return; }
-    parseNovelDetail(decodedPath)
-      .then((value) => {
+    const cachedChapters = peekNovelChapterList(decodedPath);
+    fetchNovelDetailHeader(decodedPath)
+      .then((header) => {
         if (!active) return;
-        if (!value.name) throw new Error('The title is not available.');
-        setDetail(value); setLoading(false);
+        if (!header.name) throw new Error('The title is not available.');
+        const chapters = header.chapters.length ? header.chapters : cachedChapters ?? [];
+        setDetail({ ...header, chapters });
+        setLoading(false);
+        if (chapters.length || !header.novelId) {
+          setChaptersLoading(false);
+          return;
+        }
+        setChaptersLoading(true);
+        fetchNovelChapterList(header.novelId, decodedPath)
+          .then((list) => {
+            if (!active) return;
+            setDetail((current) => (current && current.path === header.path ? { ...current, chapters: list } : current));
+            setChaptersLoading(false);
+          })
+          .catch(() => {
+            if (!active) return;
+            setChaptersLoading(false);
+            setChaptersError(true);
+          });
       })
       .catch(() => { if (active) { setDetail(null); setLoading(false); setLoadError('Please try again, or choose another title from the library.'); } });
     void Library.isSaved(decodedPath, 'novel').then(value => { if (active) setSaved(value); }).catch(() => undefined);
@@ -543,13 +650,40 @@ export default function NovelExtDetail() {
     }
   }, [detail, decodedPath, offlineMap, refreshOffline]);
 
-  const runBatchDownload = useCallback(async () => {
+  const chaptersAscForDownload = useMemo(
+    () => (detail ? [...detail.chapters].sort((a, b) => a.chapterNumber - b.chapterNumber) : []),
+    [detail],
+  );
+  const activeResumePath = novelProgress && isActiveReadingProgress(novelProgress.progress) ? novelProgress.path : null;
+  /** Where "Download next N" starts: the chapter being read, else after the last finished one. */
+  const downloadStart = useMemo(
+    () => downloadStartIndex(chaptersAscForDownload, { resumePath: activeResumePath, finished: readState?.finished }),
+    [chaptersAscForDownload, activeResumePath, readState],
+  );
+  const downloadFromLabel = chaptersAscForDownload[downloadStart]
+    ? chaptersAscForDownload[downloadStart].name || `Chapter ${chaptersAscForDownload[downloadStart].chapterNumber}`
+    : '';
+
+  const runBatchDownload = useCallback(async (count?: number) => {
     if (!detail || detail.chapters.length === 0) return;
-    const list = detail.chapters.slice(0, 30);
+    const paused = getNovelBatchState(decodedPath)?.paused;
+    let list = paused ? batchPlans.get(decodedPath) : undefined;
+    if (!list) {
+      // A paused job resumes by index into its own list; with that list gone,
+      // clear the pause so the new plan starts at its first chapter.
+      if (paused) resumeNovelBatchDownload(decodedPath);
+      list = planNextDownloads(chaptersAscForDownload, downloadStart, count ?? 30, (path) => offlineMap[path]?.status === 'ready');
+      if (!list.length) {
+        setToast('Those chapters are already downloaded');
+        return;
+      }
+      batchPlans.set(decodedPath, list);
+    }
     setBulkDownloading(true);
-    setToast(`Downloading ${list.length} chapters… keep app open`);
+    setToast(`Downloading ${list.length} chapters… keep the app open`);
+    runningBatches.add(decodedPath);
     try {
-      const { ok, failed, paused } = await downloadAllNovelChapters({
+      const { ok, failed, paused: nowPaused } = await downloadAllNovelChapters({
         novelPath: decodedPath,
         title: detail.name,
         cover: detail.cover || '',
@@ -558,46 +692,77 @@ export default function NovelExtDetail() {
           chapterNumber: ch.chapterNumber,
           name: ch.name,
         })),
-        limit: 30,
+        limit: list.length,
       });
-      if (paused) {
+      if (nowPaused) {
         setToast(`Paused · ${ok} of ${list.length} downloaded`);
       } else {
+        batchPlans.delete(decodedPath);
         setToast(
           failed > 0 ? `Downloaded ${ok} chapters (${failed} failed)` : `Downloaded ${ok} chapters`,
         );
       }
       refreshOffline();
     } catch (e) {
+      batchPlans.delete(decodedPath);
       setToast(e instanceof Error ? e.message : 'Download failed');
     } finally {
+      runningBatches.delete(decodedPath);
       if (!getNovelBatchState(decodedPath)?.paused) {
         setBulkDownloading(false);
       }
     }
-  }, [detail, decodedPath, refreshOffline]);
+  }, [detail, decodedPath, refreshOffline, chaptersAscForDownload, downloadStart, offlineMap]);
 
-  const handleDownloadAll = async () => {
-    if (!detail || detail.chapters.length === 0) return;
-
+  /** Pause a running batch or resume a paused one. */
+  const toggleBatch = () => {
     if (batchPaused) {
       playTap();
-      resumeNovelBatchDownload(decodedPath);
       setBatchPaused(false);
-      void runBatchDownload();
+      if (runningBatches.has(decodedPath)) {
+        // The paused loop has not reached its pause check yet: un-pausing lets
+        // it carry on, instead of a second loop running over the same list.
+        resumeNovelBatchDownload(decodedPath);
+      } else {
+        // Leave the job marked paused. runBatchDownload then reuses the
+        // batch's own chapter list, and downloadAllNovelChapters resumes a
+        // PAUSED job from where it stopped, with its counts. Clearing the
+        // flag first (as this used to) made both start over with a freshly
+        // planned 30, so "Download next 100" paused at 20 ended at 50.
+        void runBatchDownload();
+      }
       return;
     }
-
     if (bulkDownloading) {
       playTap();
       pauseNovelBatchDownload(decodedPath);
       setToast('Download paused');
+    }
+  };
+
+  const startDownloadNext = (count: number) => {
+    if (!detail || detail.chapters.length === 0) return;
+    playTap();
+    setDownloadMenu(false);
+    void runBatchDownload(count);
+  };
+
+  const handleDownloadAll = () => {
+    if (!detail || detail.chapters.length === 0) return;
+    if (batchPaused || bulkDownloading) {
+      toggleBatch();
       return;
     }
-
     playTap();
-    await runBatchDownload();
+    setDownloadMenu(true);
   };
+
+  // "Continue" should open instantly: fetch the resume chapter once the page has settled.
+  useEffect(() => {
+    if (!activeResumePath || !detail) return;
+    const t = setTimeout(() => prefetchNovelChapterPage(activeResumePath), 1200);
+    return () => clearTimeout(t);
+  }, [activeResumePath, detail]);
 
   const scrollHandler = useAnimatedScrollHandler((e) => { scrollY.value = e.contentOffset.y; });
 
@@ -828,13 +993,7 @@ export default function NovelExtDetail() {
     dlOutlineText: { color: colors.primary, fontSize: FontSize.sm, fontWeight: FontWeight.bold },
   }), [colors, W, HERO_H]);
 
-  const chaptersAsc = useMemo(
-    () =>
-      detail
-        ? [...detail.chapters].sort((a, b) => a.chapterNumber - b.chapterNumber)
-        : [],
-    [detail?.chapters],
-  );
+  const chaptersAsc = chaptersAscForDownload;
   const displayedChapters = useMemo(
     () => (chapterSort === 'oldest' ? chaptersAsc : [...chaptersAsc].reverse()),
     [chaptersAsc, chapterSort],
@@ -856,10 +1015,18 @@ export default function NovelExtDetail() {
         onDownload={handleDownloadChapter}
         onOpen={openChapter}
         isResume={canContinueNovel && ch.path === resumeChapterPath}
+        readMark={readState?.finished.has(ch.path) ? 'read' : readState?.partial.get(ch.path)}
       />
     ),
-    [offlineMap, handleDownloadChapter, openChapter, canContinueNovel, resumeChapterPath],
+    [offlineMap, handleDownloadChapter, openChapter, canContinueNovel, resumeChapterPath, readState],
   );
+
+  const resumeListIndex = resumeChapterPath ? displayedChapters.findIndex((c) => c.path === resumeChapterPath) : -1;
+  const jumpToCurrent = useCallback(() => {
+    if (resumeListIndex < 0) return;
+    Haptics.selectionAsync();
+    chapterListRef.current?.scrollToIndex({ index: resumeListIndex, viewPosition: 0.3, animated: true });
+  }, [resumeListIndex]);
 
   const chapterKeyExtractor = useCallback((ch: AllNovelChapter) => ch.path, []);
 
@@ -875,13 +1042,15 @@ export default function NovelExtDetail() {
   if (Platform.OS === 'web') return <NovelDetailWeb
     detail={detail} loading={loading} error={loadError} saved={saved} original={isSakuraNovelPath(decodedPath)}
     progress={novelProgress} offline={offlineMap} batchDownloading={bulkDownloading} batchPaused={batchPaused} batchProgress={batchProgress} toast={toast}
-    onBack={() => router.canGoBack() ? router.back() : router.replace('/novel')}
+    onBack={goBack}
     onRetry={() => setRetry(value => value + 1)}
     onSave={() => { void handleSave().catch(() => setToast('This title could not be saved. Please try again.')); }}
-    onShare={handleShare} onOpen={openChapter} onDownload={handleDownloadChapter} onDownloadAll={handleDownloadAll}
+    onShare={handleShare} onOpen={openChapter} onDownload={handleDownloadChapter}
+    chaptersLoading={chaptersLoading} chaptersError={chaptersError} readState={readState}
+    downloadFromLabel={downloadFromLabel} onDownloadNext={startDownloadNext} onToggleBatch={toggleBatch}
   />;
 
-  if (loading || !detail) return <DetailSkeleton onBack={onTap(() => router.back())} />;
+  if (loading || !detail) return <DetailSkeleton onBack={onTap(goBack)} />;
 
   const genreList = detail.genres ? detail.genres.split(',').map((g) => g.trim()).filter(Boolean) : [];
   const statusColor = detail.status?.includes('complet') ? colors.success
@@ -907,7 +1076,7 @@ export default function NovelExtDetail() {
           <BlurView intensity={80} tint={colors.blurTint as any} style={StyleSheet.absoluteFill} />
         </Animated.View>
         <View style={dynS.navRow}>
-          <TouchableOpacity onPress={onTap(() => router.back())} style={dynS.navBtn} activeOpacity={0.8}>
+          <TouchableOpacity onPress={onTap(goBack)} style={dynS.navBtn} activeOpacity={0.8}>
             <BackIcon />
           </TouchableOpacity>
           <Animated.Text style={[dynS.navTitle, headerOpacity]} numberOfLines={1}>
@@ -932,7 +1101,7 @@ export default function NovelExtDetail() {
         style={[dynS.floatNav, { top: insets.top + 8 }, floatNavOpacity]}
         pointerEvents="box-none"
       >
-        <TouchableOpacity onPress={onTap(() => router.back())} style={dynS.navBtn} activeOpacity={0.8}>
+        <TouchableOpacity onPress={onTap(goBack)} style={dynS.navBtn} activeOpacity={0.8}>
           <BackIcon white />
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -1052,11 +1221,33 @@ export default function NovelExtDetail() {
             </Animated.View>
           )}
 
+          {detail.chapters.length === 0 && (chaptersLoading || chaptersError) && (
+            <View style={dynS.chaptersSection}>
+              <View style={dynS.secHeader}>
+                <Text style={dynS.secTitle}>Chapters</Text>
+              </View>
+              {chaptersError ? (
+                <TouchableOpacity accessibilityRole="button" onPress={() => setRetry((v) => v + 1)} style={[dynS.chaptersListBox, { padding: 16, alignItems: 'center' }]}>
+                  <Text style={{ color: colors.textSecondary, fontSize: 13 }}>The chapter list could not load. Tap to try again.</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={{ gap: 6 }} accessibilityLabel="Loading chapters">
+                  {[0, 1, 2, 3].map((i) => <SkeletonBox key={i} h={CHAPTER_ITEM_H - 6} radius={Radius.sm} />)}
+                </View>
+              )}
+            </View>
+          )}
+
           {detail.chapters.length > 0 && (
             <View style={dynS.chaptersSection}>
               <View style={dynS.secHeader}>
                 <Text style={dynS.secTitle}>Chapters</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  {resumeListIndex >= 0 && displayedChapters.length * CHAPTER_ITEM_H > chapterListHeight ? (
+                    <TouchableOpacity style={dynS.sortLink} activeOpacity={0.7} onPress={jumpToCurrent} accessibilityRole="button">
+                      <Text style={dynS.sortLinkText}>Jump to current</Text>
+                    </TouchableOpacity>
+                  ) : null}
                   <TouchableOpacity
                     style={dynS.sortLink}
                     activeOpacity={0.7}
@@ -1076,9 +1267,12 @@ export default function NovelExtDetail() {
                 </View>
               </View>
               <FlatList
+                ref={chapterListRef}
                 data={displayedChapters}
                 keyExtractor={chapterKeyExtractor}
                 renderItem={renderChapter}
+                // Opens on the chapter being read, not chapter 1 of 3,956.
+                initialScrollIndex={resumeListIndex > 1 ? resumeListIndex - 1 : undefined}
                 style={[dynS.chaptersListBox, { height: chapterListHeight }]}
                 nestedScrollEnabled
                 showsVerticalScrollIndicator
@@ -1087,7 +1281,7 @@ export default function NovelExtDetail() {
                 windowSize={5}
                 removeClippedSubviews
                 getItemLayout={getChapterLayout}
-                extraData={offlineMap}
+                extraData={[offlineMap, readState]}
                 scrollEnabled={displayedChapters.length * CHAPTER_ITEM_H > chapterListHeight}
               />
             </View>
@@ -1142,6 +1336,36 @@ export default function NovelExtDetail() {
         </View>
       )}
 
+      {/* "Download next N" — from the chapter being read, not always chapters 1–30. */}
+      <Modal transparent visible={downloadMenu} animationType="fade" onRequestClose={() => setDownloadMenu(false)}>
+        <View style={dl.backdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setDownloadMenu(false)} accessibilityLabel="Close" />
+          <View style={[dl.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[dl.title, { color: colors.text }]}>Download for offline</Text>
+            <Text style={[dl.sub, { color: colors.textSecondary }]} numberOfLines={2}>
+              Starting from {downloadFromLabel || 'the first chapter'}. Chapters already downloaded are skipped.
+            </Text>
+            {DOWNLOAD_COUNTS.map((count) => (
+              <TouchableOpacity
+                key={count}
+                accessibilityRole="button"
+                style={[dl.option, { borderColor: colors.border }]}
+                activeOpacity={0.85}
+                onPress={() => startDownloadNext(count)}
+              >
+                <DownloadIcon color={colors.primary} size={16} />
+                <Text style={[dl.optionText, { color: colors.text }]}>
+                  Next {Math.min(count, Math.max(1, chaptersAsc.length - downloadStart))} chapters
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity accessibilityRole="button" style={dl.cancel} onPress={() => setDownloadMenu(false)}>
+              <Text style={[dl.cancelText, { color: colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <Toast
         message={toast}
         visible={!!toast}
@@ -1161,6 +1385,17 @@ const s = StyleSheet.create({
   heroButtons: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: Spacing.md, paddingTop: 8 },
   heroBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.32)', alignItems: 'center', justifyContent: 'center' },
   heroInfo: { position: 'absolute', bottom: 0, left: 0, right: 0, paddingHorizontal: Spacing.md, paddingBottom: 16 },
+});
+
+const dl = StyleSheet.create({
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  card: { width: '100%', maxWidth: 380, borderRadius: 22, borderWidth: 1, padding: 20, gap: 10 },
+  title: { fontSize: 18, fontWeight: '800' },
+  sub: { fontSize: 13, lineHeight: 19, marginBottom: 4 },
+  option: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 14, paddingVertical: 13, paddingHorizontal: 14 },
+  optionText: { fontSize: 15, fontWeight: '600' },
+  cancel: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 20 },
+  cancelText: { fontSize: 14, fontWeight: '600' },
 });
 
 const gb = StyleSheet.create({

@@ -33,13 +33,12 @@ import { Spacing, FontSize, Fonts, Radius, Shadow } from '@/constants/theme';
 import { playTap } from '@/lib/sound';
 import { useTheme } from '@/lib/theme';
 import { shareContentLink } from '@/lib/share-link';
-import { useWallet } from '@/lib/wallet/context';
-import { addFavorite } from '@/lib/supabase';
+import { Library } from '@/lib/storage';
+import { readStore, writeStore } from '@/lib/kv-store';
 import {
   fetchPopularNovels,
   searchNovels,
-  enhanceCovers,
-  mergeNovelCovers,
+  prefetchNovelDetail,
   ALLNOVEL_GENRES,
   type AllNovelItem,
 } from '@/lib/allnovel';
@@ -51,6 +50,7 @@ import {
   type NovelProgress,
   type ContinueReadingItem,
 } from '@/lib/reader-progress';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 import ContinueReadingRow from '@/components/ui/ContinueReadingRow';
 import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 import EmptyState from '@/components/ui/EmptyState';
@@ -64,12 +64,15 @@ const CARD_W = Math.floor((W - Spacing.md * 2 - GRID_GAP * (COL - 1)) / COL);
 const CARD_H = Math.floor(CARD_W * 1.38);
 const HERO_H = 240;
 const MAX_RECENT = 8;
+const RECENT_SEARCHES_FILE = 'sakura_novel_recent_searches.json';
 
 const HUMOR_ME_HERO: AllNovelItem = {
   path: 'humour-me',
   name: 'HUMOR ME',
   cover: 'https://i.postimg.cc/t4dpCnph/IMG-20260502-WA0012.jpg',
 };
+/** One stable array: an inline [HUMOR_ME_HERO] re-ran the carousel's saved-state lookup on every render of this screen. */
+const HERO_NOVELS: AllNovelItem[] = [HUMOR_ME_HERO];
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -122,7 +125,7 @@ function HeroSlide({
 }) {
   return (
     <View style={h.slideOuter}>
-      <TouchableOpacity style={h.slide} onPress={onPress} activeOpacity={0.96}>
+      <TouchableOpacity style={h.slide} onPress={onPress} onPressIn={() => prefetchNovelDetail(novel.path)} activeOpacity={0.96}>
         {novel.cover ? (
           <Image
             source={{ uri: novel.cover }}
@@ -170,7 +173,6 @@ function HeroCarousel({
   novels: AllNovelItem[];
   onPress: (novel: AllNovelItem) => void;
 }) {
-  const { address } = useWallet();
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const flatRef = useRef<FlatList<AllNovelItem>>(null);
   const activeRef = useRef(0);
@@ -192,21 +194,33 @@ function HeroCarousel({
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [startTimer]);
 
+  // Saved state comes from the local library, the same store the detail
+  // page's save button uses.
+  useEffect(() => {
+    let active = true;
+    void Promise.all(items.map((item) => Library.isSaved(item.path, 'novel').then((v) => (v ? item.path : null)).catch(() => null)))
+      .then((paths) => { if (active) setSaved(new Set(paths.filter((p): p is string => !!p))); });
+    return () => { active = false; };
+  }, [items]);
+
+  /**
+   * Save to the library without a wallet. This used to call addFavorite,
+   * which needs a connected wallet, and returned silently without one — the
+   * button did nothing for most readers while the detail page's save worked.
+   */
   const handleSave = useCallback(async (novel: AllNovelItem) => {
-    if (!address || saved.has(novel.path)) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     playTap();
     try {
-      await addFavorite({
-        wallet_address: address,
-        content_id: novel.path,
-        content_type: 'novel',
-        title: novel.name,
-        cover_url: novel.cover || '',
+      const next = await Library.toggle({ id: novel.path, title: novel.name, cover: novel.cover || '', type: 'novel', savedAt: 0 });
+      setSaved((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(novel.path);
+        else copy.delete(novel.path);
+        return copy;
       });
-      setSaved((prev) => new Set([...prev, novel.path]));
     } catch {}
-  }, [address, saved]);
+  }, []);
 
   if (items.length === 0) return null;
 
@@ -283,11 +297,16 @@ function NovelCard({
 
   return (
     <Animated.View
-      entering={FadeInDown.delay(index * 35).duration(300)}
+      // Capped: an uncapped index*35 ms made card 80 appear 2.8 s after it loaded.
+      entering={FadeInDown.delay(Math.min(index % 20, 8) * 35).duration(300)}
       style={[c.wrap, style]}
     >
       <TouchableOpacity
-        onPressIn={() => { scale.value = withTiming(0.96, { duration: 80 }); }}
+        onPressIn={() => {
+          scale.value = withTiming(0.96, { duration: 80 });
+          // Warm the detail page and chapter list while the finger is down.
+          prefetchNovelDetail(novel.path);
+        }}
         onPressOut={() => { scale.value = withTiming(1, { duration: 140 }); }}
         onPress={handlePress}
         onLongPress={handleLongPress}
@@ -605,6 +624,13 @@ export default function NovelScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
+  /**
+   * Pages of the popular list already loaded. `page` is shared with the genre
+   * shelves, and choosing "All" again used to reset it to 1 while the popular
+   * list still held several pages, so "load more" fetched page 2 again and
+   * appended duplicates (duplicate keys, the same covers twice).
+   */
+  const popularPage = useRef(1);
   const [hasMore, setHasMore] = useState(true);
   const [catalogueError, setCatalogueError] = useState('');
   const [genreError, setGenreError] = useState('');
@@ -631,6 +657,26 @@ export default function NovelScreen() {
 
   // Recent searches
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  // Recent searches survive a relaunch (they were plain state, so every launch forgot them).
+  const recentLoaded = useRef(false);
+  useEffect(() => {
+    let active = true;
+    void readStore(RECENT_SEARCHES_FILE).then((raw) => {
+      if (!active) return;
+      try {
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(parsed)) setRecentSearches((current) => (current.length ? current : parsed.filter((q) => typeof q === 'string').slice(0, MAX_RECENT)));
+      } catch {
+        // A corrupt entry just means no history.
+      }
+      recentLoaded.current = true;
+    });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!recentLoaded.current) return;
+    void writeStore(RECENT_SEARCHES_FILE, JSON.stringify(recentSearches));
+  }, [recentSearches]);
   const [continueNovels, setContinueNovels] = useState<ContinueReadingItem[]>([]);
   const [novelProgressMap, setNovelProgressMap] = useState<Record<string, NovelProgress>>({});
 
@@ -641,13 +687,9 @@ export default function NovelScreen() {
     getNovelProgressBySeries().then(setNovelProgressMap);
   }, []);
 
-  useEffect(() => {
-    refreshReading();
-    const unsub = subscribeReadingProgress(refreshReading);
-    return () => {
-      unsub();
-    };
-  }, [refreshReading]);
+  // Only while focused: the readers save progress every few seconds, and the
+  // focus effect below reloads on return (including the first focus).
+  useFocusedSubscription(subscribeReadingProgress, refreshReading);
 
   useFocusEffect(
     useCallback(() => {
@@ -666,10 +708,9 @@ export default function NovelScreen() {
       setNovels(items);
       setHasMore(items.length > 0);
       setPage(1);
-      // Readers can open the list immediately, using its original covers.
-      void enhanceCovers(items).then((enhanced) => {
-        if (request === catalogueRequest.current) setNovels((current) => mergeNovelCovers(current, enhanced));
-      }).catch(() => undefined);
+      popularPage.current = 1;
+      // Source covers only: the Google Books "enhancement" 429-ed and swapped
+      // covers after paint (see lib/novel-covers.ts).
     } catch {
       if (request === catalogueRequest.current) setCatalogueError('The library could not load. Please try again.');
       // Keep the existing list if a refresh fails.
@@ -701,9 +742,6 @@ export default function NovelScreen() {
         setSearchResults(items);
         setSearchLoading(false);
         if (debouncedSearch.trim().length >= 2) saveRecentSearch(debouncedSearch);
-        void enhanceCovers(items).then((enhanced) => {
-          if (active) setSearchResults((current) => mergeNovelCovers(current, enhanced));
-        }).catch(() => undefined);
       })
       .catch(() => { if (active) { setSearchLoading(false); setSearchError('Search is temporarily unavailable. Please try again.'); } });
     return () => { active = false; };
@@ -716,7 +754,7 @@ export default function NovelScreen() {
     setGenreError('');
     setHasMore(true);
     setSearch('');
-    setPage(1);
+    setPage(genreValue ? 1 : popularPage.current);
     setLoadingMore(false);
     if (!genreValue) { setGenreResults([]); setGenreLoading(false); return; }
     setGenreLoading(true);
@@ -726,9 +764,6 @@ export default function NovelScreen() {
         setGenreResults(items);
         setHasMore(items.length > 0);
         setGenreLoading(false);
-        void enhanceCovers(items).then((enhanced) => {
-          if (request === genreRequest.current) setGenreResults((current) => mergeNovelCovers(current, enhanced));
-        }).catch(() => undefined);
       })
       .catch(() => { if (request === genreRequest.current) { setGenreLoading(false); setGenreError('This shelf could not load. Please try again.'); } });
   }, []);
@@ -746,13 +781,15 @@ export default function NovelScreen() {
       .then((more) => {
         if (!currentRequest()) return;
         const target = activeGenre ? setGenreResults : setNovels;
-        target((prev) => [...prev, ...more]);
+        // The source's lists shift as titles update; never show one twice.
+        target((prev) => {
+          const seen = new Set(prev.map((n) => n.path));
+          return [...prev, ...more.filter((n) => !seen.has(n.path))];
+        });
+        if (!activeGenre) popularPage.current = next;
         setPage(next);
         setHasMore(more.length > 0);
         setLoadingMore(false);
-        void enhanceCovers(more).then((enhanced) => {
-          if (currentRequest()) target((prev) => mergeNovelCovers(prev, enhanced));
-        }).catch(() => undefined);
       })
       .catch(() => { if (currentRequest()) { setLoadingMore(false); (activeGenre ? setGenreError : setCatalogueError)('The next shelf could not load. Please try again.'); } });
   }, [page, loadingMore, activeGenre]);
@@ -770,10 +807,12 @@ export default function NovelScreen() {
   const handleRecentRemove = (q: string) => setRecentSearches((p) => p.filter((s) => s !== q));
   const handleClearAll = () => setRecentSearches([]);
 
+  // Genre shelves page too (novelfull serves ?page=N for genres); they used to
+  // stop at the first 20 titles on native.
   const triggerLoadMore = useCallback(() => {
-    if (search.trim().length > 0 || activeGenre || loadingMore) return;
+    if (search.trim().length > 0 || loadingMore || !hasMore) return;
     loadMore();
-  }, [search, activeGenre, loadingMore, loadMore]);
+  }, [search, loadingMore, hasMore, loadMore]);
 
   const scrollHandler = useAnimatedScrollHandler((e) => {
     scrollY.value = e.contentOffset.y;
@@ -877,7 +916,7 @@ export default function NovelScreen() {
           {/* Hero carousel — Humor Me (Sakura Original) */}
           {!isSearching && (
             <Animated.View entering={FadeInDown.delay(100).duration(400)} style={s.heroWrap}>
-              <HeroCarousel novels={[HUMOR_ME_HERO]} onPress={handleCardPress} />
+              <HeroCarousel novels={HERO_NOVELS} onPress={handleCardPress} />
             </Animated.View>
           )}
 

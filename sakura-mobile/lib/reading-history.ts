@@ -4,6 +4,7 @@ import {
   clearAllReadingProgress,
 } from '@/lib/reader-progress';
 import { getAllWatchHistory, clearAllWatchProgress } from '@/lib/watch-progress';
+import { clearAllChapterReadState } from '@/lib/chapter-read-state';
 
 export type HistoryKind = 'anime' | 'manga' | 'novel';
 
@@ -80,13 +81,23 @@ export async function getReadingHistory(limit = 100): Promise<HistoryItem[]> {
 
   for (const row of mangaRows) {
     if (!row?.mangaId) continue;
+    // The reader keeps finished series in history pointing at what comes
+    // next (reader-progress upNext / caughtUp / finished). Their stored
+    // progress is clamped so older screens keep the row, which would read
+    // here as "1%" or "97%"; say what the row means instead.
+    const done = row.caughtUp || row.finished;
+    const subtitle = row.upNext
+      ? `Up next · ${row.chapterLabel}`
+      : done
+        ? `${row.chapterLabel} · ${row.caughtUp ? 'Caught up' : 'Finished'}`
+        : `${row.chapterLabel} · p.${row.page}/${row.totalPages} · ${progressLabel(row.progress)}`;
     items.push({
       kind: 'manga',
       id: `manga-${row.mangaId}`,
       title: row.title || 'Manga',
       cover: row.cover,
-      subtitle: `${row.chapterLabel} · p.${row.page}/${row.totalPages} · ${progressLabel(row.progress)}`,
-      progress: row.progress,
+      subtitle,
+      progress: row.upNext ? 0 : done ? 1 : row.progress,
       updatedAt: row.updatedAt,
       mangaId: row.mangaId,
       chapterId: row.chapterId,
@@ -113,6 +124,18 @@ export async function getReadingHistory(limit = 100): Promise<HistoryItem[]> {
   return items.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
 }
 
+/**
+ * Clears everything that records what was read or watched: progress, the
+ * per-chapter read marks, and the library's new-chapter state (its unread
+ * counts are computed from those marks). library-updates is loaded only
+ * here, so this screen does not pull the catalogue clients in.
+ */
 export async function clearReadingHistory(): Promise<void> {
-  await Promise.all([clearAllReadingProgress(), clearAllWatchProgress()]);
+  const { clearLibraryUpdates } = await import('@/lib/library-updates');
+  await Promise.all([
+    clearAllReadingProgress(),
+    clearAllWatchProgress(),
+    clearAllChapterReadState(),
+    clearLibraryUpdates(),
+  ]);
 }

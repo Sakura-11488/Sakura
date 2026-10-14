@@ -1,6 +1,10 @@
 import React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
-import Lottie from 'lottie-react';
+// lottie-react (with lottie-web, ~300 KB) loads the first time an animation
+// renders instead of before the app can paint. Every animation is decorative
+// (the wallet button, empty states), so appearing a moment after the screen
+// is a fair trade for keeping it off the startup path.
+const Lottie = React.lazy(() => import('lottie-react'));
 
 type LottieSource = number | { uri?: string } | object;
 
@@ -33,7 +37,9 @@ const LottieView = React.forwardRef<View, Props>(function LottieView(
 
   return (
     <View ref={ref} style={style}>
-      <Lottie animationData={animationData} loop={loop} autoplay={autoPlay} style={{ width: '100%', height: '100%' }} />
+      <React.Suspense fallback={null}>
+        <Lottie animationData={animationData} loop={loop} autoplay={autoPlay} style={{ width: '100%', height: '100%' }} />
+      </React.Suspense>
     </View>
   );
 });

@@ -28,6 +28,10 @@ export interface AnimeDiscoveryWebProps {
   onRefresh: () => void;
   onRetrySearch: () => void;
   history: ReactNode;
+  /** "New episodes for you", above Continue watching. */
+  newEpisodes?: ReactNode;
+  /** The viewer's list (Watching, Plan to watch, …), below Continue watching. */
+  myList?: ReactNode;
   personal: ReactNode;
   creator: ReactNode;
   scrollRef: Ref<{ scrollToTop: () => void }>;

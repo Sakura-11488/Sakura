@@ -44,6 +44,8 @@ import * as Haptics from 'expo-haptics';
 import ContinueWatchingRow from '@/components/ui/ContinueWatchingRow';
 import AnimeDiscoveryWeb from '@/components/discovery/AnimeDiscoveryWeb';
 import AnimeDiscoveryPanels from '@/components/anime/AnimeDiscoveryPanels';
+import AnimeListShelves from '@/components/anime/AnimeListShelves';
+import { originalArtwork } from '@/components/anime/original-art';
 import EmptyState from '@/components/ui/EmptyState';
 import { getContinueWatching, subscribeWatchProgress, type AnimeWatchProgress } from '@/lib/watch-progress';
 
@@ -413,7 +415,7 @@ function OriginalsHero({ original, onPress }: { original: OriginalEntry; onPress
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.95} style={hero.wrap}>
       <Image
-        source={original.localImage}
+        source={originalArtwork(original)}
         style={hero.img}
         contentFit="cover"
         transition={400}
@@ -456,7 +458,7 @@ function OriginalCard({ original, onPress }: { original: OriginalEntry; onPress:
   const { oc } = useAnimeStyles();
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.82} style={oc.wrap}>
-      <Image source={original.localImage} style={oc.img} contentFit="cover" transition={300} />
+      <Image source={originalArtwork(original)} style={oc.img} contentFit="cover" transition={300} />
       <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={oc.grad} />
       {original.comingSoon && (
         <View style={oc.soonBadge}>
@@ -604,7 +606,9 @@ export default function AnimeScreen() {
   const [originalIndex, setOriginalIndex] = useState(0);
   const [continueAnime, setContinueAnime] = useState<AnimeWatchProgress[]>([]);
 
-  const debouncedSearch = useDebounce(search, 650);
+  // 650 ms made every search feel stuck (~0.9 s from the last key to results);
+  // repeat queries are served from cache, so a shorter pause costs little.
+  const debouncedSearch = useDebounce(search, 300);
 
   const refreshContinue = useCallback(() => {
     getContinueWatching(10).then(setContinueAnime);
@@ -725,6 +729,8 @@ export default function AnimeScreen() {
       onRefresh={onRefresh}
       onRetrySearch={() => { setSearchLoading(true); setSearchAttempt(value => value + 1); }}
       history={continueAnime.length > 0 ? <ContinueWatchingRow items={continueAnime} /> : null}
+      newEpisodes={<AnimeListShelves section="new" />}
+      myList={<AnimeListShelves section="list" />}
       personal={<AnimeDiscoveryPanels mode="personal" />}
       creator={<CreatorWorksRow kind="anime" />}
       scrollRef={scrollRef}
@@ -874,11 +880,15 @@ export default function AnimeScreen() {
           </View>
         )}
 
+        {!isSearching && selectedGenre === null && <AnimeListShelves section="new" />}
+
         {!isSearching && continueAnime.length > 0 && (
           <View style={s.continueWrap}>
             <ContinueWatchingRow items={continueAnime} />
           </View>
         )}
+
+        {!isSearching && selectedGenre === null && <AnimeListShelves section="list" />}
 
         {/* Default rows */}
         {!isSearching && selectedGenre === null && (

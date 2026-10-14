@@ -19,18 +19,21 @@ import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { getWalletWithBiometrics } from '@/lib/wallet/storage';
 import { getTradeSignLabel } from '@/lib/wallet/platform-labels';
-import {
-  fetchPhoenixMarketState,
-  fetchPhoenixTraderData,
-  executePhoenixOrder,
-  closePhoenixPosition,
-  getDefaultPhoenixSymbol,
-  type PhoenixMarketState,
-  type PhoenixTraderData,
-} from '@/lib/wallet/phoenix';
+import type { PhoenixMarketState, PhoenixTraderData } from '@/lib/wallet/phoenix';
+import { getDefaultPhoenixSymbol } from '@/lib/wallet/phoenix-config';
 import { playTap, onTap } from '@/lib/sound';
 
 const LEVERAGE_OPTIONS = [1, 2, 5, 10, 20];
+
+/**
+ * The Phoenix SDK (~2MB on web) is loaded on first use, never imported
+ * statically. FloatingTradeWidget, which the root layout mounts on every
+ * screen, reaches it the same way; if this screen imported it statically too,
+ * the module would be shared by two lazy chunks and Expo's web build would
+ * hoist it into the common chunk that every lazily loaded screen waits for.
+ * One import() target keeps it in a chunk of its own.
+ */
+const loadPhoenix = () => import('@/lib/wallet/phoenix');
 
 const BackIcon = ({ color }: { color: string }) => (
   <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
@@ -70,6 +73,7 @@ export default function TradeScreen() {
 
   const load = useCallback(async () => {
     try {
+      const { fetchPhoenixMarketState, fetchPhoenixTraderData } = await loadPhoenix();
       const m = await fetchPhoenixMarketState(symbol);
       if (!mountedRef.current) return;
       setMarket(m);
@@ -113,6 +117,7 @@ export default function TradeScreen() {
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) throw new Error('Could not unlock your wallet.');
+      const { executePhoenixOrder } = await loadPhoenix();
       const result = await executePhoenixOrder(
         {
           authority: wallet.address,
@@ -148,6 +153,7 @@ export default function TradeScreen() {
     try {
       const keypair = await getWalletWithBiometrics();
       if (!keypair) throw new Error('Could not unlock your wallet.');
+      const { closePhoenixPosition } = await loadPhoenix();
       const result = await closePhoenixPosition(
         { authority: wallet.address, symbol, side: position.side === 'short' ? 'short' : 'long', quantity: position.size },
         keypair,

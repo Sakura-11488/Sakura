@@ -2,7 +2,13 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { Image } from 'expo-image';
 import { usePathname, useRouter } from 'expo-router';
-import { Octicons, FontAwesome6, Entypo, Ionicons } from '@expo/vector-icons';
+// One file per family, not the '@expo/vector-icons' barrel: the barrel loads
+// every family's glyph map (~450KB on web), and this file is part of the
+// first screen's bundle.
+import Octicons from '@expo/vector-icons/Octicons';
+import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
+import Entypo from '@expo/vector-icons/Entypo';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/lib/theme';
 import { useUnreadMessages } from '@/lib/unread-messages-context';

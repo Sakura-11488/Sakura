@@ -8,8 +8,55 @@ import { registerForPushNotifications, getNotificationPermissionStatus } from '@
 import { pingPushActivity, syncPushRegistration } from '@/lib/push-tokens';
 import { useTransferCelebration } from '@/lib/wallet/transfer-celebration';
 
-function routeFromNotificationData(
-  router: ReturnType<typeof useRouter>,
+/**
+ * The reader route for a chapter push, or null when the payload cannot name
+ * one. The reader only understands `<seriesId>~<chapterId>` — it needs the
+ * series to load the chapter list and pages — but push-manga-updates sends
+ * the two separately ({ type: 'manga', id: seriesId, chapterId, chapter: 12 }),
+ * and the old route passed the chapter id alone, so every new-chapter tap
+ * opened an empty "No pages found" reader. Exported for its test.
+ */
+export function chapterRouteFromPush(data: Record<string, unknown>): {
+  pathname: '/chapter/[id]';
+  params: Record<string, string>;
+} | null {
+  const str = (value: unknown) =>
+    typeof value === 'string' ? value.trim() : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+  const type = str(data.type);
+  const id = str(data.id);
+  let seriesId = str(data.mangaId) || str(data.seriesId);
+  let chapterId = str(data.chapterId);
+  if (type === 'manga') {
+    seriesId = seriesId || id;
+  } else if (type === 'chapter') {
+    // Already a reader id, or a bare chapter id alongside its series.
+    if (id.includes('~')) {
+      const at = id.indexOf('~');
+      seriesId = seriesId || id.slice(0, at);
+      chapterId = chapterId || id.slice(at + 1);
+    } else {
+      chapterId = chapterId || id;
+    }
+  } else {
+    return null;
+  }
+  if (!seriesId || !chapterId) return null;
+  const params: Record<string, string> = { id: `${seriesId}~${chapterId}` };
+  const number = str(data.chapter);
+  const label = str(data.chapterLabel) || (number ? `Chapter ${number}` : '');
+  if (label) params.chapter = label;
+  const title = str(data.title) || str(data.seriesTitle);
+  if (title) params.title = title;
+  const page = str(data.page);
+  if (page) params.p = page;
+  // Manhwa and comics chapters only open through their own source.
+  const source = str(data.source);
+  if (source) params.source = source;
+  return { pathname: '/chapter/[id]', params };
+}
+
+export function routeFromNotificationData(
+  router: Pick<ReturnType<typeof useRouter>, 'push'>,
   data: Record<string, unknown> | undefined,
 ) {
   if (!data) return;
@@ -54,12 +101,13 @@ function routeFromNotificationData(
     return;
   }
   if (type === 'manga') {
-    const chapterId = data.chapterId as string | undefined;
-    if (chapterId) {
-      router.push({ pathname: '/chapter/[id]', params: { id: chapterId } });
+    const chapterRoute = data.chapterId ? chapterRouteFromPush(data) : null;
+    if (chapterRoute) {
+      router.push(chapterRoute);
       return;
     }
-    router.push({ pathname: '/manga/[id]', params: { id } });
+    const source = typeof data.source === 'string' && data.source ? { source: data.source } : {};
+    router.push({ pathname: '/manga/[id]', params: { id, ...source } });
     return;
   }
   if (type === 'novel') {
@@ -67,11 +115,9 @@ function routeFromNotificationData(
     return;
   }
   if (type === 'chapter') {
-    const page = data.page != null ? String(data.page) : undefined;
-    router.push({
-      pathname: '/chapter/[id]',
-      params: page ? { id, p: page } : { id },
-    });
+    // Only with both halves of the id; a bare chapter id cannot be opened.
+    const chapterRoute = chapterRouteFromPush(data);
+    if (chapterRoute) router.push(chapterRoute);
   }
 }
 

@@ -6,7 +6,6 @@ import {
 } from '@/lib/anime-offline';
 import { offlineEpisodeUrl, openOfflineLibrary } from '@/lib/offline-cache-keys';
 import { sanitizeDownloadName } from '@/lib/web-download';
-import { writeAnimeVideo } from './anime-video-export.web';
 import type { AnimeDeviceSaveSnapshot } from './anime-device-save-types';
 
 export const CAN_SAVE_ANIME_VIDEO = true;
@@ -120,6 +119,9 @@ async function prepare(task: Task) {
     const cache = await openOfflineLibrary();
     assertCurrent(task);
     if (!cache) throw new Error('Your browser could not open its saved episodes.');
+    // The MP4 writer (mux.js) loads only when someone saves a video, not with
+    // every screen that shows the save banner.
+    const { writeAnimeVideo } = await import('./anime-video-export.web');
     const result = await writeAnimeVideo(cache, row, async bytes => {
       assertCurrent(task);
       parts.push(new Blob([bytes as Uint8Array<ArrayBuffer>]));

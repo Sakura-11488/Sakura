@@ -18,7 +18,30 @@ import {
   importWalletFromKey,
 } from './storage';
 import { clearWalletAuthSession } from '@/lib/wallet-auth-session';
-import { getSolBalance, getSakuraBalanceWithMeta } from './connection';
+// ./connection brings @solana/spl-token. The provider wraps every screen, so
+// a static import put it in every cold start although balances are only read
+// once a wallet is connected; load it with the first balance refresh instead.
+// Like the originals these never throw: a chunk that cannot load (offline,
+// not yet cached) reads as a failed refresh, so loadingBalances still clears.
+async function getSolBalance(publicKey: PublicKey): Promise<number | null> {
+  try {
+    return await (await import('./connection')).getSolBalance(publicKey);
+  } catch {
+    return null;
+  }
+}
+
+async function getSakuraBalanceWithMeta(publicKey: PublicKey): Promise<{
+  balance: number | null;
+  source: SakuraBalanceSource;
+  error: string | null;
+}> {
+  try {
+    return await (await import('./connection')).getSakuraBalanceWithMeta(publicKey);
+  } catch (e) {
+    return { balance: null, source: 'error', error: e instanceof Error ? e.message : 'Could not load the wallet tools.' };
+  }
+}
 import { truncateAddress, getSolanaNetworkLabel, SOLANA_RPC } from './config';
 import { rpcDisplayLabel, setBalanceDiagnostics, type SakuraBalanceSource } from './balance-diagnostics';
 import { unlockForAppSession, clearAppSessionKeypair } from './app-session';

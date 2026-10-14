@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
+import { rememberAnimePreviews } from '@/lib/anime';
 import { chooseDiscoverySeeds, fetchAnimeDiscovery } from '@/lib/anime-discovery';
 import { getAllWatchHistory } from '@/lib/watch-progress';
 import { Library } from '@/lib/storage';
@@ -31,7 +32,7 @@ function ShelfRow({ shelf }: { shelf: Shelf }) {
     <div className="ad-section-heading"><div><h2>{shelf.title}</h2>{shelf.description && <p>{shelf.description}</p>}</div>
       <div className="ad-arrows"><button aria-label={`Scroll ${shelf.title} left`} disabled={!bounds.previous} onClick={() => rail.current?.scrollBy({ left: -450, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })}>←</button><button aria-label={`Scroll ${shelf.title} right`} disabled={!bounds.next} onClick={() => rail.current?.scrollBy({ left: 450, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })}>→</button></div>
     </div>
-    <div className="ad-rail" ref={rail}>{shelf.items.map(item => <button className="ad-card" key={item.id} onClick={() => router.push({ pathname: '/anime/[id]', params: { id: item.id } })}>
+    <div className="ad-rail" ref={rail}>{shelf.items.map(item => <button className="ad-card" key={item.id} onClick={() => { rememberAnimePreviews([item]); router.push({ pathname: '/anime/[id]', params: { id: item.id } }); }}>
       <span className="ad-cover">{item.image ? <CoverImage source={{ uri: item.image }} style={{ width: '100%', height: '100%' }} contentFit="cover" thumbnailWidth={256} /> : <span className="ad-cover-placeholder">SAKURA</span>}<span className="ad-card-play" aria-hidden="true">▶</span></span>
       {item.relation && <span className="ad-relation">{item.relation}</span>}<strong>{item.title}</strong><span className="ad-card-meta">{[item.type, item.year, item.score ? `★ ${item.score}` : undefined].filter(Boolean).join(' · ')}</span>
     </button>)}</div>

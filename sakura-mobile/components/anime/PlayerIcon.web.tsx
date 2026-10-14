@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type PlayerIconName = 'play' | 'pause' | 'back' | 'rewind' | 'forward' | 'volume' | 'muted' | 'captions' | 'settings' | 'fullscreen' | 'collapse' | 'next' | 'check' | 'flower';
+export type PlayerIconName = 'play' | 'pause' | 'back' | 'rewind' | 'forward' | 'volume' | 'muted' | 'captions' | 'settings' | 'fullscreen' | 'collapse' | 'next' | 'check' | 'flower' | 'pip' | 'pip-exit';
 const paths: Record<PlayerIconName, React.ReactNode> = {
   play: <path d="m9 5 11 7-11 7z" fill="currentColor" stroke="none" />,
   pause: <><path d="M8 5v14M16 5v14" strokeWidth="4" /></>,
@@ -15,6 +15,8 @@ const paths: Record<PlayerIconName, React.ReactNode> = {
   collapse: <path d="M3 9h6V3M15 3v6h6M21 15h-6v6M9 21v-6H3" />,
   next: <><path d="m5 5 10 7-10 7z" fill="currentColor" stroke="none" /><path d="M19 5v14" /></>,
   check: <path d="m5 12 4 4L20 5" />,
+  pip: <><path d="M20 11V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5" /><rect x="13" y="14" width="9" height="6.5" rx="1.5" fill="currentColor" stroke="none" /></>,
+  'pip-exit': <><path d="M20 11V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5" /><rect x="13.5" y="14.5" width="8" height="5.5" rx="1.2" /><path d="m7 8 4 4M7 12V8h4" /></>,
   flower: <path d="M12 11C1 6 7-2 12 6c5-8 11 0 1 5 10-3 12 7 3 5 6 7-4 11-5 2-4 8-12 2-5-3-9 0-6-10 6-4Z" fill="currentColor" stroke="none" />,
 };
 export default function PlayerIcon({ name }: { name: PlayerIconName }) {

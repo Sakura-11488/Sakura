@@ -52,6 +52,7 @@ function animeHarness(options = {}) {
     },
     './sakura-originals': { isSakuraOriginal: () => false, resolveSakuraOriginalStreamUrl: async () => null },
     './anime-stream-client': { usesBrowserAnimeStream: false, fetchBrowserAnimeStream: async () => null },
+    './anime-discovery': { primeAnimeDiscovery: () => {} },
   }, {
     fetch: options.fetch ?? (() => new Promise(() => {})),
     Date: options.Date ?? Date,
@@ -86,6 +87,9 @@ function scheduledAnimeHarness({ schedule, seed = true, status = 'Not yet aired'
     metadata: { malId: 61323, title: 'Blue Box Season 2', status: 'UPCOMING', episodes: 12 },
     fetch: async (url, options) => {
       if (url !== 'https://graphql.anilist.co') throw new Error('Jikan unavailable');
+      // These cases exercise records built from the fallback metadata; the
+      // AniList title record (tested separately) is unavailable here.
+      if (JSON.parse(options.body).query.includes('SakuraTitle')) throw new Error('AniList title unavailable');
       if (!JSON.parse(options.body).query.includes('nextAiringEpisode')) {
         return { ok: true, json: async () => ({ data: { Media: { streamingEpisodes: [] } } }) };
       }
@@ -101,7 +105,7 @@ function scheduledAnimeHarness({ schedule, seed = true, status = 'Not yet aired'
       id: `${prefix}-${index + 1}`, number: index + 1, title: `Episode ${index + 1}`, thumbnail: '/thumb.jpg',
     })),
   };
-  if (seed) h.cache.set('anime:info2_61323', original);
+  if (seed) h.cache.set('anime:info3_61323', original);
   return { ...h, clock, original, get releaseRequests() { return releaseRequests; } };
 }
 
@@ -110,7 +114,7 @@ test('a fresh future airing schedule caps a new planned list without trusting st
   const info = await h.anime.fetchAnimeInfo('61323');
   assert.equal(info.status, 'Currently Airing');
   assert.deepEqual(Array.from(info.episodes, episode => episode.id), ['mal-61323-1', 'mal-61323-2']);
-  assert.equal(h.cache.get('anime:info2_61323').episodes.length, 12, 'content cache retains the complete list');
+  assert.equal(h.cache.get('anime:info3_61323').episodes.length, 12, 'content cache retains the complete list');
   assert.equal(h.releaseRequests, 1);
 });
 

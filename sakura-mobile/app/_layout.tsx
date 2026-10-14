@@ -128,8 +128,25 @@ function LiveActivityDeepLinkBridge() {
  *
  * Same principle as surfacing the real reason behind "Could not load anime":
  * a failure nobody can see is a failure nobody can fix.
+ *
+ * On web most screens are separate chunks (web/router-context.js). When one
+ * fails to download (a dropped connection before the service worker has
+ * cached it), React keeps that failure for the rest of the session, so
+ * re-rendering shows the same error forever; only a reload fetches the chunk
+ * again. "Try again" reloads for those errors.
  */
+function isChunkLoadError(error: Error | undefined): boolean {
+  if (Platform.OS !== 'web' || !error) return false;
+  return error.name === 'AsyncRequireError' ||
+    /^Loading module .* failed/.test(error.message ?? '') ||
+    /^Requiring unknown module/.test(error.message ?? '');
+}
+
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  const tryAgain = () => {
+    if (isChunkLoadError(error) && typeof window !== 'undefined') window.location.reload();
+    else retry();
+  };
   return (
     <View style={ebStyles.root}>
       <ScrollView contentContainerStyle={ebStyles.scroll}>
@@ -142,7 +159,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
             {error.stack.slice(0, 900)}
           </Text>
         ) : null}
-        <TouchableOpacity onPress={() => retry()} style={ebStyles.button}>
+        <TouchableOpacity onPress={tryAgain} style={ebStyles.button}>
           <Text style={ebStyles.buttonText}>Try again</Text>
         </TouchableOpacity>
       </ScrollView>

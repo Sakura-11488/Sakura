@@ -8,11 +8,13 @@ export type PlayerPreferences = {
   volume: number; muted: boolean; speed: number; captions?: SubtitleMode;
   autoplayNext: boolean; audio?: 'sub' | 'dub'; subtitleLanguage?: SubtitleLanguage;
   captionSize: CaptionSize; captionBackground: CaptionBackground; qualityPreference: QualityPreference;
+  /** Jump past openings and endings automatically when their timings are known. Off by default. */
+  autoSkip: boolean;
 };
 const KEY = 'sakura.player.preferences.v1';
 const shortText = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : undefined;
 export function readPlayerPreferences(): PlayerPreferences {
-  const defaults: PlayerPreferences = { volume: 1, muted: false, speed: 1, autoplayNext: true, audio: 'sub', captionSize: 'medium', captionBackground: 'soft', qualityPreference: 'auto' };
+  const defaults: PlayerPreferences = { volume: 1, muted: false, speed: 1, autoplayNext: true, audio: 'sub', captionSize: 'medium', captionBackground: 'soft', qualityPreference: 'auto', autoSkip: false };
   try {
     const value = JSON.parse(localStorage.getItem(KEY) || '{}');
     const code = shortText(value.subtitleLanguage?.code), label = shortText(value.subtitleLanguage?.label);
@@ -27,6 +29,7 @@ export function readPlayerPreferences(): PlayerPreferences {
       captionSize: value.captionSize === 'small' || value.captionSize === 'large' ? value.captionSize : 'medium',
       captionBackground: value.captionBackground === 'none' || value.captionBackground === 'solid' ? value.captionBackground : 'soft',
       qualityPreference: value.qualityPreference === 'balanced' || value.qualityPreference === 'data-saver' ? value.qualityPreference : 'auto',
+      autoSkip: value.autoSkip === true,
     };
   } catch { return defaults; }
 }

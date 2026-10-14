@@ -2,8 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
-import AvatarApologyModal from '@/components/AvatarApologyModal';
-import AvatarMintPickerModal from '@/components/social/AvatarMintPickerModal';
 import {
   acknowledgeAvatarApologyGrant,
   AvatarForgeError,
@@ -16,6 +14,17 @@ import {
   type AvatarApologyGrantStatus,
   type AvatarMintItem,
 } from '@/lib/user-avatar';
+
+/**
+ * Both modals load on demand. The root layout mounts this bridge on every
+ * screen, but it renders nothing unless the wallet holds an apology grant,
+ * which almost nobody has; static imports put the picker's bottom sheet and
+ * the whole @expo/vector-icons barrel (~465KB on web) into every cold start.
+ * The fallback is null because there is nothing on screen to hold a place
+ * for: the modal simply opens a moment later the first time.
+ */
+const AvatarApologyModal = React.lazy(() => import('@/components/AvatarApologyModal'));
+const AvatarMintPickerModal = React.lazy(() => import('@/components/social/AvatarMintPickerModal'));
 
 /** Long enough for AnimatedSplash to finish; a Modal paints above it regardless
  *  of sibling order, and opening on top of the splash is a bad first frame. */
@@ -441,6 +450,15 @@ export default function AvatarApologyBridge() {
     }
   }, [address, settleLocally, unlockForAppSession]);
 
+  // Fetch the picker as soon as there is a grant, alongside the card, so that
+  // choosing an avatar never waits on a download.
+  const hasGrant = !!grant;
+  useEffect(() => {
+    // Through .then, not import(...).catch(): on web, Expo's import() returns
+    // a bare thenable (no .catch) and can throw synchronously.
+    if (hasGrant) Promise.resolve().then(() => import('@/components/social/AvatarMintPickerModal')).catch(() => {});
+  }, [hasGrant]);
+
   if (!grant) return null;
 
   // Exactly one RN Modal is mounted at a time — nesting one inside another
@@ -448,32 +466,36 @@ export default function AvatarApologyBridge() {
   // modal.
   if (stage === 'picker') {
     return (
-      <AvatarMintPickerModal
-        visible
-        mints={avatars}
-        selectingId={selectingId}
-        busy={busy}
-        title="Pick your profile picture"
-        subtitle="All of these are already yours. The ones you don't pick stay in your wallet."
-        emptyText="Your avatars are still being prepared."
-        onClose={() => {
-          if (!busyRef.current) setStage('card');
-        }}
-        onSelect={handleSelect}
-      />
+      <React.Suspense fallback={null}>
+        <AvatarMintPickerModal
+          visible
+          mints={avatars}
+          selectingId={selectingId}
+          busy={busy}
+          title="Pick your profile picture"
+          subtitle="All of these are already yours. The ones you don't pick stay in your wallet."
+          emptyText="Your avatars are still being prepared."
+          onClose={() => {
+            if (!busyRef.current) setStage('card');
+          }}
+          onSelect={handleSelect}
+        />
+      </React.Suspense>
     );
   }
 
   return (
-    <AvatarApologyModal
-      visible
-      grant={grant}
-      busy={busy}
-      forging={forging}
-      error={notice}
-      onPrimary={handlePrimary}
-      onKeep={handleKeep}
-      onLater={handleLater}
-    />
+    <React.Suspense fallback={null}>
+      <AvatarApologyModal
+        visible
+        grant={grant}
+        busy={busy}
+        forging={forging}
+        error={notice}
+        onPrimary={handlePrimary}
+        onKeep={handleKeep}
+        onLater={handleLater}
+      />
+    </React.Suspense>
   );
 }

@@ -339,7 +339,13 @@ export async function setAnimeEpisodeWatched(entry: AnimeWatchProgress, watched:
   if (!loaded) await ensureLoaded();
   const local = mem.anime[entry.animeId];
   const previous = getEpisodeWatchProgress(local, entry.episodeId, entry.episodeNumber);
-  const now = Math.max(Date.now(), (local?.updatedAt ?? 0) + 1);
+  // Strictly after the caller's own timestamp too. With no history yet, the
+  // base is built from `entry` itself, which carries an unwatched row stamped
+  // `entry.updatedAt`; the screens stamp it Date.now() and call straight in,
+  // so both landed in the same millisecond and the merge kept the unwatched
+  // row on the tie: the first "Mark watched" on a title said "Episode marked
+  // watched" and stored nothing.
+  const now = Math.max(Date.now(), (local?.updatedAt ?? 0) + 1, normalized.updatedAt + 1);
   const row: AnimeEpisodeHistory = { ...normalizePosition(previous ?? normalized)!, episodeId: entry.episodeId,
     progress: watched ? 1 : 0, positionSeconds: watched ? previous?.positionSeconds : 0,
     durationSeconds: previous?.durationSeconds, completed: watched, watched, watchedUpdatedAt: now,

@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Platform,
+  ScrollView,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -17,9 +18,14 @@ import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { playTap, onTap } from '@/lib/sound';
 import {
+  ATSU_GENRES,
+  MANGA_BROWSE_SORTS,
+  browseManga,
   fetchMangaPagedList,
   searchManga,
   toContentItem,
+  type MangaBrowseSort,
+  type MangaBrowseStatus,
 } from '@/lib/manga';
 import { getScrapedAdapter, asScrapedSource, type ScrapedSource } from '@/lib/scraped-sources';
 import { useTheme } from '@/lib/theme';
@@ -53,6 +59,20 @@ const PAGE_SIZE = 60;
 
 type BrowseSource = 'manga' | ScrapedSource;
 
+/** Filters for the atsu catalogue (lib/manga browseManga). Empty strings mean "any". */
+export type BrowseFilters = { genre: string; status: '' | MangaBrowseStatus; sort: '' | MangaBrowseSort };
+
+const STATUSES: MangaBrowseStatus[] = ['Ongoing', 'Completed', 'Hiatus'];
+function asStatus(value: unknown): '' | MangaBrowseStatus {
+  return STATUSES.includes(value as MangaBrowseStatus) ? (value as MangaBrowseStatus) : '';
+}
+function asSort(value: unknown): '' | MangaBrowseSort {
+  return MANGA_BROWSE_SORTS.some((s) => s.id === value) ? (value as MangaBrowseSort) : '';
+}
+function asGenre(value: unknown): string {
+  return typeof value === 'string' && ATSU_GENRES.some((g) => g.id === value) ? value : '';
+}
+
 /**
  * Fetch one page of a section's content, honouring the section's *source*
  * (manga or any scraped source) and its query, rather than always falling back
@@ -67,8 +87,19 @@ async function loadBrowse(
   q: string,
   kind: string,
   page: number,
-): Promise<{ items: ContentItem[]; hasMore: boolean }> {
+  filters: BrowseFilters,
+): Promise<{ items: ContentItem[]; hasMore: boolean; found?: number }> {
   const adapter = getScrapedAdapter(source);
+  // A genre, status or explicit order: atsu's own catalogue, filtered
+  // (Typesense, paged). Genre shelves used to be title searches.
+  if (!adapter && !q && (filters.genre || filters.status || filters.sort)) {
+    const result = await browseManga(
+      { genreId: filters.genre || null, status: filters.status || null, sort: filters.sort || 'popular' },
+      page,
+      PAGE_SIZE,
+    );
+    return { items: result.items.map((i) => toContentItem(i)), hasMore: result.hasMore, found: result.found };
+  }
   if (adapter?.browse) return adapter.browse(page, PAGE_SIZE, q || undefined);
   if (adapter) {
     const items = q ? await adapter.search(q, PAGE_SIZE) : await adapter.trending(PAGE_SIZE);
@@ -120,12 +151,35 @@ export default function BrowseScreen() {
     source?: string;
     q?: string;
     kind?: string;
+    genre?: string;
+    status?: string;
+    sort?: string;
   }>();
 
-  const title = typeof params.title === 'string' && params.title ? params.title : 'Browse';
+  const paramTitle = typeof params.title === 'string' && params.title ? params.title : 'Browse';
   const source: BrowseSource = asScrapedSource(params.source) ?? 'manga';
   const q = typeof params.q === 'string' ? params.q : '';
   const kind = typeof params.kind === 'string' ? params.kind : '';
+  const paramGenre = asGenre(params.genre);
+  // The atsu catalogue can be filtered from this screen; scraped sources and
+  // searches cannot (their upstreams have no such filters).
+  const filterable = source === 'manga' && !q;
+  const [filters, setFilters] = useState<BrowseFilters>(() => ({
+    genre: paramGenre,
+    status: asStatus(params.status),
+    sort: asSort(params.sort),
+  }));
+  // A new route (another genre's "See all") resets them; the same values keep
+  // the same object, so mounting does not load page 0 twice.
+  useEffect(() => {
+    const next: BrowseFilters = { genre: paramGenre, status: asStatus(params.status), sort: asSort(params.sort) };
+    setFilters((prev) => (prev.genre === next.genre && prev.status === next.status && prev.sort === next.sort ? prev : next));
+  }, [paramGenre, params.status, params.sort]);
+  const [found, setFound] = useState<number | null>(null);
+  // Picking another genre here retitles the page after it.
+  const title = filters.genre && filters.genre !== paramGenre
+    ? ATSU_GENRES.find((g) => g.id === filters.genre)?.name ?? paramTitle
+    : paramTitle;
 
   const [items, setItems] = useState<ContentItem[]>([]);
   const [page, setPage] = useState(0);
@@ -144,9 +198,11 @@ export default function BrowseScreen() {
       const version = ++requestVersion.current;
       setError('');
       try {
-        const { items: mapped, hasMore: more } = await loadBrowse(source, q, kind, p);
+        const { items: mapped, hasMore: more, found: total } = await loadBrowse(source, q, kind, p, filters);
         if (version !== requestVersion.current) return;
+        if (p === 0) setFound(typeof total === 'number' ? total : null);
         if (mapped.length === 0) {
+          if (p === 0) setItems([]);
           setHasMore(false);
           return;
         }
@@ -171,7 +227,7 @@ export default function BrowseScreen() {
         if (version === requestVersion.current) { setLoading(false); setLoadingMore(false); }
       }
     },
-    [source, q, kind, titleKey],
+    [source, q, kind, titleKey, filters],
   );
 
   useEffect(() => {
@@ -198,7 +254,15 @@ export default function BrowseScreen() {
     void loadPage(nextPage);
   }, [loading, loadingMore, items.length, nextPage, loadPage]);
 
-  if (Platform.OS === 'web') return <BrowseCatalogWeb key={`${source}-${q}-${kind}`} title={title} source={source} items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={retry} onLoadMore={loadMore}/>;
+  const filterProps = filterable ? {
+    genres: ATSU_GENRES,
+    sorts: MANGA_BROWSE_SORTS,
+    statuses: STATUSES,
+    value: filters,
+    onChange: (next: Partial<BrowseFilters>) => setFilters((prev) => ({ ...prev, ...next })),
+  } : undefined;
+
+  if (Platform.OS === 'web') return <BrowseCatalogWeb key={`${source}-${q}-${kind}`} title={title} source={source} items={items} loading={loading} loadingMore={loadingMore} hasMore={hasMore} error={error} found={found} filters={filterProps} onBack={() => router.canGoBack() ? router.back() : router.replace('/home')} onRetry={retry} onLoadMore={loadMore}/>;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -220,6 +284,58 @@ export default function BrowseScreen() {
           </Text>
           <View style={{ width: 40 }} />
         </View>
+
+        {filterProps && (
+          <View style={s.filterBar}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
+              {[{ id: '', name: 'All genres' }, ...ATSU_GENRES].map((g) => {
+                const active = filters.genre === g.id;
+                return (
+                  <TouchableOpacity
+                    key={g.id || 'all'}
+                    onPress={() => setFilters((prev) => ({ ...prev, genre: g.id }))}
+                    style={[s.chip, { borderColor: colors.border }, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[s.chipText, { color: active ? '#fff' : colors.textSecondary }]}>{g.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
+              {[{ id: '' as const, label: 'Any status' }, ...STATUSES.map((st) => ({ id: st, label: st }))].map((st) => {
+                const active = filters.status === st.id;
+                return (
+                  <TouchableOpacity
+                    key={st.id || 'any'}
+                    onPress={() => setFilters((prev) => ({ ...prev, status: st.id }))}
+                    style={[s.chip, { borderColor: colors.border }, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[s.chipText, { color: active ? '#fff' : colors.textSecondary }]}>{st.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+              <View style={{ width: 10 }} />
+              {MANGA_BROWSE_SORTS.map((so) => {
+                const active = (filters.sort || 'popular') === so.id && !!(filters.genre || filters.status || filters.sort);
+                return (
+                  <TouchableOpacity
+                    key={so.id}
+                    onPress={() => setFilters((prev) => ({ ...prev, sort: so.id }))}
+                    style={[s.chip, { borderColor: colors.border }, active && { backgroundColor: colors.text, borderColor: colors.text }]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[s.chipText, { color: active ? colors.background : colors.textSecondary }]}>{so.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
 
         {loading ? (
           <View style={s.center}>
@@ -297,6 +413,15 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     paddingTop: 80,
   },
+  filterBar: { paddingTop: Spacing.sm, gap: 6 },
+  chipRow: { paddingHorizontal: H_PAD, gap: 6 },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+  },
+  chipText: { fontSize: 12, fontWeight: FontWeight.semibold },
   grid: {
     padding: H_PAD,
     paddingBottom: 110,

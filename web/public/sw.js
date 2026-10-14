@@ -2,8 +2,9 @@
  *
  * It:
  *   1. precaches ONE build's shell at install — the document, its
- *      content-hashed bundle, and the fonts, icon fonts and small assets it
- *      needs — so the app can boot offline from the very first visit
+ *      content-hashed bundle and every lazy chunk it can load, and the fonts,
+ *      icon fonts and small assets it needs — so the app can boot offline, and
+ *      open the reader, the player and Downloads, from the very first visit
  *   2. serves navigations network-first, falling back to that shell when the
  *      network fails, returns a 5xx, or takes longer than NAV_TIMEOUT_MS
  *   3. serves content-hashed build assets cache-first
@@ -88,7 +89,23 @@ const NAV_TIMEOUT_MS = 4000;
 /** Parallel fetches while precaching. Install runs while the page is loading. */
 const PRECACHE_CONCURRENCY = 4;
 // A stalled CDN response must not leave the first worker installing forever.
+// Applies to each of install's two phases separately (see precacheShell).
 const PRECACHE_TIMEOUT_MS = 60_000;
+
+/**
+ * How long install holds back the lazy chunks and optional assets, unless a
+ * page says sooner that it has finished loading (any `sakura:warm-shell`
+ * message; router-context.js sends one once the first screen is up and the
+ * browser is idle).
+ *
+ * The worker registers while the page is still parsing, so install runs
+ * during the very first load. Everything the page itself loads costs nothing
+ * extra to precache (the HTTP cache shares the download), but the lazy chunks
+ * are megabytes the page did not ask for, and on a phone connection fetching
+ * them right then delays the bundle, the catalogue calls and the covers the
+ * visitor is waiting on.
+ */
+const LAZY_PRECACHE_DELAY_MS = 10_000;
 
 /**
  * How long a freshly fetched document may wait for its bundle to reach the
@@ -114,13 +131,29 @@ function isHashedPath(pathname) {
     /[.-][a-f0-9]{16,}\.[^/]+$/i.test(pathname);
 }
 
-/** The hashed scripts and stylesheets a shell document loads, as absolute URLs. */
+/**
+ * The hashed scripts and stylesheets a shell document loads or may load, as
+ * absolute URLs: what it fetches at boot, plus the lazy chunks it names in
+ * non-fetching <link rel="sakura-chunk"> / <link data-sakura-common> tags
+ * (web/scripts/defer-common-chunk.mjs). Screens such as the reader, the
+ * player and Downloads live in those chunks, so a shell is only complete —
+ * and only adopted, and only protected from pruning — together with them.
+ */
 function shellEntries(html) {
   const out = new Set();
   const re = /(?:src|href)="(\/app\/_expo\/static\/[^"]+)"/g;
   let m;
   while ((m = re.exec(html))) out.add(sameOrigin(m[1]));
   return [...out];
+}
+
+/** The subset of shellEntries the document does not fetch while it boots. */
+function lazyEntries(html) {
+  const out = new Set();
+  const re = /<link rel="sakura-(?:chunk|common)"[^>]*?\shref="(\/app\/_expo\/static\/[^"]+)"/g;
+  let m;
+  while ((m = re.exec(html))) out.add(sameOrigin(m[1]));
+  return out;
 }
 
 /**
@@ -165,53 +198,96 @@ async function settleAll(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
+/** Run `work(signal)`, aborting it after PRECACHE_TIMEOUT_MS. Never rejects. */
+function withDeadline(work) {
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => { controller.abort(); resolve(); }, PRECACHE_TIMEOUT_MS);
+  });
+  return Promise.race([work(controller.signal).catch(() => {}), deadline])
+    .finally(() => clearTimeout(timer));
+}
+
+/** A page has said it finished loading (it may say so before install gets to the gate). */
+let pageSettled = false;
+let releaseLazyPhase = null;
+/** Resolves after LAZY_PRECACHE_DELAY_MS, or as soon as a page says it is done loading. */
+function lazyPhaseGate() {
+  if (pageSettled) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(open, LAZY_PRECACHE_DELAY_MS);
+    function open() {
+      clearTimeout(timer);
+      releaseLazyPhase = null;
+      resolve();
+    }
+    releaseLazyPhase = open;
+  });
+}
+
 /**
  * Fetch this build's document and everything on the precache list into the
- * shell cache. The document is stored last, and only if every script it loads
- * made it in: a document whose bundle is missing boots to a blank page, which
- * is worse than keeping the previous, complete pair.
+ * shell cache, in two phases:
+ *   1. the document and what it fetches at boot (the page is downloading the
+ *      same files right now, so this adds nothing to the first load);
+ *   2. after `gate`, the lazy chunks it names, then the optional assets.
+ * The document is stored only once every chunk it names made it in: a shell
+ * that boots but cannot open the reader offline is worse than keeping the
+ * previous, complete one.
  */
-async function precacheShell(signal) {
+async function precacheShell(gate) {
   if (!PRECACHE || !Array.isArray(PRECACHE.urls)) return;
   const cache = await caches.open(SHELL_CACHE);
 
   let doc = null;
-  try {
-    const res = await fetch(SHELL, { cache: 'no-cache', signal });
-    if (res.status === 200 && contentType(res).includes('text/html')) {
-      const entries = shellEntries(await res.clone().text());
-      if (entries.length) doc = { res, entries };
+  await withDeadline(async (signal) => {
+    try {
+      const res = await fetch(SHELL, { cache: 'no-cache', signal });
+      if (res.status === 200 && contentType(res).includes('text/html')) {
+        const html = await res.clone().text();
+        const entries = shellEntries(html);
+        if (entries.length) doc = { res, entries, lazy: lazyEntries(html) };
+      }
+    } catch {
+      // Offline or flaky: whatever shell is already cached stays.
     }
-  } catch {
-    // Offline or flaky: whatever shell is already cached stays.
-  }
+    if (!doc) return;
+    const boot = doc.entries.filter((u) => !doc.lazy.has(u));
+    await settleAll(boot, PRECACHE_CONCURRENCY, (u) => cacheHashed(cache, u, signal));
+  });
 
-  // The document's own entries as well as the list's: if a newer deploy landed
-  // between this worker being fetched and now, the document loads a bundle the
-  // list has never heard of.
-  const wanted = new Set(PRECACHE.urls.map(sameOrigin));
-  if (doc) {
-    // Commit a usable shell before optional icons/assets: one hung font must
-    // not prevent a successfully fetched document and bundle working offline.
-    await settleAll(doc.entries, PRECACHE_CONCURRENCY, (u) => cacheHashed(cache, u, signal));
-    signal.throwIfAborted();
-    if (await hasAll(cache, doc.entries)) await cache.put(SHELL, doc.res);
-    for (const u of doc.entries) wanted.delete(u);
-  }
-  await settleAll([...wanted], PRECACHE_CONCURRENCY, (u) => cacheHashed(cache, u, signal));
+  await gate();
+
+  await withDeadline(async (signal) => {
+    // The document's own entries as well as the list's: if a newer deploy
+    // landed between this worker being fetched and now, the document loads a
+    // bundle the list has never heard of.
+    const wanted = new Set(PRECACHE.urls.map(sameOrigin));
+    if (doc) {
+      // Commit a usable shell before optional icons/assets: one hung font must
+      // not prevent a successfully fetched document and its chunks working
+      // offline.
+      await settleAll(doc.entries, PRECACHE_CONCURRENCY, (u) => cacheHashed(cache, u, signal));
+      signal.throwIfAborted();
+      if (await hasAll(cache, doc.entries)) await cache.put(SHELL, doc.res);
+      for (const u of doc.entries) wanted.delete(u);
+    }
+    await settleAll([...wanted], PRECACHE_CONCURRENCY, (u) => cacheHashed(cache, u, signal));
+  });
 }
 
 let warming = null;
-function warmShell() {
+/**
+ * `gated`: install's run, which waits for lazyPhaseGate before phase 2. A run
+ * a page asks for is not gated: the page asking is the signal.
+ */
+function warmShell({ gated = false } = {}) {
   if (!warming) {
-    const controller = new AbortController();
-    let timer;
-    const deadline = new Promise((resolve) => {
-      timer = setTimeout(() => { controller.abort(); resolve(); }, PRECACHE_TIMEOUT_MS);
-    });
-    warming = Promise.race([precacheShell(controller.signal).catch(() => {}), deadline])
+    const gate = gated ? lazyPhaseGate : () => Promise.resolve();
+    warming = precacheShell(gate)
+      .catch(() => {})
       .finally(() => {
-        clearTimeout(timer);
         warming = null;
       });
   }
@@ -382,7 +458,7 @@ self.addEventListener('install', (event) => {
   // they download; on an update the previous complete shell stays put anyway,
   // because precacheShell only ever replaces the document together with its
   // bundle.
-  event.waitUntil(warmShell());
+  event.waitUntil(warmShell({ gated: true }));
 });
 
 self.addEventListener('activate', (event) => {
@@ -410,10 +486,15 @@ self.addEventListener('activate', (event) => {
  * `{ type: 'sakura:warm-shell' }` from a page re-runs the precache. Download
  * code can send it as a download starts, so that if install's precache was cut
  * short, the shell is whole again before the user takes the app offline. Cheap
- * to repeat: everything already cached is skipped.
+ * to repeat: everything already cached is skipped. It also tells a worker that
+ * is still installing that the page has finished loading, so install's second
+ * phase (the lazy chunks) can start now rather than after its delay.
  */
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'sakura:warm-shell') event.waitUntil(warmShell());
+  if (!event.data || event.data.type !== 'sakura:warm-shell') return;
+  pageSettled = true;
+  if (releaseLazyPhase) releaseLazyPhase();
+  event.waitUntil(warmShell());
 });
 
 self.addEventListener('fetch', (event) => {

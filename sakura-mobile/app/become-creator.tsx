@@ -21,7 +21,7 @@ import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet/context';
 import { showAlert } from '@/lib/confirm-alert';
-import WalletModal from '@/components/wallet/WalletModal';
+import WalletModal from '@/components/wallet/LazyWalletModal';
 import { onTap, playTap } from '@/lib/sound';
 import { Fonts, FontSize, FontWeight, Radius, Shadow, Spacing } from '@/constants/theme';
 import { getCreatorProfile, registerCreator, validateUsername } from '@/lib/creator';

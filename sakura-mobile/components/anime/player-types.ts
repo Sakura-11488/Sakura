@@ -4,6 +4,8 @@ import type { SubtitleMode } from '@/lib/anime-playback-overrides';
 export type WebVideoPlayerHandle = { seekTo: (seconds: number) => void };
 export type PlayerChromeOptions = {
   title: string;
+  /** Series poster for the OS media controls (lock screen, media keys, PiP window). */
+  artwork?: string;
   episodeLabel?: string;
   episodeNumber?: number;
   onBack?: () => void;

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { AnimeEpisode, AnimeInfo } from '@/lib/anime';
 import type { OfflineEpisode } from '@/lib/anime-offline';
 import type { AnimeWatchProgress } from '@/lib/watch-progress';
+import type { WatchlistStatus } from '@/lib/anime-watchlist';
 
 export interface AnimeDetailWebProps {
   anime: AnimeInfo;
@@ -26,6 +27,13 @@ export interface AnimeDetailWebProps {
   onMarkWatched?: (episode: AnimeEpisode, watched: boolean) => void;
   discussion: ReactNode;
   creator?: ReactNode;
+  /** The hero comes from a preview or metadata; the episode list is still loading. */
+  episodesLoading?: boolean;
+  /** Watching / Plan to watch / … for this title, or null when it is not listed. */
+  listStatus?: WatchlistStatus | null;
+  onListStatus?: (status: WatchlistStatus | null) => void;
+  /** Start resolving an episode's stream ahead of a likely play. */
+  onPrewarm?: (episode: AnimeEpisode) => void;
 }
 
 export interface AnimeDetailWebPlaceholderProps {

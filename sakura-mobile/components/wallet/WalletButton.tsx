@@ -10,12 +10,22 @@ import SakuraLottie from '@/components/ui/SakuraLottie';
 import * as Haptics from 'expo-haptics';
 import { playTap } from '@/lib/sound';
 import { useWallet } from '@/lib/wallet/context';
-import WalletModal from './WalletModal';
 import { Radius, FontSize, FontWeight, Shadow, Fonts } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 
+/**
+ * Loaded on the first tap, not with the button. The button sits in the header
+ * and sidebar of nearly every screen, so a static import put the modal, its
+ * bottom sheet and its QR-code renderer into every cold start for a sheet most
+ * visits never open.
+ */
+const WalletModal = React.lazy(() => import('./WalletModal'));
+
 export default function WalletButton() {
   const [modalVisible, setModalVisible] = useState(false);
+  // Mounted from the first open onwards, so the sheet keeps its state between
+  // opens exactly as it did when it was always mounted.
+  const [modalMounted, setModalMounted] = useState(false);
   const { connected, shortAddress, sakuraBalance } = useWallet();
   const { colors } = useTheme();
   const scale = useSharedValue(1);
@@ -62,6 +72,7 @@ export default function WalletButton() {
   }));
 
   const handlePress = () => {
+    setModalMounted(true);
     setModalVisible(true);
     if (Platform.OS !== 'web') {
       scale.value = withSequence(
@@ -126,7 +137,11 @@ export default function WalletButton() {
         </Animated.View>
       )}
 
-      <WalletModal visible={modalVisible} onClose={() => setModalVisible(false)} />
+      {modalMounted ? (
+        <React.Suspense fallback={null}>
+          <WalletModal visible={modalVisible} onClose={() => setModalVisible(false)} />
+        </React.Suspense>
+      ) : null}
     </>
   );
 }

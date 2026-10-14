@@ -11,10 +11,23 @@ export interface MangaHomeWebProps {
   popular: ContentItem[];
   more: ContentItem[];
   picks: ContentItem[];
-  genres: { title: string; query: string; items: ContentItem[] }[];
+  /** Genre shelves: `genre` (an atsu genre id) for the Manga tab, `query` (a title search) for scraped sources. */
+  genres: { title: string; query: string; genre?: string; items: ContentItem[] }[];
+  /** Titles that just got a chapter, each `badge` saying how long ago (Manga tab only). */
+  updates?: ContentItem[];
+  /** Open the full list of updates. */
+  onUpdates?: () => void;
+  /** Nothing has arrived yet. */
   loading: boolean;
+  /**
+   * Per list, so each part of the page shows as soon as its own data arrives:
+   * trending feeds the featured slot and hot list, popular the shelves.
+   * Both fall back to `loading`.
+   */
+  trendingLoading?: boolean;
+  popularLoading?: boolean;
   onRefresh: () => void;
-  onBrowse: (title: string, options: { q?: string; kind?: string }) => void;
+  onBrowse: (title: string, options: { q?: string; kind?: string; genre?: string }) => void;
   community: ReactNode;
   continueReading: ReactNode;
   continueWatching: ReactNode;

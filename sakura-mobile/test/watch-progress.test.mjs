@@ -315,3 +315,19 @@ test('queuing Next keeps its earlier watched state and exact clock instead of sa
   assert.equal(record.positionSeconds, 50, 'revisiting this queued episode can restore its earlier clock');
   assert.equal(h.api.isEpisodeWatched(record, 'mal-21-2'), true, 'rewatching never clears a durable watched flag');
 });
+
+test('the first mark-watched on a title with no history is kept even when stamped in the same millisecond', async () => {
+  // The screens stamp the entry with Date.now() and call straight in; a stamp
+  // at or after the store's clock used to tie with the unwatched row built
+  // from the entry itself, and the merge kept that row.
+  for (const updatedAt of [Date.now(), Date.now() + 60_000]) {
+    const h = harness({ snapshot: { anime: {} } });
+    await h.api.getAnimeWatchProgress('32281');
+    const fresh = entry({ animeId: '32281', episodeId: 'mal-32281-1', progress: 0, positionSeconds: undefined, updatedAt });
+    await h.api.setAnimeEpisodeWatched(fresh, true, [{ id: 'mal-32281-1', number: 1 }]);
+    const record = await h.api.getAnimeWatchProgress('32281');
+    assert.equal(h.api.isEpisodeWatched(record, 'mal-32281-1', 1), true, `stamp ${updatedAt}`);
+    assert.equal(h.api.getAnimeViewingStatus(record, [{ id: 'mal-32281-1', number: 1 }]), 'completed');
+    assert.equal(h.writes.at(-1).anime['32281'].episodeHistory['mal-32281-1'].watched, true);
+  }
+});

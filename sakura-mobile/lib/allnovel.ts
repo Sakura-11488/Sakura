@@ -3,12 +3,13 @@
  * Scrapes novel listings, details, chapters, and content from allnovel.org.
  */
 import { Parser } from 'htmlparser2';
-import { getOrSetCached } from '@/lib/cache';
+import { getOrSetCached, getCachedValue } from '@/lib/cache';
 import {
   fetchSakuraChapterContent,
   fetchSakuraNovelDetail,
 } from '@/lib/sakura-novels';
 import { fetchNovelHtml } from '@/lib/allnovel-html';
+import { stripSourceBoilerplate } from '@/lib/novel-text';
 
 /**
  * Novel source.
@@ -43,6 +44,11 @@ export interface AllNovelDetail {
   rating?: number;
   summary?: string;
   chapters: AllNovelChapter[];
+  /**
+   * novelfull's numeric id, needed for the chapter list request. Present on
+   * headers from fetchNovelDetailHeader so the list can load separately.
+   */
+  novelId?: string;
 }
 
 export interface AllNovelChapter {
@@ -84,13 +90,82 @@ const enum S {
 
 // ─── Fetch helper ─────────────────────────────────────────────────────────────
 
-async function fetchHtml(url: string, ttlMs = 10 * 60 * 1000): Promise<string> {
-  return getOrSetCached<string>(
-    `novel:html:${url}`,
-    ttlMs,
-    async () => fetchNovelHtml(resolveUrl(url)),
-    { staleIfError: true },
+/**
+ * Requests already on the wire, by cache key.
+ *
+ * lib/cache has no in-flight de-duplication, so a prefetch on press-in followed
+ * by the real load 100 ms later used to fetch the same page twice. Sharing the
+ * promise makes the prefetch a head start rather than a duplicate.
+ */
+const inflight = new Map<string, Promise<unknown>>();
+
+function dedupe<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const existing = inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const p = run().finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
+}
+
+/**
+ * Cache a parsed value rather than the page it came from.
+ *
+ * Raw HTML is 3–4x the size of what the reader needs (a 52 KB chapter page
+ * holds ~17 KB of text; one long novel's chapter-list HTML is 667 KB), and
+ * every lib/cache miss rewrites the whole cache blob. If the network fails and
+ * an older HTML copy is still cached under the previous key, parse that so
+ * a chapter that used to open offline still does.
+ */
+async function getOrSetParsed<T>(
+  key: string,
+  ttlMs: number,
+  url: string,
+  parse: (html: string) => T,
+): Promise<T> {
+  return dedupe(key, () =>
+    getOrSetCached<T>(
+      key,
+      ttlMs,
+      async () => {
+        try {
+          return parse(await fetchNovelHtml(resolveUrl(url)));
+        } catch (error) {
+          let legacy: string | null = null;
+          try {
+            legacy = await getCachedValue<string>(`novel:html:${url}`);
+          } catch {
+            legacy = null;
+          }
+          if (legacy) return parse(legacy);
+          throw error;
+        }
+      },
+      { staleIfError: true },
+    ),
   );
+}
+
+const DETAIL_TTL = 30 * 60 * 1000;
+const LIST_TTL = 10 * 60 * 1000;
+
+/**
+ * A novelfull detail page, parsed: ~2 KB in the cache instead of ~63 KB of
+ * HTML. Book cards prefetch this on hover, so caching raw pages let a minute
+ * of browsing fill lib/cache's whole budget (its eviction then drops every
+ * section's catalogue first).
+ */
+function fetchDetailFields(novelPath: string): Promise<AllNovelDetail> {
+  return getOrSetParsed<AllNovelDetail>(`novel:detail:v1:${novelPath}`, DETAIL_TTL, SITE + novelPath, (html) => {
+    const parsed = parseNovelDetailHtml(html, novelPath);
+    // No title means a challenge or error page: never cache it as the novel.
+    if (!parsed.name) throw new Error('The title is not available.');
+    return parsed;
+  });
+}
+
+/** A list page (popular, genre, latest, search), parsed: ~6 KB cached instead of ~70 KB of HTML. */
+function fetchNovelList(url: string): Promise<AllNovelItem[]> {
+  return getOrSetParsed<AllNovelItem[]>(`novel:list:v1:${url}`, LIST_TTL, url, (html) => parseNovels(html));
 }
 
 function resolveUrl(path: string): string {
@@ -176,17 +251,8 @@ function parseNovels(html: string): AllNovelItem[] {
 
 // ─── Parse novel detail ───────────────────────────────────────────────────────
 
-export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetail> {
-  // Ask the database, do not guess. The old synchronous check consulted a
-  // hardcoded Set, so it could answer instantly; a DB-backed index cannot, and
-  // a cold cache answering "not ours" would send one of our own novels to the
-  // external scraper and 404. fetchSakuraNovelDetail returns null when the slug
-  // genuinely is not ours, which is the only safe way to fall through.
-  const sakura = await fetchSakuraNovelDetail(novelPath);
-  if (sakura) return sakura;
-
-  const html = await fetchHtml(SITE + novelPath, 30 * 60 * 1000);
-
+/** The detail page's fields; the chapter list is a separate request. Exported for tests. */
+export function parseNovelDetailHtml(html: string, novelPath: string): AllNovelDetail {
   const result: AllNovelDetail = { path: novelPath, name: '', chapters: [] };
   const summaryParts: string[] = [];
   const infoParts: string[] = [];
@@ -221,6 +287,14 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
             novelDataId = attrs['data-novel-id'];
           }
           if (state === S.Info) infoDepth++;
+          break;
+        case 'input':
+          // <input type="hidden" id="rateVal" value="8.7"> — the rating pill
+          // on both detail screens never showed because this was not parsed.
+          if (attrs.id === 'rateVal' && attrs.value) {
+            const rating = Number.parseFloat(attrs.value);
+            if (Number.isFinite(rating) && rating > 0 && rating <= 10) result.rating = rating;
+          }
           break;
         case 'img':
           if (state === S.Cover) {
@@ -326,18 +400,138 @@ export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetai
   });
   detailParser.write(html);
   detailParser.end();
-
-  if (novelDataId) {
-    try {
-      const chapUrl = `${SITE}ajax-chapter-option?novelId=${novelDataId}`;
-      const chapHtml = await fetchHtml(chapUrl, 15 * 60 * 1000);
-      result.chapters = parseChapterList(chapHtml);
-    } catch (e) {
-      console.error('Failed to fetch chapter list:', e);
-    }
-  }
-
+  if (novelDataId) result.novelId = novelDataId;
   return result;
+}
+
+/**
+ * Title, cover, synopsis and metadata — without waiting for the chapter list.
+ *
+ * Opening a novel used to be three requests in a row (is it ours? → detail
+ * page → chapter list, 1.33 s measured) and nothing rendered until the last
+ * one. For novelfull paths (they always end in ".html"; Sakura slugs never
+ * do) the detail page is now requested at the same time as the Sakura check,
+ * and the screens render this header while the chapter list loads.
+ *
+ * Sakura originals come back complete, chapters included.
+ */
+export async function fetchNovelDetailHeader(novelPath: string): Promise<AllNovelDetail> {
+  const external = /\.html?$/i.test(novelPath);
+  const fieldsPromise = external ? fetchDetailFields(novelPath) : null;
+  // Never an unhandled rejection if the Sakura check wins and this is unused.
+  fieldsPromise?.catch(() => undefined);
+
+  // Ask the database, do not guess. A cold index answering "not ours" would
+  // send one of our own novels to the external scraper and 404.
+  // fetchSakuraNovelDetail returns null when the slug genuinely is not ours.
+  const sakura = await fetchSakuraNovelDetail(novelPath);
+  if (sakura) return sakura;
+
+  return fieldsPromise ?? fetchDetailFields(novelPath);
+}
+
+/** Full detail, chapters included — the shape every caller had before the split. */
+export async function parseNovelDetail(novelPath: string): Promise<AllNovelDetail> {
+  const header = await fetchNovelDetailHeader(novelPath);
+  if (header.chapters.length || !header.novelId) return header;
+  try {
+    return { ...header, chapters: await fetchNovelChapterList(header.novelId, novelPath) };
+  } catch (e) {
+    console.warn('Failed to fetch chapter list:', e);
+    return header;
+  }
+}
+
+// ─── Chapter lists ────────────────────────────────────────────────────────────
+
+const CHAPTER_LIST_TTL = 15 * 60 * 1000;
+/** Parsed lists by series path, so the reader and detail page share one copy. */
+const chapterLists = new Map<string, { at: number; chapters: AllNovelChapter[] }>();
+
+/** Compact cache form: the shared path prefix once, then [suffix, name] pairs. */
+type PackedChapters = { p: string; c: Array<[string, string]> };
+
+function packChapters(chapters: AllNovelChapter[]): PackedChapters {
+  const first = chapters[0]?.path ?? '';
+  const slash = first.lastIndexOf('/');
+  let prefix = slash > 0 ? first.slice(0, slash + 1) : '';
+  if (prefix && !chapters.every((ch) => ch.path.startsWith(prefix))) prefix = '';
+  return { p: prefix, c: chapters.map((ch) => [ch.path.slice(prefix.length), ch.name]) };
+}
+
+function unpackChapters(packed: PackedChapters): AllNovelChapter[] {
+  return (packed?.c ?? []).map(([suffix, name], i) => ({
+    path: `${packed.p}${suffix}`,
+    name,
+    chapterNumber: i + 1,
+    releaseTime: null,
+  }));
+}
+
+export async function fetchNovelChapterList(novelId: string, seriesPath?: string): Promise<AllNovelChapter[]> {
+  const packed = await getOrSetParsed<PackedChapters>(
+    `novel:chapters:v2:${novelId}`,
+    CHAPTER_LIST_TTL,
+    `${SITE}ajax-chapter-option?novelId=${novelId}`,
+    (html) => {
+      const list = parseChapterList(html);
+      // An empty list is almost always a challenge page, not a novel with no
+      // chapters; throwing keeps it out of the cache (and serves the stale copy).
+      if (!list.length) throw new Error('The chapter list is empty.');
+      return packChapters(list);
+    },
+  );
+  const chapters = unpackChapters(packed);
+  if (seriesPath && chapters.length) chapterLists.set(seriesPath, { at: Date.now(), chapters });
+  return chapters;
+}
+
+/** The cached list for a series, without waiting; null when not loaded this session. */
+export function peekNovelChapterList(seriesPath: string): AllNovelChapter[] | null {
+  const hit = chapterLists.get(seriesPath);
+  if (!hit || Date.now() - hit.at > CHAPTER_LIST_TTL) return null;
+  return hit.chapters;
+}
+
+/**
+ * Chapters for a series, from wherever is cheapest.
+ *
+ * The reader usually knows novelfull's numeric id from the chapter page, so it
+ * can skip the detail page entirely; Sakura originals and cold starts go
+ * through the full detail.
+ */
+export async function fetchNovelChapterListFor(seriesPath: string, novelIdHint?: string): Promise<AllNovelChapter[]> {
+  const cached = peekNovelChapterList(seriesPath);
+  if (cached) return cached;
+  if (novelIdHint && /\.html?$/i.test(seriesPath)) return fetchNovelChapterList(novelIdHint, seriesPath);
+  const detail = await parseNovelDetail(seriesPath);
+  if (detail.chapters.length) chapterLists.set(seriesPath, { at: Date.now(), chapters: detail.chapters });
+  return detail.chapters;
+}
+
+/**
+ * Warm a novel's detail page, e.g. on hover or press-in of its card, so the
+ * detail screen usually renders its title from cache. Errors are ignored: the
+ * screen makes the same requests and reports its own failures.
+ *
+ * The chapter list is only fetched with `chapters: true`, for a deliberate
+ * press (pointerdown). It can be ~600 KB for a long novel, and the cheaper
+ * signals fire on things that are not an intent to open: native press-in fires
+ * at the start of every scroll drag that begins on a card, and hover/focus fire
+ * while a pointer or the Tab key moves across the grid. The header is one
+ * small, 30-minute-cached request per title, so those stay cheap.
+ */
+export function prefetchNovelDetail(novelPath: string, opts: { chapters?: boolean } = {}): void {
+  if (!novelPath || peekNovelChapterList(novelPath)) return;
+  void fetchNovelDetailHeader(novelPath)
+    .then((header) => {
+      if (header.chapters.length) {
+        chapterLists.set(novelPath, { at: Date.now(), chapters: header.chapters });
+        return;
+      }
+      if (opts.chapters && header.novelId) return fetchNovelChapterList(header.novelId, novelPath);
+    })
+    .catch(() => undefined);
 }
 
 function parseChapterList(html: string): AllNovelChapter[] {
@@ -402,42 +596,75 @@ export async function fetchPopularNovels(
     const type = filter?.type || 'most-popular';
     path = `${type}?page=${page}`;
   }
-  const html = await fetchHtml(SITE + path);
-  return parseNovels(html);
+  return fetchNovelList(SITE + path);
 }
 
 export async function fetchLatestNovels(page = 1): Promise<AllNovelItem[]> {
-  const html = await fetchHtml(`${SITE}latest-release-novel?page=${page}`);
-  return parseNovels(html);
+  return fetchNovelList(`${SITE}latest-release-novel?page=${page}`);
 }
 
 export async function searchNovels(query: string, page = 1): Promise<AllNovelItem[]> {
   const url = `${SITE}search?keyword=${encodeURIComponent(query)}&page=${page}`;
-  const html = await fetchHtml(url);
-  return parseNovels(html);
+  return fetchNovelList(url);
 }
 
-export async function parseChapterContent(chapterPath: string): Promise<string> {
-  // Same here: null means "not one of ours", not "empty chapter". The index is
-  // already warm by this point because opening a chapter follows opening the
-  // novel, so this costs no extra round trip in practice.
-  const sakuraContent = await fetchSakuraChapterContent(chapterPath);
-  if (sakuraContent) return sakuraContent;
+export interface NovelChapterPage {
+  path: string;
+  text: string;
+  /** The page's own chapter title, e.g. "Chapter 1 - Starting Over". */
+  title?: string;
+  /** Series (detail page) path and name, from the chapter page's breadcrumb. */
+  novelPath?: string;
+  novelTitle?: string;
+  prevPath?: string;
+  nextPath?: string;
+  /** novelfull's numeric id: lets the reader fetch the chapter list directly. */
+  novelId?: string;
+}
 
-  const html = await fetchHtml(SITE + chapterPath, 24 * 60 * 60 * 1000);
+/** Parse a novelfull chapter page. Exported for tests. */
+export function parseChapterPageHtml(html: string, chapterPath: string): NovelChapterPage {
   const parts: string[] = [];
+  const page: NovelChapterPage = { path: chapterPath, text: '' };
   let depth = 0;
   let hiddenDepth = 0;
+  let titleParts: string[] | null = null;
   const paragraphTags = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']);
   const stack: S[] = [S.Idle];
   const peek = () => stack[stack.length - 1];
   const push = (s: S) => stack.push(s);
   const pop = () => (stack.length > 1 ? stack.pop() : peek());
+  const toPath = (href: string) => {
+    try {
+      return new URL(href, SITE).pathname.substring(1);
+    } catch {
+      return href.replace(/^\/+/, '');
+    }
+  };
 
   const parser = new Parser({
     onopentag(name, attrs) {
       const state = peek();
       const cls = attrs.class?.trim() || '';
+      // Navigation and breadcrumb sit outside the chapter body, top and bottom.
+      if (state !== S.Chapter && state !== S.Hidden) {
+        if (name === 'a' && (attrs.id === 'prev_chap' || attrs.id === 'next_chap')) {
+          // A disabled link (first/last chapter) has no href.
+          const href = attrs.href;
+          if (href && !cls.includes('disabled') && !('disabled' in attrs)) {
+            const target = toPath(href);
+            if (attrs.id === 'prev_chap') page.prevPath = page.prevPath || target;
+            else page.nextPath = page.nextPath || target;
+          }
+        } else if (name === 'a' && cls.split(/\s+/).includes('truyen-title') && attrs.href) {
+          page.novelPath = page.novelPath || toPath(attrs.href);
+          if (attrs.title) page.novelTitle = page.novelTitle || attrs.title.trim();
+        } else if (name === 'a' && cls.split(/\s+/).includes('chapter-title')) {
+          if (attrs.title && !page.title) page.title = attrs.title.trim();
+          else if (!page.title) titleParts = [];
+        }
+        if (attrs['data-novel-id'] && !page.novelId) page.novelId = attrs['data-novel-id'];
+      }
       switch (state) {
         case S.Idle:
           if (cls === 'txt' || attrs.id === 'chr-content' || attrs.id === 'chapter-content') {
@@ -450,7 +677,7 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
           // Preserve those boundaries while keeping inline emphasis contiguous.
           if (paragraphTags.has(name)) parts.push('\n\n');
           else if (name === 'br') parts.push('\n');
-          if (name === 'sub') {
+          if (name === 'sub' || name === 'script' || name === 'style') {
             push(S.Hidden);
           } else if (name === 'div') {
             depth++;
@@ -461,19 +688,25 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
           }
           break;
         case S.Hidden:
-          if (name === 'sub') push(S.Hidden);
+          if (name === 'sub' || name === 'script' || name === 'style') push(S.Hidden);
           else if (name === 'div') hiddenDepth++;
           break;
       }
     },
     ontext(text) {
+      if (titleParts) titleParts.push(text);
       if (peek() === S.Chapter) parts.push(text);
     },
     onclosetag(name) {
       const state = peek();
+      if (name === 'a' && titleParts) {
+        const t = titleParts.join('').replace(/\s+/g, ' ').trim();
+        if (t && !page.title) page.title = t;
+        titleParts = null;
+      }
       if (state === S.Chapter && paragraphTags.has(name)) parts.push('\n\n');
       if (state === S.Hidden) {
-        if (name === 'sub') pop();
+        if (name === 'sub' || name === 'script' || name === 'style') pop();
         else if (name === 'div') {
           hiddenDepth--;
           if (hiddenDepth < 0) { pop(); depth--; }
@@ -487,11 +720,81 @@ export async function parseChapterContent(chapterPath: string): Promise<string> 
   });
   parser.write(html);
   parser.end();
-  return parts.join('')
+  const raw = parts.join('')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  // The source's "If you find any errors … report chapter" notice is not prose.
+  page.text = stripSourceBoilerplate(raw);
+  return page;
+}
+
+const CHAPTER_TTL = 24 * 60 * 60 * 1000;
+/** Recently parsed chapters, so a prefetched "next chapter" renders on the first frame. */
+const recentPages = new Map<string, NovelChapterPage>();
+const RECENT_PAGES = 8;
+
+function remember(page: NovelChapterPage) {
+  recentPages.delete(page.path);
+  recentPages.set(page.path, page);
+  while (recentPages.size > RECENT_PAGES) {
+    const oldest = recentPages.keys().next().value;
+    if (oldest === undefined) break;
+    recentPages.delete(oldest);
+  }
+}
+
+/** A chapter parsed earlier this session (opened or prefetched), or null. */
+export function peekNovelChapterPage(chapterPath: string): NovelChapterPage | null {
+  return recentPages.get(chapterPath) ?? null;
+}
+
+export async function fetchNovelChapterPage(
+  chapterPath: string,
+  opts: { persist?: boolean } = {},
+): Promise<NovelChapterPage> {
+  const recent = recentPages.get(chapterPath);
+  if (recent) return recent;
+  // null means "not one of ours", not "empty chapter". It answers without a
+  // request for novelfull paths, which do not have the "<slug>/chapter/<id>" shape.
+  const sakuraContent = await fetchSakuraChapterContent(chapterPath);
+  if (sakuraContent) {
+    const page: NovelChapterPage = { path: chapterPath, text: sakuraContent };
+    if (opts.persist !== false) remember(page);
+    return page;
+  }
+  const key = `novel:page:v1:${chapterPath}`;
+  const parse = (html: string) => {
+    const parsed = parseChapterPageHtml(html, chapterPath);
+    // Same reasoning: never cache a bot-check page as an empty chapter for a day.
+    if (!parsed.text) throw new Error('The chapter has no readable text.');
+    return parsed;
+  };
+  if (opts.persist === false) {
+    // Batch downloads store the text in the offline library already. Putting
+    // 10–100 chapters (~20 KB each) into lib/cache as well overflows its
+    // 1.5 M-character budget, and the budget evicts the entries that expire
+    // soonest first — every section's catalogue — so one "Download next 100"
+    // used to make home, manga and anime load cold again. A copy that is
+    // already cached (the chapter was just read) is still used.
+    const cached = await getCachedValue<NovelChapterPage>(key).catch(() => null);
+    if (cached?.text) return cached;
+    return dedupe(key, async () => parse(await fetchNovelHtml(resolveUrl(SITE + chapterPath))));
+  }
+  const page = await getOrSetParsed<NovelChapterPage>(key, CHAPTER_TTL, SITE + chapterPath, parse);
+  if (page?.text) remember(page);
+  return page;
+}
+
+/** Start loading a chapter in the background (the reader's "next chapter"). */
+export function prefetchNovelChapterPage(chapterPath: string): void {
+  if (!chapterPath || recentPages.has(chapterPath)) return;
+  void fetchNovelChapterPage(chapterPath).catch(() => undefined);
+}
+
+export async function parseChapterContent(chapterPath: string, opts: { persist?: boolean } = {}): Promise<string> {
+  return (await fetchNovelChapterPage(chapterPath, opts)).text;
 }
 
 // Optional cover enrichment is separate from the readable novel data.

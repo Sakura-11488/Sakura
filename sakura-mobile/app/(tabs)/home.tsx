@@ -4,7 +4,8 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,  TouchableOpacity,
+  RefreshControl,
+  TouchableOpacity,
   useWindowDimensions,
   Platform,
 } from 'react-native';
@@ -38,10 +39,16 @@ import { useTheme } from '@/lib/theme';
 import {
   fetchTrendingManga,
   fetchPopularManga,
+  fetchHotUpdatedManga,
+  browseManga,
   toContentItem,
   toCarouselItem,
-  searchManga,
 } from '@/lib/manga';
+import { formatReleaseDate } from '@/lib/format-release-date';
+import { runWhenIdle } from '@/lib/manga-prefetch';
+import { HOME_POPULAR_LIMIT, HOME_TRENDING_LIMIT, startHomeListsPreload, takeHomeListsPreload } from '@/lib/home-preload';
+import { rememberMangaPreviews } from '@/lib/manga-prefetch';
+import { useFocusedSubscription } from '@/lib/hooks/useFocusedSubscription';
 import { visibleScrapedSources } from '@/lib/scraped-sources';
 import { useContentPrefs } from '@/lib/content-prefs';
 import { isWideWeb } from '@/constants/layout';
@@ -50,14 +57,27 @@ import CreatorWorksRow from '@/components/creator/CreatorWorksRow';
 import StreakLevelCard from '@/components/gamification/StreakLevelCard';
 import FeaturedCarousel, { type CarouselItem } from '@/components/ui/FeaturedCarousel';
 
+// Start the Manga tab's two lists now rather than after the first render
+// (lib/home-preload explains when this helps and when it is too late).
+startHomeListsPreload();
+
 // Genre shelves for the atsu-backed Manga tab. The scraped sources carry their
 // own set on their registry entry; this is the one case with no adapter.
-const MANGA_HOME_ROWS = [
-  { title: 'Action Packed', query: 'action' },
-  { title: 'Romance', query: 'romance' },
-  { title: 'Boredom Busters', query: 'slice of life' },
-  { title: 'Get Into Comedy', query: 'comedy' },
+//
+// Real genres now (atsu genre ids, lib/manga ATSU_GENRES), not title
+// searches: searchManga('action') matched TITLES, so "Action Packed" opened
+// with "Action Idols" and "Action Mask" and nothing actually tagged Action.
+// `query` stays for the row shape the scraped sources share.
+type HomeRow = { title: string; query: string; genre?: string };
+const MANGA_HOME_ROWS: HomeRow[] = [
+  { title: 'Action Packed', query: 'action', genre: '39' },
+  { title: 'Romance', query: 'romance', genre: '9' },
+  { title: 'Boredom Busters', query: 'slice of life', genre: '7' },
+  { title: 'Get Into Comedy', query: 'comedy', genre: '6' },
 ];
+/** Fetched per genre shelf; titles already on an earlier shelf are skipped, then it is cut to SHELF_SIZE. */
+const GENRE_FETCH = 24;
+const SHELF_SIZE = 12;
 
 
 // ─── Notification bell ────────────────────────────────────────────────────────
@@ -209,7 +229,12 @@ export default function HomeScreen() {
   // On desktop web the logo + wallet live in the sidebar, so drop the in-content header.
   const wideWeb = isWideWeb(windowW);
   const [category, setCategory] = useState('Manga');
-  const [loading, setLoading] = useState(true);
+  // Each shelf group shows as soon as its own list arrives: trending feeds
+  // the featured slot, the hot list and the picks; popular feeds the popular
+  // and "more" shelves. `loading` is "nothing has arrived yet".
+  const [trendingLoading, setTrendingLoading] = useState(true);
+  const [popularLoading, setPopularLoading] = useState(true);
+  const loading = trendingLoading && popularLoading;
   // Full-screen skeleton only on the very first load; switching category keeps the
   // existing content on screen (no jarring flash) while the new rows stream in.
   const hasLoadedOnce = useRef(false);
@@ -223,6 +248,8 @@ export default function HomeScreen() {
   const [romance, setRomance] = useState<ContentItem[]>([]);
   const [boredmBusters, setBoredmBusters] = useState<ContentItem[]>([]);
   const [comedy, setComedy] = useState<ContentItem[]>([]);
+  /** atsu's "Hot updates": popular titles that just got a chapter, with how long ago. */
+  const [updates, setUpdates] = useState<ContentItem[]>([]);
   const router = useRouter();
   const [continueAnime, setContinueAnime] = useState<AnimeWatchProgress[]>([]);
   const [continueReading, setContinueReading] = useState<ContinueReadingItem[]>([]);
@@ -240,14 +267,14 @@ export default function HomeScreen() {
     [sources, category],
   );
   // Four fixed shelves; atsu manga has no adapter so it keeps its own set.
-  const homeRows = adapter?.homeRows ?? MANGA_HOME_ROWS;
+  const homeRows: HomeRow[] = adapter?.homeRows ?? MANGA_HOME_ROWS;
 
   // Expand a home row into the full-grid browse screen, carrying the row's
   // source + query so it shows *that* section's content (not the manga
   // catalogue). `q` drives genre rows (search); `kind` drives catalogue rows.
   const browseSource = adapter?.key ?? 'manga';
   const goBrowse = useCallback(
-    (title: string, opts: { q?: string; kind?: string }) =>
+    (title: string, opts: { q?: string; kind?: string; genre?: string }) =>
       router.push({
         pathname: '/browse',
         params: { title, source: browseSource, ...opts },
@@ -264,10 +291,11 @@ export default function HomeScreen() {
   const loadVersion = useRef(0);
   const loadData = useCallback(async () => {
     const version = ++loadVersion.current;
-    try {
-      if (adapter) {
+    const current = () => version === loadVersion.current;
+    if (adapter) {
+      try {
         const list = await adapter.trending(40);
-        if (version !== loadVersion.current) return;
+        if (!current()) return;
         const toCarousel = (c: ContentItem): CarouselItem => ({
           id: c.id,
           title: c.title,
@@ -276,40 +304,70 @@ export default function HomeScreen() {
           type: 'manga',
           source: adapter.key,
         });
+        rememberMangaPreviews(list);
         setFeatured(list.slice(0, 20).map(toCarousel));
-        setTrending(list.slice(7, 15));
+        // Straight after the three featured titles: the hot list used to
+        // start at item 8, skipping four of the most popular titles outright.
+        setTrending(list.slice(3, 11));
         setPopularSeries(list.slice(0, 10).map((c) => ({ ...c, badge: 'HOT' })));
         setMoreToExplore(list.slice(10, 20));
         setTrendingPicks(list.slice(16, 24));
-      } else {
-        const [trend, pop] = await Promise.all([
-          fetchTrendingManga(32),
-          fetchPopularManga(20),
-        ]);
+      } catch {
+        if (current()) {
+          setFeatured([]); setTrending([]); setPopularSeries([]);
+          setMoreToExplore([]); setTrendingPicks([]);
+        }
+      } finally {
+        if (current()) {
+          hasLoadedOnce.current = true;
+          setTrendingLoading(false);
+          setPopularLoading(false);
+          setRefreshing(false);
+        }
+      }
+      return;
+    }
 
-        if (version !== loadVersion.current) return;
-        setFeatured(trend.slice(0, 20).map(toCarouselItem));
-        setTrending(trend.slice(7, 15).map((i) => toContentItem(i)));
-        setPopularSeries(pop.slice(0, 10).map((i) => toContentItem(i, 'HOT')));
-        setMoreToExplore(pop.slice(10, 20).map((i) => toContentItem(i)));
-        setTrendingPicks(trend.slice(16, 24).map((i) => toContentItem(i)));
-      }
-    } catch {
-      if (version === loadVersion.current) {
-        setFeatured([]); setTrending([]); setPopularSeries([]);
-        setMoreToExplore([]); setTrendingPicks([]);
-      }
-    } finally {
-      if (version === loadVersion.current) {
-        hasLoadedOnce.current = true;
-        setLoading(false);
-        setRefreshing(false);
-      }
+    // Two independent halves rather than one Promise.all: the page used to
+    // wait for the slower list (in one measured run popular took 3.2 s while
+    // trending was back in 1 s) before showing either.
+    const early = takeHomeListsPreload();
+    const trendingDone = (early?.trending ?? fetchTrendingManga(HOME_TRENDING_LIMIT)).then((trend) => {
+      if (!current()) return;
+      const items = trend.slice(0, 24).map((i) => toContentItem(i));
+      rememberMangaPreviews(items);
+      setFeatured(trend.slice(0, 20).map(toCarouselItem));
+      // After the three featured titles (see the scraped-source branch above).
+      setTrending(items.slice(3, 11));
+      setTrendingPicks(items.slice(16, 24));
+    }, () => {
+      if (!current()) return;
+      setFeatured([]); setTrending([]); setTrendingPicks([]);
+    }).finally(() => {
+      if (current()) setTrendingLoading(false);
+    });
+    const popularDone = (early?.popular ?? fetchPopularManga(HOME_POPULAR_LIMIT)).then((pop) => {
+      if (!current()) return;
+      const items = pop.slice(0, 20).map((i) => toContentItem(i));
+      rememberMangaPreviews(items);
+      setPopularSeries(pop.slice(0, 10).map((i) => toContentItem(i, 'HOT')));
+      setMoreToExplore(items.slice(10, 20));
+    }, () => {
+      if (!current()) return;
+      setPopularSeries([]); setMoreToExplore([]);
+    }).finally(() => {
+      if (current()) setPopularLoading(false);
+    });
+    await Promise.all([trendingDone, popularDone]);
+    if (current()) {
+      hasLoadedOnce.current = true;
+      setRefreshing(false);
     }
   }, [adapter]);
 
   useEffect(() => {
-    setLoading(true);
+    setTrendingLoading(true);
+    setPopularLoading(true);
   }, [category]);
 
   useEffect(() => {
@@ -317,40 +375,58 @@ export default function HomeScreen() {
     return () => { loadVersion.current += 1; };
   }, [loadData]);
 
+  // Genre shelves, after the first lists so they never compete with what
+  // is on screen; on web at idle too (they sit below the fold there). Web
+  // used to skip them entirely.
   useEffect(() => {
-    if (loading || Platform.OS === 'web') return;
+    if (loading) return;
     let cancelled = false;
     setActionPacked([]); setRomance([]); setBoredmBusters([]); setComedy([]);
-    (async () => {
-      const [first, second, third, fourth] = homeRows;
+    const setters = [setActionPacked, setRomance, setBoredmBusters, setComedy];
+    const load = async () => {
       if (adapter) {
-        const [a, b, c, d] = await Promise.all([
-          adapter.search(first.query, 12),
-          adapter.search(second.query, 12),
-          adapter.search(third.query, 12),
-          adapter.search(fourth.query, 12),
-        ]);
+        const lists = await Promise.all(homeRows.slice(0, 4).map((row) => adapter.search(row.query, 12).catch(() => [] as ContentItem[])));
         if (cancelled) return;
-        setActionPacked(a);
-        setRomance(b);
-        setBoredmBusters(c);
-        setComedy(d);
+        lists.forEach((list, i) => setters[i](list));
         return;
       }
-      const [a, b, c, d] = await Promise.all([
-        searchManga(first.query, 12),
-        searchManga(second.query, 12),
-        searchManga(third.query, 12),
-        searchManga(fourth.query, 12),
-      ]);
+      const lists = await Promise.all(homeRows.slice(0, 4).map((row) =>
+        row.genre
+          ? browseManga({ genreId: row.genre, sort: 'popular' }, 0, GENRE_FETCH).then((p) => p.items, () => [])
+          : Promise.resolve([]),
+      ));
       if (cancelled) return;
-      setActionPacked(a.map((i) => toContentItem(i)));
-      setRomance(b.map((i) => toContentItem(i)));
-      setBoredmBusters(c.map((i) => toContentItem(i)));
-      setComedy(d.map((i) => toContentItem(i)));
-    })().catch(() => { /* A failed optional shelf does not block discovery. */ });
-    return () => { cancelled = true; };
+      // The biggest titles carry several genres; one shelf each is enough.
+      const seen = new Set<string>();
+      lists.forEach((list, i) => {
+        const items = list.filter((it) => !seen.has(it.id)).slice(0, SHELF_SIZE);
+        items.forEach((it) => seen.add(it.id));
+        const cards = items.map((it) => toContentItem(it));
+        rememberMangaPreviews(cards);
+        setters[i](cards);
+      });
+    };
+    const idle = Platform.OS === 'web' ? runWhenIdle(() => { void load(); }, 2500) : null;
+    if (!idle) void load();
+    return () => { cancelled = true; idle?.cancel(); };
   }, [loading, adapter, homeRows]);
+
+  // "Latest updates" (atsu tab only): what just got a chapter, with how long ago.
+  useEffect(() => {
+    if (adapter || loading) return;
+    let cancelled = false;
+    const load = () => {
+      fetchHotUpdatedManga(20).then((list) => {
+        if (cancelled) return;
+        const cards = list.map((it) => toContentItem(it, it.updatedAt ? formatReleaseDate(it.updatedAt) : undefined));
+        rememberMangaPreviews(cards);
+        setUpdates(cards);
+      }, () => { if (!cancelled) setUpdates([]); });
+    };
+    const idle = Platform.OS === 'web' ? runWhenIdle(load, 2000) : null;
+    if (!idle) load();
+    return () => { cancelled = true; idle?.cancel(); };
+  }, [adapter, loading]);
 
   const refreshContinueWatching = useCallback(() => {
     getContinueWatching(10).then(setContinueAnime);
@@ -371,14 +447,12 @@ export default function HomeScreen() {
     }, [refreshContinue]),
   );
 
-  useEffect(() => {
-    const unsubWatch = subscribeWatchProgress(refreshContinueWatching);
-    const unsubRead = subscribeReadingProgress(refreshContinueReading);
-    return () => {
-      unsubWatch();
-      unsubRead();
-    };
-  }, [refreshContinueWatching, refreshContinueReading]);
+  // Only while home is focused. The reader saves progress on every page turn
+  // and the player every few seconds; home stays mounted under them, and each
+  // save used to rebuild Continue Reading — and with it the whole web home —
+  // out of sight. The focus effect above reloads both on return.
+  useFocusedSubscription(subscribeWatchProgress, refreshContinueWatching);
+  useFocusedSubscription(subscribeReadingProgress, refreshContinueReading);
 
   const scrollHandler = useAnimatedScrollHandler((e) => {
     scrollY.value = e.contentOffset.y;
@@ -430,7 +504,9 @@ export default function HomeScreen() {
     featured={featured} trending={trending} popular={popularSeries}
     more={moreToExplore} picks={trendingPicks}
     genres={[actionPacked, romance, boredmBusters, comedy].map((items, index) => ({ ...homeRows[index], items }))}
-    loading={loading} onRefresh={onRefresh} onBrowse={goBrowse}
+    updates={adapter ? [] : updates} onUpdates={() => router.push('/new-releases' as any)}
+    loading={loading} trendingLoading={trendingLoading} popularLoading={popularLoading}
+    onRefresh={onRefresh} onBrowse={goBrowse}
     continueReading={continueReading.length > 0 ? <ContinueReadingRow items={continueReading} /> : null}
     continueWatching={continueAnime.length > 0 ? <ContinueWatchingRow items={continueAnime} /> : null}
     community={!adapter ? <><CreatorWorksRow kind="novel" title="Creator Novels" /><CreatorWorksRow kind="manga" title="Creator Manga" /><CreatorWorksRow kind="anime" title="Creator Anime" /></> : null}
@@ -541,6 +617,17 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {/* What just got a chapter, with how long ago (atsu tab). */}
+          {!adapter && updates.length > 0 && (
+            <View style={s.sectionGap}>
+              <HorizSection
+                data={updates}
+                title="Latest Updates"
+                onSeeAll={() => router.push('/new-releases' as any)}
+              />
+            </View>
+          )}
+
           {/* Picks from the trending feed, not personalized recommendations. */}
           {trendingPicks.length > 0 && (
             <View style={s.sectionGap}>
@@ -561,7 +648,7 @@ export default function HomeScreen() {
                 <HorizSection
                   data={data}
                   title={homeRows[i].title}
-                  onSeeAll={() => goBrowse(homeRows[i].title, { q: homeRows[i].query })}
+                  onSeeAll={() => goBrowse(homeRows[i].title, homeRows[i].genre ? { genre: homeRows[i].genre } : { q: homeRows[i].query })}
                 />
               </View>
             ) : null,

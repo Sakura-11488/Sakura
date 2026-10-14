@@ -56,6 +56,7 @@ function animeHarness({ browser = true, configured = false, invoke, original = n
       fetchUpstreamJson: async () => ({ enc: 'provider-format' }),
     },
     './sakura-originals': { resolveSakuraOriginalStreamUrl: async () => original },
+    './anime-discovery': { primeAnimeDiscovery: () => {} },
   });
   return { anime, calls, upstream, legacy };
 }

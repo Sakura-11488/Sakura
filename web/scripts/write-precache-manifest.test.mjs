@@ -122,6 +122,28 @@ test('the total budget cuts the largest optional assets, never the bundle', (t) 
   assert.ok(result.excluded.some((e) => /total budget/.test(e.why)));
 });
 
+test('the lazy chunks the document names are precached whole, with the assets only they reference', (t) => {
+  const { dist, src } = fixture(t, { sources: { 'a.tsx': "import Octicons from '@expo/vector-icons/Octicons';" } });
+  // A lazy screen chunk (named like a route, brackets and all) that is the
+  // only file referencing an icon font, plus a route chunk that is also
+  // called index-<hash>.js, as novel/index's is.
+  const reader = `/app/_expo/static/js/web/[id]-${'a'.repeat(32)}.js`;
+  const novelIndex = `/app/_expo/static/js/web/index-${'b'.repeat(32)}.js`;
+  const onlyInReader = `${ICONS}/Octicons.${H}.ttf`;
+  for (const [url, text] of [[reader, `var o={uri:"${onlyInReader}"};`], [novelIndex, 'x'], [onlyInReader, 'TTF']]) {
+    fs.mkdirSync(path.dirname(path.join(dist, url.slice(5))), { recursive: true });
+    fs.writeFileSync(path.join(dist, url.slice(5)), text);
+  }
+  const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')
+    .replace('</body>', `<link rel="sakura-chunk" href="${novelIndex}">\n<link rel="sakura-chunk" href="${reader}">\n</body>`);
+  fs.writeFileSync(path.join(dist, 'index.html'), html);
+  fs.rmSync(path.join(dist, 'version.json'));
+  const result = collectPrecache({ distDir: dist, sourceRoots: [src] });
+  assert.ok(result.urls.includes(reader) && result.urls.includes(novelIndex), 'every chunk is in, no size cap');
+  assert.ok(result.urls.includes(onlyInReader), 'assets referenced only by a lazy chunk are found');
+  assert.equal(result.build, '0123456789abcdef0123456789abcdef', 'the build id is the entry script\'s, not a route chunk\'s');
+});
+
 test('an export whose document loads a missing bundle fails loudly', (t) => {
   const { dist, src } = fixture(t);
   fs.rmSync(path.join(dist, BUNDLE.slice(5)));

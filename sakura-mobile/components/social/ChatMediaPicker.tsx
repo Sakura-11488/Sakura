@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { BottomSheetFlatList } from '@gorhom/bottom-sheet';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Fonts, FontSize, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/lib/theme';
 import { fetchGiphyItems, isGiphyConfigured, type GiphyItem } from '@/lib/giphy';

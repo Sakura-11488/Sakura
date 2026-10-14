@@ -19,43 +19,18 @@ function coverHarness(fetch, timers = {}) {
 }
 const novels = Array.from({ length: 20 }, (_, i) => ({ path: `novel-${i}`, name: `Novel ${i}`, cover: `https://source.example/${i}.jpg` }));
 
-test('optional cover enrichment caps requests and concurrency while retaining every novel', async () => {
-  let calls = 0, active = 0, maximum = 0;
-  const covers = coverHarness(async () => {
-    calls++; active++; maximum = Math.max(maximum, active);
-    await new Promise((resolve) => setImmediate(resolve));
-    active--;
-    return { ok: true, json: async () => ({ items: [{ volumeInfo: { imageLinks: { thumbnail: 'https://covers.example/book.jpg' } } }] }) };
-  });
-  const result = await covers.enhanceCovers(novels);
-  assert.equal(calls, 4);
-  assert.equal(maximum, 2);
-  assert.equal(result.length, 20);
-  assert.equal(result[0].originalCover, novels[0].cover);
-  assert.equal(result[19].cover, novels[19].cover);
-});
-
-test('quota exhaustion retains source covers and stops further provider requests', async () => {
+test('cover enrichment never calls a third-party API and keeps every source cover', async () => {
+  // Google Books lookups 429-ed, matched the wrong book by title and swapped
+  // covers after the grid painted, so enrichment is now network-free.
   let calls = 0;
-  const covers = coverHarness(async () => { calls++; return { ok: false, status: 429 }; });
+  const covers = coverHarness(async () => { calls++; throw new Error('Unexpected fetch'); });
   const result = await covers.enhanceCovers(novels);
-  assert.ok(calls <= 2);
+  assert.equal(calls, 0);
+  assert.equal(result.length, 20);
   assert.deepEqual(Array.from(result, (row) => row.cover), novels.map((row) => row.cover));
-  const before = calls;
+  assert.equal(result[0].originalCover, novels[0].cover);
   assert.equal(await covers.getHDCover('Another title'), null);
-  assert.equal(calls, before);
-});
-
-test('a hung cover response is bounded even when fetch ignores abort', async () => {
-  let expire, signal;
-  const covers = coverHarness((_url, options) => {
-    signal = options.signal;
-    return new Promise(() => {});
-  }, { setTimeout: (callback, ms) => { assert.equal(ms, 2500); expire = callback; return 1; }, clearTimeout() {} });
-  const pending = covers.getHDCover('Slow title');
-  expire();
-  assert.equal(await pending, null);
-  assert.equal(signal.aborted, true);
+  assert.equal(calls, 0);
 });
 
 test('late enrichment preserves newer pagination and never resurrects a different result set', () => {
