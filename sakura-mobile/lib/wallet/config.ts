@@ -15,13 +15,15 @@ import {
   PASS_DURATION_DAYS as PASS_DURATION_DAYS_CANONICAL,
 } from './addresses';
 
+import { HELIUS_API_KEY } from './helius-key';
 export { INSURANCE_SPLIT, BURN_SPLIT };
 
 export const SAKURA_SEND_SOL_RESERVE = 0.003;
 export const SOL_SEND_FEE_RESERVE = 0.005;
 
 /** Mainnet by default so card on-ramps and real balances match Transak/Jupiter. */
-const HELIUS_KEY = (process.env.EXPO_PUBLIC_HELIUS_API_KEY || '').trim();
+// Empty on web, where every call goes through wallet-rpc (see ./helius-key.web).
+const HELIUS_KEY = HELIUS_API_KEY;
 export const SOLANA_RPC =
   process.env.EXPO_PUBLIC_SOLANA_RPC?.trim()
   || (HELIUS_KEY ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}` : '')

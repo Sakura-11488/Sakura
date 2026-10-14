@@ -155,6 +155,23 @@ export async function resolveSakuraTokenAccount(
   return best.pubkey;
 }
 
+/**
+ * JSON-RPC -32602 ("Invalid params") is the node's verdict on the request
+ * itself, and it is how getTokenAccountBalance reports a token account that
+ * does not exist: `Invalid param: could not find account`, sent with HTTP 200
+ * (wallet-rpc passes it through unchanged). The same params get the same
+ * answer, so retrying it only spent calls: two more per refresh, every 20 s,
+ * for each wallet without a SAKURA ATA, out of wallet-rpc's 3600/hour per-IP
+ * budget. Timeouts, network failures, 429s and 5xx can clear up and are still
+ * retried. Nothing about which reads follow changes: a missing ATA still falls
+ * through to the parsed read and the owner scans exactly as before.
+ */
+function isDefinitiveRpcAnswer(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return code === -32602 || (typeof message === 'string' && /could not find account/i.test(message));
+}
+
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -162,6 +179,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
       return await fn();
     } catch (error) {
       lastError = error;
+      if (isDefinitiveRpcAnswer(error)) break;
       if (i < attempts - 1) {
         await new Promise((r) => setTimeout(r, 350 * (i + 1)));
       }

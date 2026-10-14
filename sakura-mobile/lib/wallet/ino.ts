@@ -16,6 +16,7 @@ import {
 import { sha256 } from '@noble/hashes/sha256';
 import { INO_PROGRAM_ID } from './config';
 import { getConnection } from './connection';
+import { confirmTransactionByPolling } from './confirm';
 
 function hashSeed(value: string): Uint8Array {
   return sha256(new TextEncoder().encode(value));
@@ -173,7 +174,7 @@ async function signAndSend(keypair: Keypair, ix: TransactionInstruction): Promis
   const tx = new Transaction({ feePayer: keypair.publicKey, recentBlockhash: blockhash }).add(ix);
   tx.sign(keypair);
   const signature = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-  await conn.confirmTransaction({ blockhash, lastValidBlockHeight, signature }, 'confirmed');
+  await confirmTransactionByPolling(conn, { signature, lastValidBlockHeight });
   return signature;
 }
 

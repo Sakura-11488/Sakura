@@ -90,3 +90,10 @@ verify_jwt = false
 
 [functions.manage-novel]
 verify_jwt = false
+
+# @solana/web3.js sends no Authorization header, so a gateway JWT check would
+# 401 every web and native Solana RPC call. The live function already runs with
+# it off; this keeps a plain `functions deploy wallet-rpc` from turning it on.
+# The method allowlist and per-IP rate limit in the function are the guard.
+[functions.wallet-rpc]
+verify_jwt = false

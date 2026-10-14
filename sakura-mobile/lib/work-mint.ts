@@ -7,6 +7,7 @@ import {
 } from '@solana/web3.js';
 import { invokeCreatorFunction } from './creator-api';
 import { getConnection } from './wallet/connection';
+import { confirmTransactionByPolling } from './wallet/confirm';
 import { supabase } from './supabase';
 
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
@@ -58,7 +59,7 @@ export async function registerWorkMintOnChain(
   tx.sign(keypair);
 
   const signature = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-  await conn.confirmTransaction({ blockhash, lastValidBlockHeight, signature }, 'confirmed');
+  await confirmTransactionByPolling(conn, { signature, lastValidBlockHeight });
   return signature;
 }
 

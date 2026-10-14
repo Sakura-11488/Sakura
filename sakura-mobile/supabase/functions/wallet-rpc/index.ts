@@ -12,11 +12,27 @@ const methods = new Set([
   'getTokenLargestAccounts', 'getTokenSupply', 'getTransaction', 'getVersion',
   'sendTransaction', 'simulateTransaction',
 ]);
-const cors = {
+/**
+ * Browsers preflight every call here, and the preflight must name each header
+ * the page will send. @solana/web3.js adds `solana-client` to EVERY request,
+ * after the caller's own `httpHeaders`, so a client cannot leave it out; with
+ * it missing from this list the browser refused every web balance read, pass
+ * check and send. Native apps never preflight, which is why only web broke.
+ *
+ * Max-Age lets the browser reuse one preflight (Chrome caps it at 2 h) instead
+ * of paying an extra OPTIONS round trip, and invocation, before nearly every
+ * call — the balance refresh alone runs every 20 s.
+ *
+ * Only headers are widened. The method allowlist, size limit and rate limit
+ * below are what keep this proxy narrow, and they are unchanged.
+ */
+export const WALLET_RPC_CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, solana-client',
+  'Access-Control-Max-Age': '86400',
 };
+const cors = WALLET_RPC_CORS;
 
 let readFetch: typeof fetch | undefined;
 let readFetchUrl = '';

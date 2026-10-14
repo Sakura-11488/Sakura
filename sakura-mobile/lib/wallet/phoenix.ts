@@ -7,6 +7,7 @@ import {
 } from '@solana/web3.js';
 import { PhoenixHttpClient } from '@ellipsis-labs/rise';
 import { getConnection } from './connection';
+import { confirmTransactionByPolling } from './confirm';
 import { validatePhoenixInstructions } from './phoenix-validation';
 import { getDefaultPhoenixSymbol, getPhoenixApiUrl, normalizePhoenixSymbol } from './phoenix-config';
 
@@ -131,22 +132,105 @@ function tokenUi(value: TokenAmountLike | undefined): number {
 }
 
 // ─── Market data ────────────────────────────────────────────────────────────
+/**
+ * One row of GET /v1/market/{symbol}/stats, the only price this file reads.
+ *
+ * Two shapes are read:
+ * - `{ stats: [{ mark_price, spot_price, open_interest, timestamp, ... }] }`,
+ *   snake case. It is what perp-api sends and what the SDK's schema requires
+ *   (the SDK rejects anything else), and it has no 24h, volume or funding
+ *   fields at all.
+ * - `{ data: [{ markPx, midPx, oraclePx, prevDayPx, ... }] }`, the shape this
+ *   file was first written against. It is kept in case the SDK hands it back.
+ * Reading only `data` left markPrice at 0, so /app/trade showed
+ * "SOL-PERP $0.00". The fields `stats` lacks keep the fallbacks in
+ * buildMarketState (24h change 0, high and low at the mark price).
+ *
+ * markPrice is display-only (the header, and position notional and PnL);
+ * order sizing and signing never read it.
+ */
 type MarketStatsLike = {
+  mark_price?: number; spot_price?: number; open_interest?: number; timestamp?: string;
   markPx?: number; midPx?: number; oraclePx?: number; prevDayPx?: number;
   dayNtlVlm?: number; openInterest?: number; funding?: number; high24h?: number; low24h?: number;
 };
+type MarketStatsResponseLike = { stats?: unknown; data?: unknown };
 type MarketConfigLike = {
   symbol?: string; marketStatus?: string; takerFee?: number; makerFee?: number;
   fundingIntervalSeconds?: number; leverageTiers?: Array<{ maxLeverage?: number }>;
 };
+
+/**
+ * The first value that is a price above zero, else 0. `a ?? b` stops at a
+ * present-but-unusable value (0, "", "n/a"), which would show $0.00 even when
+ * a later field holds the real price.
+ */
+function firstPrice(...values: unknown[]): number {
+  for (const value of values) {
+    const price = toNumber(value);
+    if (price > 0) return price;
+  }
+  return 0;
+}
+
+/**
+ * The newest row of a stats response, from either shape (see MarketStatsLike).
+ * perp-api lists rows oldest first, so the first row is the oldest one; going
+ * by timestamp keeps the order from mattering, and when timestamps are equal
+ * or missing the later row wins.
+ */
+function latestStatsRow(response: unknown): MarketStatsLike | null {
+  if (!response || typeof response !== 'object') return null;
+  const { stats, data } = response as MarketStatsResponseLike;
+  const rows: unknown[] = Array.isArray(stats) ? stats : Array.isArray(data) ? data : [];
+  let newest: MarketStatsLike | null = null;
+  let newestAt = -Infinity;
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const at = Date.parse(String((row as MarketStatsLike).timestamp));
+    if (at < newestAt) continue;
+    newest = row as MarketStatsLike;
+    if (Number.isFinite(at)) newestAt = at;
+  }
+  return newest;
+}
+
+/**
+ * How far back the stats request starts. Without start_time the endpoint
+ * answers from an hour back, oldest row first, so `{ limit: 1 }` alone is the
+ * price from an hour ago: asked at 09:43:08Z on 2026-10-14 it returned the
+ * 08:43:10Z row, $107.24 against $106.71 at the time. In the samples taken
+ * that day rows landed 2 to 46 seconds apart, so three minutes is a few to a
+ * few dozen rows (about 200 bytes each), and the newest one is the price to
+ * show.
+ */
+const STATS_LOOKBACK_MS = 3 * 60_000;
+/**
+ * Above the rows three minutes holds even at one row every 2 seconds. The
+ * endpoint keeps the oldest `limit` rows, so a cap below the row count would
+ * drop the newest ones.
+ */
+const STATS_ROW_LIMIT = 100;
+
+/** start_time in whole seconds, the form the endpoint's own timestamps use. */
+function statsStartTime(now = Date.now()): string {
+  return new Date(now - STATS_LOOKBACK_MS).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 
 function buildMarketState(
   symbol: string,
   config: MarketConfigLike,
   latestStats: MarketStatsLike | null,
 ): PhoenixMarketState {
-  const markPrice = toNumber(latestStats?.markPx ?? latestStats?.midPx ?? latestStats?.oraclePx);
-  const indexPrice = toNumber(latestStats?.oraclePx, markPrice);
+  const markPrice = firstPrice(
+    latestStats?.mark_price,
+    latestStats?.markPx,
+    latestStats?.midPx,
+    latestStats?.oraclePx,
+    latestStats?.spot_price,
+  );
+  // spot_price is the index the new shape reports; oraclePx was the old one.
+  const indexPrice = firstPrice(latestStats?.spot_price, latestStats?.oraclePx) || markPrice;
   const previous = toNumber(latestStats?.prevDayPx, markPrice);
   const change24h = previous > 0 ? ((markPrice - previous) / previous) * 100 : 0;
   const maxLeverage = Math.max(
@@ -161,7 +245,7 @@ function buildMarketState(
     midPrice: toNumber(latestStats?.midPx, markPrice),
     fundingRate: toNumber(latestStats?.funding),
     nextFundingTs: Math.floor(Date.now() / 1000) + toNumber(config.fundingIntervalSeconds, 3600),
-    openInterest: toNumber(latestStats?.openInterest),
+    openInterest: toNumber(latestStats?.open_interest ?? latestStats?.openInterest),
     volume24h: toNumber(latestStats?.dayNtlVlm),
     high24h: toNumber(latestStats?.high24h, Math.max(markPrice, previous)),
     low24h: toNumber(latestStats?.low24h, Math.min(markPrice, previous || markPrice)),
@@ -178,15 +262,20 @@ export async function fetchPhoenixMarketState(
 ): Promise<PhoenixMarketState> {
   const symbol = normalizePhoenixSymbol(inputSymbol);
   const client = getPhoenixHttpClient();
-  const [config, stats] = await Promise.all([
+  const markets = client.markets();
+  const [config, recent] = await Promise.all([
     client.exchange().getMarket(symbol) as Promise<MarketConfigLike>,
-    client.markets().getMarketStatsHistory(symbol, { limit: 1 }).catch(() => null) as Promise<unknown>,
+    markets
+      .getMarketStatsHistory(symbol, { start_time: statsStartTime(), limit: STATS_ROW_LIMIT })
+      .catch(() => null) as Promise<unknown>,
   ]);
-  const statsData =
-    stats && typeof stats === 'object' && 'data' in stats
-      ? ((stats as { data?: MarketStatsLike[] }).data?.[0] ?? null)
-      : null;
-  return buildMarketState(symbol, config, statsData);
+  // No row in the last three minutes (a stalled feed, a device clock running
+  // ahead of perp-api's, or the request failing): the default window still
+  // has a real price, up to an hour old, which beats showing $0.00.
+  const latest =
+    latestStatsRow(recent) ??
+    latestStatsRow(await markets.getMarketStatsHistory(symbol, { limit: 1 }).catch(() => null));
+  return buildMarketState(symbol, config, latest);
 }
 
 // ─── Trader data ──────────────────────────────────────────────────────────────
@@ -421,7 +510,7 @@ export async function executePhoenixOrder(
       skipPreflight: false,
       maxRetries: 3,
     });
-    await connection.confirmTransaction({ blockhash, lastValidBlockHeight, signature }, 'confirmed');
+    await confirmTransactionByPolling(connection, { signature, lastValidBlockHeight });
     return { success: true, signature };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Order failed' };

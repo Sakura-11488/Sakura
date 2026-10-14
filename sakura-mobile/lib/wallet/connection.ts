@@ -27,6 +27,7 @@ import {
   resolveSakuraTokenAccount,
 } from './balances';
 import type { SakuraBalanceSource } from './balance-diagnostics';
+import { confirmTransactionByPolling } from './confirm';
 export { SAKURA_SEND_SOL_RESERVE, SOL_SEND_FEE_RESERVE } from './config';
 
 function destinationAta(owner: PublicKey): PublicKey {
@@ -103,8 +104,8 @@ export async function sendSakura(keypair: Keypair, toAddress: string, amount: nu
   tx.sign(keypair);
   const txid = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
   try {
-    const confirmation = await conn.confirmTransaction(
-      { blockhash, lastValidBlockHeight, signature: txid }, 'confirmed');
+    // Polled, not subscribed: see confirm.ts — the wallet-rpc proxy has no websocket.
+    const confirmation = await confirmTransactionByPolling(conn, { signature: txid, lastValidBlockHeight });
     if (confirmation.value.err) throw new Error('The transaction failed on-chain.');
   } catch (error) {
     throw new SubmittedTransactionError(
@@ -174,7 +175,7 @@ export async function sendSol(
   tx.feePayer = keypair.publicKey;
   tx.sign(keypair);
   const txid = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
-  await conn.confirmTransaction({ blockhash, lastValidBlockHeight, signature: txid }, 'confirmed');
+  await confirmTransactionByPolling(conn, { signature: txid, lastValidBlockHeight });
   return txid;
 }
 

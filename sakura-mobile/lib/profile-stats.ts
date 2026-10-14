@@ -32,6 +32,96 @@ export interface ProfileFavorite {
   cover_url: string;
 }
 
+/**
+ * The columns `favorites` really has. The table is the Next.js app's
+ * (supabase/migrations/20250408120000_sakura_schema.sql): wallet_address,
+ * manga_id, title, cover_url, created_at, keyed (wallet_address, manga_id),
+ * and src/lib/supabase.ts addFavorite is the writer that filled it.
+ *
+ * This used to select `content_id, content_type`, the shape of the Expo app's
+ * own `Favorite` interface in lib/supabase.ts. Neither column exists, so
+ * PostgREST answered every public profile with 400 "column
+ * favorites.content_id does not exist" (seen live on /app/user/<wallet>), and
+ * supabase-js hands that back as `{ data: null }` rather than throwing — the
+ * page rendered "0 Favorites" and no shelf for every wallet, with nothing in
+ * the UI to say why.
+ */
+export const PROFILE_FAVORITES_SELECT = 'manga_id, title, cover_url';
+
+/**
+ * Covers the 18+ source produces. lib/hentai.ts proxyHentaiImage routes every
+ * HentaiFox cover through the droplet's `/hentai/v1/img?u=…`, and on web wraps
+ * that again in the media proxy (`?path=%2Fhentai%2Fv1…`); an unproxied one
+ * points at HentaiFox's CDN.
+ */
+const ADULT_COVER = /\/hentai\/v1\/|hentaifox\./i;
+
+function isAdultCover(url: string): boolean {
+  // Decode the nested query parameters a few layers deep first; the web form
+  // only shows `/hentai/v1/` once `path=` is decoded.
+  let text = url;
+  for (let i = 0; i < 3; i++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(text);
+    } catch {
+      break;
+    }
+    if (next === text) break;
+    text = next;
+  }
+  return ADULT_COVER.test(text);
+}
+
+/**
+ * Rows from `favorites` → the shelf on a public profile.
+ *
+ * Untrusted input, like the cloud-sync pulls: `favorites` is still one of the
+ * `FOR ALL … USING (true)` tables (see 20260818000000_lock_writable_tables.sql),
+ * so any holder of the public anon key can put any row in any wallet's list,
+ * and whatever lands here is shown to everyone who opens the profile. A row
+ * without a usable id or title is dropped rather than rendered as a blank
+ * card, and a cover that is not an absolute http(s) URL becomes '' (the page
+ * then draws its placeholder).
+ *
+ * 18+: a public profile is seen by readers who have not turned 18+ content on,
+ * so an adult title must never surface here. No legitimate writer can produce
+ * one today — the Next.js sources have no 18+ catalogue, and the Expo app's
+ * addFavorite always failed on the same missing content_id column — but the
+ * table is open to anyone, and has no source column to check. The cover URL is
+ * the one signal the row carries, so a row whose cover comes from the 18+
+ * source is dropped whole: its title is as adult as its cover.
+ *
+ * Every row is a manga: manga_id is the only id column, and the Next.js app
+ * favorited only from its manga/comic title page.
+ */
+export function toProfileFavorites(rows: unknown): ProfileFavorite[] {
+  if (!Array.isArray(rows)) return [];
+  const out: ProfileFavorite[] = [];
+  // The key is (wallet_address, manga_id) untrimmed, so 'x' and ' x ' are two
+  // rows that trim to one id. The shelf keys its cards on that id, and React
+  // drops or repeats children that share a key, so keep only the newest.
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    const id = typeof r.manga_id === 'string' ? r.manga_id.trim() : '';
+    const title = typeof r.title === 'string' ? r.title.trim() : '';
+    if (!id || id.length >= 512 || !title) continue;
+    const cover = typeof r.cover_url === 'string' ? r.cover_url.trim() : '';
+    if (cover && isAdultCover(cover)) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      content_id: id,
+      content_type: 'manga',
+      title,
+      cover_url: /^https?:\/\//i.test(cover) ? cover : '',
+    });
+  }
+  return out;
+}
+
 export interface LevelInfo {
   min: number;
   name: string;
@@ -144,11 +234,13 @@ export async function getPublicProfile(walletAddress: string): Promise<{
   try {
     const { data: favData } = await supabase
       .from('favorites')
-      .select('content_id, content_type, title, cover_url')
+      .select(PROFILE_FAVORITES_SELECT)
       .eq('wallet_address', walletAddress)
       .order('created_at', { ascending: false })
       .limit(20);
-    favorites = favData ?? [];
+    favorites = toProfileFavorites(favData);
+    // Count what the shelf shows, so a dropped row cannot earn the Collector
+    // achievement the visitor has no way to see.
     stats.favoritesCount = favorites.length;
 
     const { count: chapCount } = await supabase

@@ -1,7 +1,25 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1';
-import { jsonResponse, sendExpoPushBatch } from '../_shared/expo-push.ts';
-import { verifyWalletHeaders } from '../_shared/wallet-auth.ts';
+import { sendExpoPushBatch } from '../_shared/expo-push.ts';
+import { corsHeaders, jsonResponse as corsJsonResponse, verifyWalletHeaders } from '../_shared/wallet-auth.ts';
 import { TransferVerificationError, verifyTransfer } from '../_shared/verify-transfer.ts';
+
+/**
+ * The web app calls this from the browser (a creator tip, after the transfer
+ * confirms), and its wallet-signature headers make every call preflighted.
+ * This function used to answer that OPTIONS with a bare 405 and send no CORS
+ * headers at all, so on web the browser dropped every notification before the
+ * POST was made. Native never preflights, which hid it.
+ *
+ * Every response carries the headers, not just the preflight: without
+ * Allow-Origin on the POST reply the browser hides the result from the caller.
+ * The shared allow-list already covers x-wallet-address, x-signature and
+ * x-message; Max-Age spares a second preflight on the next tip.
+ */
+const cors = { ...corsHeaders(), 'Access-Control-Max-Age': '86400' };
+
+function jsonResponse(status: number, body: unknown) {
+  return corsJsonResponse(status, body, cors);
+}
 
 type TransferAsset = 'sakura' | 'sol';
 
@@ -58,6 +76,9 @@ function normalizeAsset(raw: string | undefined): TransferAsset {
  * amount unfalsifiable in the first place.
  */
 Deno.serve(async (req) => {
+  // Answered before anything else: a preflight carries no wallet headers and
+  // no body, and it authorises nothing — the POST is still verified in full.
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') {
     return jsonResponse(405, { error: 'Method not allowed' });
   }
