@@ -1,0 +1,131 @@
+SAKURA FOR MAC — GIT DEVELOPER SIGNING HANDOFF
+Prepared 1 November 2026. Candidate source, not a public installer.
+
+PURPOSE
+Build and sign Sakura on your own Mac, submit it to Apple for notarization,
+staple the ticket, and return the signed update artifacts. No website deployment
+or Apple credential/private-key transfer to the owner is needed for this step.
+Record the checked-out Git commit; coordinate later source changes before
+signing another candidate. It is not evidence that full feature parity is complete.
+
+WHAT THE MAC HANDOFF NEEDS
+The macos/ directory contains the Swift package, pinned Sparkle dependency, sources, packaging
+scripts, configuration, tests and release notes. The only non-Mac dependency is
+sakura-mobile/assets/images/icon.png. The build downloads Sparkle from its
+public upstream. No npm install or web build is needed. The Mac handoff adds no private web
+source, environment files, account data or signing keys.
+
+SIGNING OWNERSHIP
+Prefer the Sakura owner's Apple Developer team, using authorized access. If
+you intend to sign with your own developer team instead, tell the owner the
+team and the identity users will see before proceeding. Keep that Team ID and
+the Sparkle update key consistent between releases. Do not revoke existing
+certificates or overwrite an unrelated update key to complete this handoff.
+
+PREREQUISITES
+- macOS 14+, current initialized/selected Xcode (Swift 5.10+), Python 3.9+,
+  and the bundled notarytool/stapler tools. Preserve executable script bits;
+  if your unzip tool drops them, run: chmod +x macos/scripts/*.sh
+- A valid Developer ID Application identity plus its private key in your login
+  Keychain. An Apple Development or Apple Distribution certificate is not a
+  substitute for this direct-download workflow.
+- A working Apple notarization Keychain profile on your Mac:
+    xcrun notarytool store-credentials "sakura-notary"
+  Complete its prompts locally, then verify:
+    xcrun notarytool history --keychain-profile "sakura-notary"
+- A durable Sparkle Ed25519 signing key. No key has been provisioned by this
+  handoff. For this first release, create it once using the steps below, retain
+  it in Keychain, and arrange a secure owner-controlled backup outside source.
+  Reuse it for all future releases. Only the public key goes in release config.
+
+1. CLONE THE HANDOFF BRANCH AND VERIFY INPUTS
+    git clone --branch codex/mac-developer-handoff --single-branch https://github.com/Sakura-11488/Sakura.git Sakura-Mac
+    cd Sakura-Mac
+    git rev-parse HEAD
+    shasum -a 256 -c macos/SOURCE-SHA256SUMS
+    swift test --package-path macos
+    python3 -m unittest discover -s macos/scripts/tests
+    env -u SAKURA_UPDATE_FEED_URL -u SAKURA_UPDATE_PUBLIC_KEY -u SAKURA_OUTPUT_DIR bash macos/scripts/build-app.sh --arch universal
+
+The last command creates an ad-hoc local test build and downloads Sparkle's
+pinned tools. It is not the distributable build. Do not send that local app to
+users. No Xcode project file is needed; this is a Swift Package Manager app.
+
+2. SET UP THE UPDATE KEY ON YOUR MAC
+After the preceding build, the pinned Sparkle tools are at:
+    macos/.build/package-arm64/artifacts/sparkle/Sparkle/bin/
+
+For this first release only (or to retrieve the same existing account):
+    macos/.build/package-arm64/artifacts/sparkle/Sparkle/bin/generate_keys --account sakura-mac-release
+
+The tool stores the private key in Keychain and prints the PUBLIC key. Retrieve
+just that public key with:
+    macos/.build/package-arm64/artifacts/sparkle/Sparkle/bin/generate_keys --account sakura-mac-release -p
+
+If a Sakura release key has since been created elsewhere, coordinate with the
+owner instead of generating a replacement. Keep all secrets out of chat,
+source, shell tracing and returned logs. Future updates need the retained key.
+
+3. CONFIGURE AND RUN THE SIGNED RELEASE
+Replace the certificate identity and public-key placeholders below. Everything
+else is the agreed first-candidate configuration. Run from the repository root:
+
+    export SAKURA_SIGNING_IDENTITY='Developer ID Application: YOUR EXACT IDENTITY (TEAMID)'
+    export SAKURA_NOTARY_PROFILE='sakura-notary'
+    export SAKURA_SPARKLE_KEYCHAIN_ACCOUNT='sakura-mac-release'
+    export SAKURA_UPDATE_PUBLIC_KEY='PASTE THE BASE64 PUBLIC KEY HERE'
+    export SAKURA_APP_URL='https://sakuraonseeker.com/app/'
+    export SAKURA_UPDATE_FEED_URL='https://sakuraonseeker.com/mac/updates/appcast.xml'
+    export SAKURA_VERSION='0.1.0'
+    export SAKURA_BUILD_NUMBER='1'
+    export SAKURA_ARCH='universal'
+    export SAKURA_UPDATE_DOWNLOAD_BASE_URL='https://sakuraonseeker.com/mac/releases/0.1.0-1/'
+    bash macos/scripts/release.sh
+
+The script signs nested Sparkle helpers and the app with hardened runtime,
+submits to Apple, staples and validates the ticket, checks Gatekeeper, creates
+the ZIP, signs the update feed, and checks the signatures. Failed steps stop
+the pipeline. Do not disable those checks or edit files after signing.
+This work does not require a Developer ID Installer certificate: the output
+is a ZIP containing Sakura.app, not a .pkg installer.
+
+4. SEND THESE BACK TO THE OWNER
+Send the COMPLETE macos/dist/releases/0.1.0-1/ folder, preserving the nested ZIP
+unchanged. In particular, the receiver needs:
+- notarization.json, showing Accepted
+- updates/Sakura-0.1.0-1.zip (includes the signed, stapled app)
+- updates/appcast.xml (signed feed; do not edit it)
+- updates/SHA256SUMS
+- any generated release-note files
+
+Also send plain text with:
+- Apple Team ID and exact Developer ID Application identity used
+- Sparkle PUBLIC Ed25519 key and Keychain account name
+- version/build, macOS/Xcode versions used, and test results
+- the checked-out Git commit SHA and macos/SOURCE-SHA256SUMS for provenance
+
+Never send Apple passwords, notarization API keys, signing private keys,
+Keychain exports, or certificate/private-key bundles in ordinary chat.
+The owner does not need your local notarization credentials to verify or host
+the returned signed output. Sharing a Keychain profile name alone does not
+make its credentials available on another Mac.
+
+RELEASE STATUS / NEXT STEP
+Return the candidate privately; do not publish the website, create an App Store
+submission, or announce a public download. The owner will independently check
+the archive and integrate it with the website. Full sync implementation and
+feature verification are still open; picture-in-picture failed in the local
+runtime test. See macos/FEATURE-PARITY.md for the current evidence.
+
+We must also test a signed build-to-build upgrade before public release. Once
+coordinated, build 2 should keep the same Team ID and Sparkle key, set build=2
+and the archive directory to /mac/releases/0.1.0-2/. Do not change the bundle
+ID (com.sakura.mac), trusted app URL, or stable feed URL. A staging-feed test
+requires separately coordinated staging configuration. The public feed does
+not exist yet, so an update check alone cannot currently prove delivery.
+
+REFERENCES
+Project release guide: macos/README.md
+Apple: https://developer.apple.com/developer-id/
+Apple notarization: https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
+Sparkle key setup and publishing: https://sparkle-project.org/documentation/

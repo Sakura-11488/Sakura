@@ -1,0 +1,14 @@
+.build/
+.swiftpm/
+dist/
+*.xcuserstate
+.DS_Store
+.env
+.env.*
+*.p12
+*.p8
+*.pem
+*.key
+__pycache__/
+!README.md
+!FEATURE-PARITY.md
