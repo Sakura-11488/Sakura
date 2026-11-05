@@ -1,131 +1,44 @@
-<div align="center">
+# Sakura
 
-<img src="sakurapic.png" width="300" />
+A home for manga, anime, novels, and community experiences built around Solana.
 
-# 桜 Sakura
+[Open Sakura](https://sakuraonseeker.com/app/) · [Try Sakura Rooms](https://sakuraonseeker.com/app/perps/community/) · [Roadmap](docs/ROADMAP.md) · [Security](SECURITY.md)
 
-**読む。観る。集める。所有する。**
+## What we are building
 
-*Read. Watch. Collect. Own.*
+Sakura brings reading, watching, and community participation into one application. Sakura Rooms explores a related idea: people can plan a paper trading strategy together while each participant chooses their own allocation and reviews the outcome.
 
----
+| Product | Current scope |
+| --- | --- |
+| Sakura app | The live website uses Expo Router and React Native Web, with shared mobile source and a pink reading-room interface. |
+| Sakura Rooms | An invite-only paper beta with separate identities, shared history, and Plan, My allocation, and Review screens. Scenarios are fixed simulations; there are no deposits or real-money trades. |
+| Sakura Perps | The research and engineering behind the paper experience and a future derivatives system. Real-money trading is a separate milestone with substantial security and operational work remaining. |
 
-A manga & anime platform that lives on **Solana** — because your entertainment deserves more than a tab you close and forget.
+## Source status
 
-</div>
+**This repository's public default branch is a historical Next.js/Capacitor snapshot. It does not reproduce the current live Expo application.** Reconciling the current public application source, its checks, and its build instructions is a tracked [next-phase milestone](docs/ROADMAP.md#1-reconcile-public-source-and-release-evidence).
 
-<br>
+The historical `src/` and root `android/` directories are not the current website or Android application entry points. Private components are maintained separately and will not be included in a public source reconciliation. See the [repository map](docs/REPOSITORIES.md) before choosing a component or development branch.
 
-## what is this?
+## Explore the project
 
-Sakura is a love letter to manga readers and anime watchers who want something *different*.
+| Repository | Responsibility |
+| --- | --- |
+| [Sakura](https://github.com/Sakura-11488/Sakura) | Application source history, project navigation, and the public source reconciliation. |
+| [sakura-perps](https://github.com/Sakura-11488/sakura-perps) | Perps research, risk logic, the Rooms paper model, and community service code. |
+| [sakura-web](https://github.com/millw14/sakura-web) | Website hosting, export packaging, and server-side integration routes. |
 
-Instead of ads, tracking, and chapters that disappear — Sakura gives you a clean, beautiful experience with a twist: **on-chain milestone tracking via the [Ino Registry](https://github.com/millw14/ino-sakura-registry)**. Every chapter unlock, every completion, every tip — recorded as a verifiable, portable milestone on Solana.
+The [full repository map](docs/REPOSITORIES.md) explains platform work, registry code, private components, and how these repositories fit together.
 
-No accounts. No emails. Just your wallet and your content.
+## Follow or contribute
 
-<br>
+- Read the [documentation index](docs/README.md) for the project structure and release process.
+- Follow the [roadmap](docs/ROADMAP.md) for milestones and the evidence needed to complete them.
+- Use the [contribution guide](CONTRIBUTING.md) to report bugs, propose a change, or prepare a pull request.
+- Read the [security policy](SECURITY.md) before sharing a vulnerability. Keep exploit details and credentials out of public issues.
 
-## the vibe
+The public paper beta is an early product test. Shipping it does not establish that a real-money system is ready or independently audited.
 
-- **Bilingual UI** — Japanese + English throughout, because aesthetics matter
-- **Vertical scroll reader** — the way manga was meant to be read on screens
-- **Native anime streaming** — browse, search, and watch anime with a built-in player
-- **On-chain milestones** — chapter unlocks, completions, and early reader badges via Ino
-- **Creator support** — tip creators with $SAKURA, recorded on-chain as `record_support`
-- **Dark mode** — obviously. your eyes deserve it
+## Rights
 
-<br>
-
-## architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│                   Client App                      │
-│          (Next.js / Capacitor / Android)          │
-└──────────────────┬───────────────────────────────┘
-                   │
-         ┌─────────┴──────────┐
-         │                    │
-         v                    v
-┌─────────────────┐  ┌─────────────────────────────┐
-│ Content Pipeline │  │  Ino Registry (Solana)       │
-│                  │  │  E9ju12He2mnBR...Hpf         │
-│ Proprietary      │  │                              │
-│ scraping +       │  │  unlock_chapter  → PDA       │
-│ aggregation      │  │  complete_chapter → bitmap   │
-│ layer with CDN   │  │  claim_milestone → badge     │
-│ edge caching     │  │  record_support  → tier      │
-└─────────────────┘  └─────────────────────────────┘
-```
-
-### Content Pipeline
-
-Sakura uses a **proprietary content aggregation pipeline** that scrapes, normalizes, and caches manga metadata and chapter data through a multi-layer CDN. The pipeline handles:
-
-- Source aggregation from licensed and public domain manga APIs
-- Cover image optimization and CDN-edge caching
-- Chapter page delivery with data saver quality tiers
-- Rate limiting and request batching for upstream source protection
-- Bilibili takedown detection and graceful fallback routing
-
-The content source adapter pattern (`src/lib/sources/`) allows plugging in additional scrapers without touching the UI layer.
-
-### Payment & Milestone System
-
-All $SAKURA token transactions are routed through the **[Ino on-chain registry](https://github.com/millw14/ino-sakura-registry)** for verifiable milestone tracking:
-
-| Action | Ino Instruction | On-Chain Record |
-|--------|----------------|-----------------|
-| Chapter unlock | `unlock_chapter` | `UserChapterPDA` with timestamp |
-| Chapter completion | `complete_chapter` | Bitmap in `UserSeriesProgressPDA` |
-| Early reader badge | `claim_milestone` | `UserBadgePDA` if counter < cap |
-| Creator tip | `record_support` | `UserSupportPDA` with tier level |
-| Monthly pass | `process_payment` | Split via `FeeRouter` to vault + burn |
-
-The Ino program ID: `E9ju12He2mnBRaneM4xdtUXECDPXdpQQbU6HtSKb6Hpf`
-
-Every payment creates a dual record: the SPL token transfer *and* the Ino milestone PDA. This means reader progress is **portable** — any app that reads the Ino program can verify your history.
-
-<br>
-
-## android app
-
-Sakura runs as a native Android app via Capacitor, with custom Kotlin plugins for:
-
-- **Anime playback** — native ExoPlayer for smooth HLS streaming, Cloudflare bypass, and multi-server fallback
-- **Offline downloads** — save chapters for reading without internet
-- **Biometric auth** — fingerprint/face unlock for your wallet
-
-<br>
-
-## tech stack
-
-| Layer | Tech |
-|-------|------|
-| Frontend | Next.js, React, TypeScript |
-| Mobile | Capacitor, Kotlin, ExoPlayer |
-| Content | Proprietary scraping pipeline + CDN |
-| Blockchain | Solana, Ino Registry, Token-2022 |
-| Payments | $SAKURA via Ino program instructions |
-| Styling | Custom CSS with Japanese design language |
-
-<br>
-
-## the dream
-
-The big idea is simple: *what if reading manga and watching anime felt like it belonged in web3?*
-
-Not in a loud, "gm ser" kind of way — but quietly. Elegantly. A platform where your reading milestones live on-chain, where creators get tipped directly and verifiably, where the experience is gorgeous, and where fans feel at home.
-
-Sakura is still growing. More series, more features, more petals.
-
-<br>
-
-<div align="center">
-
-*built with care and too much caffeine*
-
-**ソラナで動く — Powered by Solana**
-
-</div>
+The existing [copyright notice](COPYRIGHT.md) applies. Public repository access does not change those terms. Third-party dependencies and content retain their respective rights and licenses.

@@ -38,6 +38,14 @@ luna.md
 !PRIVACY.md
 !COPYRIGHT.md
 !supabase/README.md
+!/CONTRIBUTING.md
+!/SECURITY.md
+!/docs/REPOSITORIES.md
+!/docs/ROADMAP.md
+!/docs/RELEASES.md
+!/.github/ISSUE_TEMPLATE/bug_report.md
+!/.github/ISSUE_TEMPLATE/feature_request.md
+!/.github/pull_request_template.md
 supabase*.sql
 comments_schema.sql
 aniyomi-main/
